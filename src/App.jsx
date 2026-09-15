@@ -1017,17 +1017,34 @@ function genSchedule(team, year) {
   return games;
 }
 
-function teamPowerRating(team, strengthMap, year) {
+// A team's power MUST live on the same scale as `userTeamOverall` (the
+// minutes-weighted player-OVR average, ~38-80) so the user's simulated games
+// and the projected standings compare apples to apples. Player attributes are
+// built from `38 + tier*40`, so we map prestige onto that exact range.
+const LEAGUE_AVG_POWER = 50; // a league-average team; the .500 pivot
+
+function teamPowerRating(team, strengthMap, year, { noise = true } = {}) {
+  // Standings must be stable across re-renders, so callers that want a
+  // deterministic value pass noise:false. Game sims keep the jitter.
+  const jitter = noise ? rand(-4, 4) : 0;
   if (year != null) {
     const real = realSeasonFor(team, year);
     if (real && real.barthag != null && !Number.isNaN(real.barthag)) {
-      // barthag is Torvik's win-probability-vs-an-average-team (0..1) —
-      // map it onto our 20-96 power scale, with a little game-to-game noise.
-      return clamp(20 + real.barthag * 76 + rand(-3, 3), 20, 98);
+      // barthag is Torvik's win-probability-vs-an-average-team (0..1) — map
+      // it onto the player-OVR scale (barthag .5 ~ a league-average roster).
+      return clamp(35 + real.barthag * 55 + jitter, 25, 95);
     }
   }
   const drift = strengthMap[team.id] ?? 0;
-  return clamp(team.prestige * 14 + drift + rand(-4, 4), 20, 96);
+  const talent = 38 + ((team.prestige - 1) / 4) * 40; // prestige 1->38 ... 5->78
+  return clamp(talent + drift + jitter, 25, 92);
+}
+
+// Projected season win% for a team, centered so a league-average program is
+// a coin flip and blue bloods top out around .95. Shared by standings and the
+// per-team schedule projection so both tell the same story.
+function projectedWinPct(power) {
+  return clamp(0.5 + (power - LEAGUE_AVG_POWER) / 58, 0.05, 0.95);
 }
 
 function depthChartMinutes(order) {
@@ -1559,7 +1576,7 @@ function DynastyApp({ initial, onExit }) {
       </div>
 
       {viewTeamId && (
-        <TeamRosterModal teamId={viewTeamId} year={state.year} onClose={() => setViewTeamId(null)} />
+        <TeamRosterModal teamId={viewTeamId} year={state.year} strengths={state.strengths} onClose={() => setViewTeamId(null)} />
       )}
       {jobPickerOpen && (
         <JobChangeModal
@@ -1883,21 +1900,39 @@ function Modal({ title, subtitle, onClose, children, maxWidth = 760 }) {
 }
 
 /* ---------- Opponent Roster Viewer ---------- */
-function TeamRosterModal({ teamId, year, onClose }) {
+function TeamRosterModal({ teamId, year, strengths, onClose }) {
   const team = TEAM_MAP[teamId];
+  const [view, setView] = useState("roster");
   const roster = useMemo(() => {
     const r = buildInitialRoster(team, year);
     return [...r].sort((a, b) => b.overall - a.overall);
   }, [teamId, year]);
+  const schedule = useMemo(() => genSchedule(team, year), [teamId, year]);
+  const teamPower = useMemo(() => teamPowerRating(team, strengths, year, { noise: false }), [teamId, year, strengths]);
   const realCount = roster.filter((p) => p.realName).length;
+
+  const tabBtn = (id, label) => (
+    <button
+      onClick={() => setView(id)}
+      className="cbb-btn"
+      style={{
+        cursor: "pointer", padding: "5px 14px", fontSize: 12.5, fontWeight: 600,
+        background: view === id ? C.wood : "transparent",
+        border: `1px solid ${view === id ? C.wood : C.line}`,
+        color: view === id ? "#1a1206" : C.dim,
+      }}
+    >
+      {label}
+    </button>
+  );
 
   return (
     <Modal
       title={team.name}
-      subtitle={`${team.conf} · projected ${seasonLabel(year)} roster`}
+      subtitle={`${team.conf} · projected ${seasonLabel(year)}`}
       onClose={onClose}
     >
-      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}>
         <div style={{ width: 10, height: 10, background: team.primary }} />
         <div style={{ display: "flex", gap: 2 }}>
           {Array.from({ length: 5 }).map((_, i) => (
@@ -1910,28 +1945,72 @@ function TeamRosterModal({ teamId, year, onClose }) {
           </span>
         )}
       </div>
-      <Panel style={{ overflow: "hidden" }}>
-        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13.5 }}>
-          <thead>
-            <tr style={{ borderBottom: `1px solid ${C.line}`, color: C.dim, fontSize: 11, textAlign: "left" }}>
-              <th style={th}>Player</th><th style={th}>Pos</th><th style={th}>Class</th><th style={th}>OVR</th>
-            </tr>
-          </thead>
-          <tbody>
-            {roster.map((p) => (
-              <tr key={p.id} className="cbb-row" style={{ borderBottom: `1px solid ${C.line}` }}>
-                <td style={td}>
-                  <div style={{ fontWeight: 600 }}>{p.realName ? "• " : ""}{p.name}</div>
-                  {p.starsAtSigning != null && <StarRow stars={p.starsAtSigning} />}
-                </td>
-                <td style={td}>{p.pos}</td>
-                <td style={td}>{p.class}</td>
-                <td style={{ ...td, fontWeight: 700 }} className="cbb-num">{p.overall}</td>
+
+      <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+        {tabBtn("roster", "Roster")}
+        {tabBtn("schedule", "Schedule")}
+      </div>
+
+      {view === "roster" && (
+        <Panel style={{ overflow: "hidden" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13.5 }}>
+            <thead>
+              <tr style={{ borderBottom: `1px solid ${C.line}`, color: C.dim, fontSize: 11, textAlign: "left" }}>
+                <th style={th}>Player</th><th style={th}>Pos</th><th style={th}>Class</th><th style={th}>OVR</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
-      </Panel>
+            </thead>
+            <tbody>
+              {roster.map((p) => (
+                <tr key={p.id} className="cbb-row" style={{ borderBottom: `1px solid ${C.line}` }}>
+                  <td style={td}>
+                    <div style={{ fontWeight: 600 }}>{p.realName ? "• " : ""}{p.name}</div>
+                    {p.starsAtSigning != null && <StarRow stars={p.starsAtSigning} />}
+                  </td>
+                  <td style={td}>{p.pos}</td>
+                  <td style={td}>{p.class}</td>
+                  <td style={{ ...td, fontWeight: 700 }} className="cbb-num">{p.overall}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </Panel>
+      )}
+
+      {view === "schedule" && (
+        <Panel style={{ overflow: "hidden" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13.5 }}>
+            <thead>
+              <tr style={{ borderBottom: `1px solid ${C.line}`, color: C.dim, fontSize: 11, textAlign: "left" }}>
+                <th style={th}>Wk</th><th style={th}>Opponent</th><th style={th}>Site</th><th style={th}>Proj</th>
+              </tr>
+            </thead>
+            <tbody>
+              {schedule.map((g) => {
+                const opp = TEAM_MAP[g.oppId];
+                const oppPower = teamPowerRating(opp, strengths, year, { noise: false });
+                // Home court nudges the projection a touch in the team's favor.
+                const edge = g.home ? 3 : -3;
+                const winProb = projectedWinPct(teamPower - oppPower + LEAGUE_AVG_POWER + edge);
+                const favored = winProb >= 0.5;
+                return (
+                  <tr key={g.id} className="cbb-row" style={{ borderBottom: `1px solid ${C.line}` }}>
+                    <td style={td}>{g.week}</td>
+                    <td style={td}>
+                      {opp.name}
+                      <span style={{ color: C.dimmer, fontSize: 11, marginLeft: 6 }}>({opp.conf})</span>
+                      {g.conf && <span style={{ color: C.wood, fontSize: 10, marginLeft: 6, letterSpacing: "0.06em" }}>CONF</span>}
+                    </td>
+                    <td style={td}>{g.home ? "Home" : "Away"}</td>
+                    <td style={{ ...td, fontWeight: 600, color: favored ? C.green : C.red }}>
+                      {favored ? "W" : "L"} <span style={{ color: C.dimmer, fontWeight: 400, fontSize: 11 }}>{Math.round(winProb * 100)}%</span>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </Panel>
+      )}
     </Modal>
   );
 }
@@ -2086,14 +2165,15 @@ function ScheduleTab({ schedule, teamConf, onViewTeam, onEditGame }) {
 }
 
 /* ---------- Standings ---------- */
+const SEASON_GAMES = 28;
+
 function StandingsTab({ team, strengths, userRecord, year, onViewTeam }) {
   const rows = TEAMS.map((t) => {
     if (t.id === team.id) return { ...t, wins: userRecord.w, losses: userRecord.l, isUser: true };
-    const power = teamPowerRating(t, strengths, year);
-    const winPct = clamp(0.25 + (power - 55) / 110, 0.08, 0.92);
-    const wins = Math.round(winPct * 28);
-    return { ...t, wins, losses: 28 - wins, isUser: false };
-  }).sort((a, b) => b.wins - a.wins);
+    const power = teamPowerRating(t, strengths, year, { noise: false });
+    const wins = Math.round(projectedWinPct(power) * SEASON_GAMES);
+    return { ...t, wins, losses: SEASON_GAMES - wins, isUser: false };
+  }).sort((a, b) => b.wins - a.wins || b.prestige - a.prestige);
 
   return (
     <div>
