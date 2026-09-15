@@ -549,6 +549,54 @@ function realPlayersFor(team, year) {
   return matched.filter((r) => r.player);
 }
 
+/* -------------------------------------------------------------------------
+   CAREER INDEX
+   The source data's `startSeason` is really "first season at the CURRENT
+   team", so it RESETS when a player transfers (P.J. Haggerty reads 2023 at
+   TCU, 2024 at Tulsa, 2026 at Kansas State). To recover a player's true class
+   and career arc, index every season a name appears and treat the earliest as
+   their real career start. Identity is by name only — a pragmatic heuristic,
+   since the dataset carries no stable per-player id.
+   ------------------------------------------------------------------------- */
+const CAREER_INDEX = (() => {
+  const idx = {};
+  for (const y of Object.keys(torvikPlayers)) {
+    for (const r of torvikPlayers[y] || []) {
+      if (!r || !r.player) continue;
+      (idx[r.player] || (idx[r.player] = [])).push(r);
+    }
+  }
+  for (const name in idx) idx[name].sort((a, b) => a.year - b.year);
+  return idx;
+})();
+
+function careerStartYear(name, fallback) {
+  const c = CAREER_INDEX[name];
+  return c && c.length ? c[0].year : (fallback ?? null);
+}
+
+// Class label from true career start, capped at senior. Fifth-year+ players
+// (redshirts, or name collisions) read SR rather than overflowing the array.
+function realClassForName(name, year, fallbackStart) {
+  const start = careerStartYear(name, fallbackStart);
+  if (start == null) return null;
+  return ["FR", "SO", "JR", "SR"][clamp(year - start, 0, 3)];
+}
+
+// A newcomer to a team this `year` who already appeared in an earlier season
+// is a transfer, not a true freshman.
+function isTransferName(name, year) {
+  const c = CAREER_INDEX[name];
+  return !!(c && c.some((r) => r.year < year));
+}
+
+// A player's actual real stat row for a specific season, or null.
+function realStatRowForName(name, year) {
+  const c = CAREER_INDEX[name];
+  if (!c) return null;
+  return c.find((r) => r.year === year) || null;
+}
+
 function shuffled(arr) {
   const a = [...arr];
   for (let i = a.length - 1; i > 0; i--) {
@@ -644,6 +692,20 @@ function genAttrsFromRealStats(real, tier) {
   return { scoring, rebounding, playmaking, defense, potential };
 }
 
+// A real player who logged no games / no production barely played. Rate them
+// as a deep-bench walk-on regardless of program prestige — this is the fix
+// for no-stat guys (e.g. Steve Johnson at Duke) reading as 90+ overall
+// because they used to fall through to the blue-blood tier roll.
+function genAttrsBenchReal(tier) {
+  const base = 42 + tier * 8; // 42..50 — a touch better at stronger programs
+  const spread = 6;
+  const a = () => clamp(Math.round(rand(base - spread, base + spread)), 25, 99);
+  return {
+    scoring: a(), rebounding: a(), playmaking: a(), defense: a(),
+    potential: clamp(Math.round(rand(base, base + 22)), 30, 99),
+  };
+}
+
 // Maps CBBD's free-text position strings onto our five roster slots.
 function mapRealPosition(raw) {
   if (!raw) return null;
@@ -661,13 +723,22 @@ function mapRealPosition(raw) {
 
 function makePlayer({ pos, classYear, prestige, starsAtSigning, real }) {
   const tier = clamp((prestige - 1) / 4 + rand(-0.12, 0.12), 0, 1);
-  const hasStats = real && (real.ppg != null || real.rpg != null || real.apg != null);
-  const attrs = hasStats ? genAttrsFromRealStats(real, tier) : genAttrsFromTier(tier);
+  const gp = Number(real?.gp) || 0;
+  const hasStats = !!real && gp > 0 && (real.ppg != null || real.rpg != null || real.apg != null);
+  // Real player, but no usable box score => barely played => deep bench.
+  const isRealBench = !!real && !hasStats;
+  const attrs = hasStats
+    ? genAttrsFromRealStats(real, tier)
+    : isRealBench
+      ? genAttrsBenchReal(tier)
+      : genAttrsFromTier(tier);
   const overall = computeOverall(pos, attrs);
   return {
     id: uid(),
     name: real?.player || fullName(),
     realName: !!real,
+    realKey: real?.player || null,
+    originalTier: tier,
     realStats: hasStats,
     pos,
     class: classYear,
@@ -705,10 +776,10 @@ function buildInitialRoster(team, year) {
     byPos[p].push(r);
   });
 
+  // Use the player's TRUE career start (earliest season anywhere in the data),
+  // not the data's per-team startSeason — otherwise every transfer reads FR.
   function realClassFor(real) {
-    return real?.startSeason != null
-      ? ["FR", "SO", "JR", "SR"][clamp(year - real.startSeason, 0, 3)]
-      : null;
+    return realClassForName(real?.player, year, real?.startSeason);
   }
 
   // Pass 1: fill each slot preferentially with a real player at that exact
@@ -784,14 +855,23 @@ function realRecruitsFor(year) {
     .map((r) => {
       const originalPrestige = findOurTeamByRealName(r.team)?.prestige ?? 2;
       const tier = clamp((originalPrestige - 1) / 4, 0, 1);
-      // Value used for star rating / sort order is per-game production
-      // ADJUSTED for strength of competition — this is the fix for "20 ppg
-      // at a small program shouldn't outrank 10 ppg at a high-major." Raw
-      // per-game stats are still kept (and shown) separately so the board
-      // stays honest about what actually happened on the court.
-      const realPpg = perGame(r.ppg, r.gp);
-      const realRpg = perGame(r.rpg, r.gp);
-      const adjustedPpg = realPpg * competitionMultiplier(tier) * sampleReliability(r.gp);
+      // A newcomer who already played in a prior season is a transfer, not a
+      // true freshman — label their class from their real career start.
+      const transfer = isTransferName(r.player, year);
+      const classYear = transfer ? (realClassForName(r.player, year, r.startSeason) || "SO") : "FR";
+      // Star rating reflects the player's FRESHMAN season, so the board grades
+      // them the same way scouts would coming out of high school — regardless
+      // of how their career later develops once signed. For a true freshman
+      // that's this row; for a transfer we reach back to their debut season.
+      const firstRow = transfer ? (realStatRowForName(r.player, careerStartYear(r.player, r.startSeason)) || r) : r;
+      const frGp = Number(firstRow.gp) || 0;
+      const frPpg = perGame(firstRow.ppg, firstRow.gp);
+      const frRpg = perGame(firstRow.rpg, firstRow.gp);
+      // Value used for star rating / sort order is freshman-year per-game
+      // production ADJUSTED for strength of competition — "20 ppg at a small
+      // program shouldn't outrank 10 ppg at a high-major." Raw stats are kept
+      // (and shown) separately so the board stays honest.
+      const adjustedPpg = frPpg * competitionMultiplier(tier) * sampleReliability(frGp);
       const stars = adjustedPpg >= 16 ? 5 : adjustedPpg >= 11 ? 4 : adjustedPpg >= 6 ? 3 : null;
       const rating = stars ? clamp(0.70 + (adjustedPpg / 30) * 0.30, 0.70, 1.0) : null;
       return {
@@ -799,15 +879,18 @@ function realRecruitsFor(year) {
         name: r.player,
         pos: mapRealPosition(r.position) || pick(POSITIONS),
         state: parseStateFromHometown(r.hometown) || "—",
-        classYear: "FR",
+        classYear,
+        isTransfer: transfer,
         stars,
         rating: rating ? Math.round(rating * 10000) / 10000 : null,
         real: true,
-        realStats: { ppg: r.ppg, rpg: r.rpg, apg: r.apg, gp: r.gp },
+        // Freshman-season line drives the signed player's STARTING attributes;
+        // year-over-year progression then tracks their real career from there.
+        realStats: { ppg: firstRow.ppg, rpg: firstRow.rpg, apg: firstRow.apg, gp: firstRow.gp },
         originalTeam: r.team,
         originalPrestige,
         adjustedValue: adjustedPpg,
-        hsStatline: { ppg: realPpg.toFixed(1), rpg: realRpg.toFixed(1) },
+        hsStatline: { ppg: frPpg.toFixed(1), rpg: frRpg.toFixed(1) },
         committedTo: null,
         interest: 0,
         rivalPressure: randInt(15, 45),
@@ -944,9 +1027,11 @@ function recruitToPlayer(recruit, team) {
       id: uid(),
       name: recruit.name,
       realName: true,
+      realKey: recruit.name,
+      originalTier,
       realStats: true,
       pos: recruit.pos,
-      class: "FR",
+      class: recruit.classYear || "FR",
       height: `6'${randInt(0, 11)}"`,
       attrs,
       overall,
@@ -985,6 +1070,7 @@ function recruitToPlayer(recruit, team) {
    SCHEDULE + SIM
    ========================================================================= */
 const NONCONF_GAMES = 11;
+const CONF_GAMES = 19;
 
 // Conference games are the real, "correct" slate — every conference mate,
 // home-and-away when that stays within a sane game count, otherwise once
@@ -1003,18 +1089,15 @@ function genSchedule(team, year) {
     games.push({ id: uid(), week: week++, oppId: opp.id, home: i % 2 === 0, conf: false, played: false, result: null });
   }
 
-  // Conference slate. Double round-robin (home + away) when the conference
-  // is small enough; single round-robin for larger leagues.
-  const doubleRoundRobin = conf.length > 0 && conf.length <= 10;
-  const confPool = conf.length ? conf : nonConf;
-  shuffled(confPool).forEach((opp, i) => {
-    if (doubleRoundRobin) {
-      games.push({ id: uid(), week: week++, oppId: opp.id, home: true, conf: true, played: false, result: null });
-      games.push({ id: uid(), week: week++, oppId: opp.id, home: false, conf: true, played: false, result: null });
-    } else {
-      games.push({ id: uid(), week: week++, oppId: opp.id, home: i % 2 === 0, conf: true, played: false, result: null });
-    }
-  });
+  // Conference slate — exactly CONF_GAMES games. Cycle through conference
+  // mates (repeating as needed for small leagues, home-and-away) with balanced
+  // home/away. A fixed conference length keeps records comparable across
+  // conferences and lets a dominant mid-major stack up a gaudy in-league mark.
+  const confPool = shuffled(conf.length ? conf : nonConf);
+  for (let i = 0; i < CONF_GAMES; i++) {
+    const opp = confPool[i % confPool.length];
+    games.push({ id: uid(), week: week++, oppId: opp.id, home: i % 2 === 0, conf: true, played: false, result: null });
+  }
 
   return games;
 }
@@ -1047,6 +1130,39 @@ function teamPowerRating(team, strengthMap, year, { noise = true } = {}) {
 // per-team schedule projection so both tell the same story.
 function projectedWinPct(power) {
   return clamp(0.5 + (power - LEAGUE_AVG_POWER) / 58, 0.05, 0.95);
+}
+
+// Per-season strength drift layered on top of a team's prestige baseline.
+// Wide enough that programs run genuinely hot or cold year to year — this is
+// what lets a mid-major occasionally dominate its conference and crash the
+// national standings instead of the order being a fixed prestige ranking.
+function genSeasonStrengths() {
+  return Object.fromEntries(TEAMS.map((t) => [t.id, rand(-11, 11)]));
+}
+
+// Win probability for a team of `power` against a specific `oppPower`. Steeper
+// than the national curve so the spread between the best and worst team in a
+// conference genuinely shows up game to game.
+function gameWinProb(power, oppPower) {
+  return clamp(0.5 + (power - oppPower) / 42, 0.02, 0.98);
+}
+
+// Projected W-L from STRENGTH OF SCHEDULE, not raw prestige: a team is
+// measured against its actual conference peers (CONF_GAMES) plus an average
+// national non-conference field (NONCONF_GAMES). A mid-major that clearly
+// outclasses its league piles up conference wins and can top the standings,
+// while a blue blood in a brutal conference can be dragged down.
+function projectedRecord(team, powerById) {
+  const power = powerById[team.id];
+  const peers = TEAMS.filter((t) => t.conf === team.conf && t.id !== team.id);
+  const confAvg = peers.length
+    ? peers.reduce((s, t) => s + powerById[t.id], 0) / peers.length
+    : LEAGUE_AVG_POWER;
+  const wins = Math.round(
+    gameWinProb(power, confAvg) * CONF_GAMES + gameWinProb(power, LEAGUE_AVG_POWER) * NONCONF_GAMES
+  );
+  const games = CONF_GAMES + NONCONF_GAMES;
+  return { wins, losses: games - wins };
 }
 
 function depthChartMinutes(order) {
@@ -1105,10 +1221,39 @@ function simulateGame(roster, depthChart, oppPower) {
 /* =========================================================================
    YEAR-END PROGRESSION
    ========================================================================= */
-function progressRosterForNewYear(roster, incoming, team) {
+function progressRosterForNewYear(roster, incoming, team, newYear) {
   const survivors = roster
     .filter((p) => p.class !== "SR")
     .map((p) => {
+      const nextClass = CLASS_ORDER[CLASS_ORDER.indexOf(p.class) + 1];
+      const rolledCareer = {
+        pts: p.career.pts + p.season.pts,
+        reb: p.career.reb + p.season.reb,
+        ast: p.career.ast + p.season.ast,
+        gp: p.career.gp + p.season.gp,
+      };
+
+      // Real players: track how their actual career went. Re-derive attributes
+      // from their real stat line for the NEW season, so e.g. Kemba Walker
+      // climbs 8.9 -> 14.6 -> 23.5 ppg and his overall rises to match. Star
+      // rating (starsAtSigning) is intentionally left frozen at signing, so
+      // deciding whom to sign off a freshman grade carries real risk/upside.
+      if (p.realName && p.realKey && newYear != null) {
+        const row = realStatRowForName(p.realKey, newYear);
+        const gp = Number(row?.gp) || 0;
+        if (row && gp > 0 && (row.ppg != null || row.rpg != null || row.apg != null)) {
+          const ourTeam = findOurTeamByRealName(row.team);
+          const tier = ourTeam ? clamp((ourTeam.prestige - 1) / 4, 0, 1) : (p.originalTier ?? 0.5);
+          const attrs = genAttrsFromRealStats(row, tier);
+          return {
+            ...p, class: nextClass, attrs, overall: computeOverall(p.pos, attrs),
+            career: rolledCareer, season: { gp: 0, pts: 0, reb: 0, ast: 0 },
+          };
+        }
+      }
+
+      // Generated players (and real players past their real career) develop
+      // synthetically toward their potential.
       const growth = Math.round((p.attrs.potential - p.overall) * rand(0.05, 0.22));
       const bump = clamp(growth, -2, 9);
       const attrs = {
@@ -1118,18 +1263,12 @@ function progressRosterForNewYear(roster, incoming, team) {
         defense: clamp(p.attrs.defense + Math.round(bump * rand(0.6, 1.2)), 25, 99),
         potential: p.attrs.potential,
       };
-      const nextClass = CLASS_ORDER[CLASS_ORDER.indexOf(p.class) + 1];
       return {
         ...p,
         class: nextClass,
         attrs,
         overall: computeOverall(p.pos, attrs),
-        career: {
-          pts: p.career.pts + p.season.pts,
-          reb: p.career.reb + p.season.reb,
-          ast: p.career.ast + p.season.ast,
-          gp: p.career.gp + p.season.gp,
-        },
+        career: rolledCareer,
         season: { gp: 0, pts: 0, reb: 0, ast: 0 },
       };
     });
@@ -1434,9 +1573,9 @@ function DynastyApp({ initial, onExit }) {
       .filter(Boolean)
       .map((r) => recruitToPlayer(r, team));
 
-    const newRoster = progressRosterForNewYear(state.roster, incomingRecruits, team);
     const newYear = state.year + 1;
-    const newStrengths = Object.fromEntries(TEAMS.map((t) => [t.id, rand(-6, 6)]));
+    const newRoster = progressRosterForNewYear(state.roster, incomingRecruits, team, newYear);
+    const newStrengths = genSeasonStrengths();
 
     const seniorCount = state.roster.filter((p) => p.class === "SR").length;
 
@@ -1470,7 +1609,7 @@ function DynastyApp({ initial, onExit }) {
       incomingCommits: [],
       recruitingPoints: weeklyRecruitingBudget(newTeam),
       recruitingWeekIndex: 1,
-      strengths: Object.fromEntries(TEAMS.map((t) => [t.id, rand(-6, 6)])),
+      strengths: genSeasonStrengths(),
       history: [...state.history, { year: state.year, wins: record.w, losses: record.l, teamId: state.teamId }],
     });
     setJobPickerOpen(false);
@@ -1807,9 +1946,16 @@ function RecruitingTab({ board, committedIds, points, budget, onAction, onSign, 
               >
                 <div style={{ display: "flex", alignItems: "center", gap: 14, flex: 1, minWidth: 0 }}>
                   <div style={{ minWidth: 150 }}>
-                    <div style={{ fontWeight: 600, fontSize: 13.5 }}>{r.name}</div>
+                    <div style={{ fontWeight: 600, fontSize: 13.5 }}>
+                      {r.name}
+                      {r.isTransfer && (
+                        <span style={{ fontSize: 9.5, color: C.wood, marginLeft: 6, letterSpacing: "0.06em", border: `1px solid ${C.line}`, padding: "1px 4px", verticalAlign: "middle" }}>
+                          {r.classYear} TRANSFER
+                        </span>
+                      )}
+                    </div>
                     <div style={{ fontSize: 11, color: C.dim }}>
-                      {r.pos} · {r.state} · {r.hsStatline.ppg} ppg{r.originalTeam ? ` at ${r.originalTeam}` : ""}
+                      {r.pos} · {r.state} · {r.hsStatline.ppg} fr. ppg{r.originalTeam ? ` · ${r.originalTeam}` : ""}
                     </div>
                   </div>
                   <StarRow stars={r.stars} />
@@ -1992,7 +2138,7 @@ function TeamRosterModal({ teamId, year, strengths, onClose }) {
                 const oppPower = teamPowerRating(opp, strengths, year, { noise: false });
                 // Home court nudges the projection a touch in the team's favor.
                 const edge = g.home ? 3 : -3;
-                const winProb = projectedWinPct(teamPower - oppPower + LEAGUE_AVG_POWER + edge);
+                const winProb = gameWinProb(teamPower + edge, oppPower);
                 const favored = winProb >= 0.5;
                 return (
                   <tr key={g.id} className="cbb-row" style={{ borderBottom: `1px solid ${C.line}` }}>
@@ -2167,20 +2313,23 @@ function ScheduleTab({ schedule, teamConf, onViewTeam, onEditGame }) {
 }
 
 /* ---------- Standings ---------- */
-const SEASON_GAMES = 28;
-
 function StandingsTab({ team, strengths, userRecord, year, onViewTeam }) {
+  // Compute every team's (deterministic) power once, then project records
+  // against strength of schedule so the table reflects conference dominance
+  // rather than a flat prestige ranking.
+  const powerById = Object.fromEntries(
+    TEAMS.map((t) => [t.id, teamPowerRating(t, strengths, year, { noise: false })])
+  );
   const rows = TEAMS.map((t) => {
     if (t.id === team.id) return { ...t, wins: userRecord.w, losses: userRecord.l, isUser: true };
-    const power = teamPowerRating(t, strengths, year, { noise: false });
-    const wins = Math.round(projectedWinPct(power) * SEASON_GAMES);
-    return { ...t, wins, losses: SEASON_GAMES - wins, isUser: false };
-  }).sort((a, b) => b.wins - a.wins || b.prestige - a.prestige);
+    const { wins, losses } = projectedRecord(t, powerById);
+    return { ...t, wins, losses, isUser: false };
+  }).sort((a, b) => b.wins - a.wins || a.losses - b.losses || b.prestige - a.prestige);
 
   return (
     <div>
       <div style={{ fontSize: 11.5, color: C.dimmer, marginBottom: 10 }}>
-        Projected national standings — other programs are simulated from a strength rating, not a full box-score sim. Click any team to preview their roster.
+        Projected national standings — records are projected against each team&apos;s actual schedule strength (19 conference games + 11 non-conference), so a team that dominates a weaker league can rise to the top. Click any team to preview their roster.
       </div>
       <Panel style={{ overflow: "hidden" }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13.5 }}>
@@ -2234,7 +2383,7 @@ export default function CBBDynasty() {
       incomingCommits: [],
       recruitingPoints: weeklyRecruitingBudget(team),
       recruitingWeekIndex: 1,
-      strengths: Object.fromEntries(TEAMS.map((t) => [t.id, rand(-6, 6)])),
+      strengths: genSeasonStrengths(),
       history: [],
     };
     setSession(state);
