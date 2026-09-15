@@ -4,7 +4,8 @@ import torvikPlayersRaw from "./data/torvik-players.json";
 import {
   LayoutDashboard, Users, ListOrdered, Search, CalendarDays, Trophy,
   Save, RotateCcw, ChevronUp, ChevronDown, Play, FastForward, Star,
-  ShieldCheck, X, Check, TrendingUp, Award, Crown
+  ShieldCheck, X, Check, TrendingUp, Award, Crown,
+  Medal, HeartPulse, Swords, Flame, GraduationCap, Landmark, Lock
 } from "lucide-react";
 
 /* =========================================================================
@@ -1267,7 +1268,7 @@ function simMatchup(m, ctx) {
   if (userTeamId && (m.a === userTeamId || m.b === userTeamId)) {
     const oppId = m.a === userTeamId ? m.b : m.a;
     const oppPower = teamPowerRating(TEAM_MAP[oppId], strengths, year);
-    const res = simulateGame(roster, depthChart, oppPower);
+    const res = simulateGame(roster, healthyDepthChart(depthChart, roster), oppPower);
     const winner = res.win ? userTeamId : oppId;
     const uScore = res.myScore, oScore = res.oppScore;
     return {
@@ -1397,13 +1398,18 @@ function userTeamOverall(roster, depthChart) {
   return totalW ? sum / totalW : 55;
 }
 
-function simulateGame(roster, depthChart, oppPower) {
-  const myPower = userTeamOverall(roster, depthChart);
+function simulateGame(roster, depthChart, oppPower, momentum = 0) {
+  const myPower = userTeamOverall(roster, depthChart) + momentum;
   const diff = myPower - oppPower;
   const margin = diff * 0.55 + rand(-11, 11);
   const base = 66 + myPower / 6;
-  const myScore = Math.round(base + margin / 2 + rand(-4, 4));
-  const oppScore = Math.round(base - margin / 2 + rand(-4, 4));
+  const win = margin >= 0;
+  let myScore = Math.max(Math.round(base + margin / 2 + rand(-4, 4)), 38);
+  let oppScore = Math.max(Math.round(base - margin / 2 + rand(-4, 4)), 35);
+  // Basketball has no ties — make sure the winner actually outscores the loser
+  // (rounding + score floors can otherwise leave them equal).
+  if (win && myScore <= oppScore) myScore = oppScore + randInt(1, 4);
+  if (!win && oppScore <= myScore) oppScore = myScore + randInt(1, 4);
 
   // per-player box score
   const boxByPlayer = {};
@@ -1421,12 +1427,18 @@ function simulateGame(roster, depthChart, oppPower) {
     });
   });
 
-  return {
-    win: myScore >= oppScore,
-    myScore: Math.max(myScore, 38),
-    oppScore: Math.max(oppScore, 35),
-    boxByPlayer,
-  };
+  return { win, myScore, oppScore, boxByPlayer };
+}
+
+// Convert the id-keyed box score into a display array (names + positions),
+// stored on the schedule game so it can be reopened later.
+function boxArray(boxByPlayer, roster) {
+  return Object.entries(boxByPlayer)
+    .map(([id, b]) => {
+      const p = roster.find((x) => x.id === id);
+      return { name: p ? p.name : "\u2014", pos: p ? p.pos : "", min: b.min, pts: b.pts, reb: b.reb, ast: b.ast };
+    })
+    .sort((a, b) => b.pts - a.pts);
 }
 
 /* =========================================================================
@@ -1506,29 +1518,297 @@ function progressRosterForNewYear(roster, incoming, team, newYear) {
 }
 
 /* =========================================================================
-   PERSISTENCE
+   INJURIES + MOMENTUM
    ========================================================================= */
-const SAVE_KEY = "cbb-dynasty-save";
+function isHurt(p) { return (p.injuredGames || 0) > 0; }
+
+// Depth chart with injured players pulled out — the effective rotation the
+// coach actually fields on a given night.
+function healthyDepthChart(depthChart, roster) {
+  const dc = {};
+  POSITIONS.forEach((pos) => {
+    dc[pos] = (depthChart[pos] || []).filter((id) => {
+      const p = roster.find((x) => x.id === id);
+      return p && !isHurt(p);
+    });
+  });
+  return dc;
+}
+
+// Signed win/loss streak read off the most recent games (positive = winning).
+function currentStreak(schedule) {
+  const played = schedule.filter((g) => g.played);
+  let streak = 0;
+  for (let i = played.length - 1; i >= 0; i--) {
+    const win = played[i].result.win;
+    if (streak === 0) { streak = win ? 1 : -1; continue; }
+    if ((win && streak > 0) || (!win && streak < 0)) streak += win ? 1 : -1;
+    else break;
+  }
+  return streak;
+}
+
+// Confidence swing from a streak, folded into team power for the next game.
+function momentumMod(streak) { return clamp(streak, -5, 5) * 0.75; }
+
+function tickInjuries(roster) {
+  return roster.map((p) => (isHurt(p) ? { ...p, injuredGames: p.injuredGames - 1 } : p));
+}
+
+// Small per-game chance a healthy rotation player tweaks something and misses
+// a few games. Returns the updated roster and (if any) the new injury.
+function maybeInjure(roster, rotationIds) {
+  if (Math.random() >= 0.10) return { roster, injured: null };
+  const cands = rotationIds.filter((id) => {
+    const p = roster.find((x) => x.id === id);
+    return p && !isHurt(p);
+  });
+  if (!cands.length) return { roster, injured: null };
+  const id = pick(cands);
+  const games = randInt(2, 6);
+  const name = roster.find((p) => p.id === id).name;
+  return {
+    roster: roster.map((p) => (p.id === id ? { ...p, injuredGames: games } : p)),
+    injured: { id, name, games },
+  };
+}
+
+// The ids that logged real minutes in the healthy rotation (candidates for
+// picking up a knock).
+function rotationIdsOf(depthChart, roster) {
+  const ids = [];
+  const hdc = healthyDepthChart(depthChart, roster);
+  POSITIONS.forEach((pos) => {
+    depthChartMinutes(hdc[pos]).forEach((m, i) => { if (m > 0) ids.push(hdc[pos][i]); });
+  });
+  return ids;
+}
+
+/* =========================================================================
+   AWARDS + HONORS
+   ========================================================================= */
+function awardScore(ppg, rpg, apg, rank) {
+  const prod = ppg + rpg * 0.75 + apg * 0.85;
+  const teamBonus = clamp((70 - (rank || 70)) / 70, 0, 1) * 9;
+  return prod + teamBonus;
+}
+
+// Best real player line (per-game) for a team in a given season, or null.
+function bestRealLine(team, year) {
+  const rows = realPlayersFor(team, year);
+  if (!rows.length) return null;
+  const mapped = rows
+    .map((r) => ({
+      name: r.player,
+      pos: mapRealPosition(r.position) || "SF",
+      gp: Number(r.gp) || 0,
+      ppg: perGame(r.ppg, r.gp),
+      rpg: perGame(r.rpg, r.gp),
+      apg: perGame(r.apg, r.gp),
+      class: realClassForName(r.player, year, r.startSeason) || "SO",
+    }))
+    .filter((r) => r.gp >= 5 && r.ppg + r.rpg + r.apg > 0);
+  if (!mapped.length) return null;
+  mapped.sort((a, b) => (b.ppg + b.rpg * 0.75 + b.apg * 0.85) - (a.ppg + a.rpg * 0.75 + a.apg * 0.85));
+  return mapped[0];
+}
+
+// Fallback star line derived from a team's power when no real data exists.
+function synthStarLine(power) {
+  const t = clamp(((power || 50) - 38) / 40, 0, 1);
+  return {
+    name: fullName(), pos: pick(POSITIONS),
+    ppg: +(9 + t * 13 + rand(-1, 2)).toFixed(1),
+    rpg: +(3 + t * 5 + rand(-0.5, 1)).toFixed(1),
+    apg: +(1.5 + t * 3 + rand(-0.3, 0.6)).toFixed(1),
+    class: pick(CLASS_ORDER),
+  };
+}
+
+// End-of-season national + conference honors. The user's players are judged on
+// their simulated season line; every other program is represented by its best
+// real player (or a synthesized star), scored with a national-rank bonus so a
+// star on a top-10 team edges out a stat-stuffer on a bad one.
+function computeAwards(state, rankById, ranked, powerById) {
+  const year = state.year;
+  const userTeam = TEAM_MAP[state.teamId];
+  const userConf = userTeam.conf;
+  const cands = [];
+
+  state.roster.forEach((p) => {
+    if ((p.season.gp || 0) < 3) return;
+    const ppg = perGame(p.season.pts, p.season.gp);
+    const rpg = perGame(p.season.reb, p.season.gp);
+    const apg = perGame(p.season.ast, p.season.gp);
+    cands.push({
+      id: p.id, name: p.name, teamId: state.teamId, teamName: userTeam.name,
+      pos: p.pos, class: p.class, ppg, rpg, apg, isUser: true,
+      rank: rankById[state.teamId], score: awardScore(ppg, rpg, apg, rankById[state.teamId]),
+    });
+  });
+
+  const nationalTeams = ranked.slice(0, 60).map((r) => r.team);
+  const confMates = TEAMS.filter((t) => t.conf === userConf && t.id !== state.teamId);
+  const pool = [...new Map([...nationalTeams, ...confMates].map((t) => [t.id, t])).values()]
+    .filter((t) => t.id !== state.teamId);
+  pool.forEach((t) => {
+    const line = bestRealLine(t, year) || synthStarLine(powerById[t.id]);
+    cands.push({
+      id: "x-" + t.id, name: line.name, teamId: t.id, teamName: t.name,
+      pos: line.pos, class: line.class, ppg: line.ppg, rpg: line.rpg, apg: line.apg,
+      isUser: false, rank: rankById[t.id], score: awardScore(line.ppg, line.rpg, line.apg, rankById[t.id]),
+    });
+  });
+
+  cands.sort((a, b) => b.score - a.score);
+  const allAmerica = cands.slice(0, 5);
+  const poy = allAmerica[0] || null;
+  const allFreshman = cands.filter((c) => c.class === "FR").slice(0, 5);
+  const allConference = cands
+    .filter((c) => TEAM_MAP[c.teamId] && TEAM_MAP[c.teamId].conf === userConf)
+    .slice(0, 5);
+
+  const userHonors = [];
+  state.roster.forEach((p) => {
+    const honors = [];
+    if (poy && poy.id === p.id) honors.push("National Player of the Year");
+    else if (allAmerica.find((c) => c.id === p.id)) honors.push("All-America");
+    if (allConference.find((c) => c.id === p.id)) honors.push(`All-${userConf}`);
+    if (allFreshman.find((c) => c.id === p.id)) honors.push("All-Freshman");
+    if (honors.length) userHonors.push({ name: p.name, pos: p.pos, honors });
+  });
+
+  return {
+    year, userConf,
+    poy: poy ? { name: poy.name, teamName: poy.teamName, pos: poy.pos, isUser: poy.isUser } : null,
+    allAmerica: allAmerica.map((c) => ({ name: c.name, teamName: c.teamName, pos: c.pos, ppg: c.ppg, rpg: c.rpg, apg: c.apg, isUser: c.isUser })),
+    allFreshman: allFreshman.map((c) => ({ name: c.name, teamName: c.teamName, pos: c.pos, isUser: c.isUser })),
+    allConference: allConference.map((c) => ({ name: c.name, teamName: c.teamName, pos: c.pos, isUser: c.isUser })),
+    userHonors,
+  };
+}
+
+/* =========================================================================
+   NBA DRAFT / EARLY DEPARTURES
+   ========================================================================= */
+function decideDepartures(roster) {
+  const early = [];
+  roster.forEach((p) => {
+    if (p.class === "SR") return;
+    const o = p.overall;
+    let chance = o >= 90 ? 0.9 : o >= 85 ? 0.6 : o >= 80 ? 0.38 : o >= 76 ? 0.18 : o >= 72 ? 0.07 : 0;
+    if (p.class === "JR") chance += 0.08;
+    if (Math.random() < chance) early.push(p);
+  });
+  return early;
+}
+
+function draftBoard(early, seniors) {
+  return [...early, ...seniors.filter((p) => p.overall >= 80)]
+    .sort((a, b) => b.overall - a.overall)
+    .map((p, i) => ({ name: p.name, pos: p.pos, overall: p.overall, class: p.class, pick: i + 1, early: p.class !== "SR" }));
+}
+
+/* =========================================================================
+   COACH CAREER + REPUTATION
+   ========================================================================= */
+const EMPTY_COACH = { wins: 0, losses: 0, seasons: 0, tourneyApps: 0, confTourneyTitles: 0, finalFours: 0, natTitles: 0 };
+const JOB_REP_REQ = { 5: 120, 4: 70, 3: 35, 2: 12, 1: 0 };
+
+function reputationOf(coach) {
+  if (!coach) return 0;
+  return Math.round(
+    coach.seasons * 3 + coach.wins * 0.15 + coach.tourneyApps * 5 +
+    coach.confTourneyTitles * 9 + coach.finalFours * 14 + coach.natTitles * 30
+  );
+}
+
+function reputationTier(rep) {
+  if (rep >= 120) return "Legend";
+  if (rep >= 70) return "Elite";
+  if (rep >= 35) return "Established";
+  if (rep >= 12) return "Rising";
+  return "Up-and-comer";
+}
+
+function finalizeCoachSeason(coach, record, postseason, teamId) {
+  const c = coach ? { ...coach } : { ...EMPTY_COACH };
+  c.wins += record.w; c.losses += record.l; c.seasons += 1;
+  const summ = postseasonSummary(postseason, teamId);
+  const conf = TEAM_MAP[teamId]?.conf;
+  const wonConf = !!(postseason && postseason.confChampions && conf && postseason.confChampions[conf] === teamId);
+  if (wonConf) c.confTourneyTitles += 1;
+  if (summ === "National Champions") { c.natTitles += 1; c.finalFours += 1; c.tourneyApps += 1; }
+  else if (summ === "Runner-up" || summ === "Final Four") { c.finalFours += 1; c.tourneyApps += 1; }
+  else if (summ === "NCAA Tournament") c.tourneyApps += 1;
+  else if (wonConf) c.tourneyApps += 1;
+  return c;
+}
+
+/* =========================================================================
+   BRACKETOLOGY / RIVALRIES / ROSTER NEEDS
+   ========================================================================= */
+function projectedSeed(rank) {
+  if (!rank || rank > 68) return null;
+  return { seed: clamp(Math.ceil(rank / 4), 1, 16), inField: rank <= 64 };
+}
+
+// Rivals = the two highest-prestige other programs in your conference.
+function rivalTeamIds(teamId) {
+  const t = TEAM_MAP[teamId];
+  if (!t) return new Set();
+  const mates = TEAMS.filter((x) => x.conf === t.conf && x.id !== teamId)
+    .sort((a, b) => b.prestige - a.prestige || a.name.localeCompare(b.name));
+  return new Set(mates.slice(0, 2).map((x) => x.id));
+}
+
+// Positions with at most one returning (non-senior) player — where next year's
+// class is thinnest.
+function positionNeeds(roster) {
+  const future = Object.fromEntries(POSITIONS.map((p) => [p, 0]));
+  roster.forEach((p) => { if (p.class !== "SR") future[p.pos] = (future[p.pos] || 0) + 1; });
+  return POSITIONS.filter((p) => future[p] <= 1);
+}
+
+/* =========================================================================
+   PERSISTENCE  (multiple save slots)
+   ========================================================================= */
+const SAVE_SLOTS = [1, 2, 3];
+const slotKey = (slot) => `cbb-dynasty-save-${slot}`;
+const LEGACY_SAVE_KEY = "cbb-dynasty-save";
 
 async function saveDynasty(state) {
+  const slot = state.slot || 1;
   try {
-    await window.storage.set(SAVE_KEY, JSON.stringify(state), false);
+    await window.storage.set(slotKey(slot), JSON.stringify(state), false);
     return true;
   } catch (e) {
     console.error("save failed", e);
     return false;
   }
 }
-async function loadDynasty() {
+async function loadSlot(slot) {
   try {
-    const res = await window.storage.get(SAVE_KEY, false);
-    return res ? JSON.parse(res.value) : null;
+    const res = await window.storage.get(slotKey(slot), false);
+    if (res) return JSON.parse(res.value);
+    // one-time migration of the pre-slots save into slot 1
+    if (slot === 1) {
+      const legacy = await window.storage.get(LEGACY_SAVE_KEY, false);
+      if (legacy) return { ...JSON.parse(legacy.value), slot: 1 };
+    }
+    return null;
   } catch (e) {
     return null;
   }
 }
-async function deleteDynasty() {
-  try { await window.storage.delete(SAVE_KEY, false); } catch (e) {}
+async function loadAllSlots() {
+  const out = {};
+  for (const s of SAVE_SLOTS) out[s] = await loadSlot(s);
+  return out;
+}
+async function deleteSlot(slot) {
+  try { await window.storage.delete(slotKey(slot), false); } catch (e) {}
+  if (slot === 1) { try { await window.storage.delete(LEGACY_SAVE_KEY, false); } catch (e) {} }
 }
 
 /* =========================================================================
@@ -1657,6 +1937,7 @@ const TABS = [
   { id: "standings", label: "Standings", icon: Trophy },
   { id: "rankings", label: "Rankings", icon: Award },
   { id: "postseason", label: "Postseason", icon: Crown },
+  { id: "program", label: "Program", icon: Landmark },
 ];
 
 function DynastyApp({ initial, onExit }) {
@@ -1665,6 +1946,9 @@ function DynastyApp({ initial, onExit }) {
   const [toast, setToast] = useState(null);
   const [viewTeamId, setViewTeamId] = useState(null);
   const [jobPickerOpen, setJobPickerOpen] = useState(false);
+  const [playerViewId, setPlayerViewId] = useState(null);
+  const [boxViewId, setBoxViewId] = useState(null);
+  const [recap, setRecap] = useState(null);
   const saveTimer = useRef(null);
 
   useEffect(() => {
@@ -1695,46 +1979,72 @@ function DynastyApp({ initial, onExit }) {
     return computeRankings(powerById, recordById);
   }, [state.strengths, state.year, state.teamId, record]);
 
+  const reputation = reputationOf(state.coach);
+  const rivalIds = useMemo(() => rivalTeamIds(state.teamId), [state.teamId]);
+  const needs = useMemo(() => positionNeeds(state.roster), [state.roster]);
+  const bracketology = projectedSeed(rankById[state.teamId]);
+
   function simOneGame() {
     if (!nextGame) return;
     const opp = TEAM_MAP[nextGame.oppId];
     const oppPower = teamPowerRating(opp, state.strengths, state.year);
-    const result = simulateGame(state.roster, state.depthChart, oppPower);
+    const hdc = healthyDepthChart(state.depthChart, state.roster);
+    const mom = momentumMod(currentStreak(state.schedule));
+    const result = simulateGame(state.roster, hdc, oppPower, mom);
+    const oppRank = rankById[nextGame.oppId] || null;
 
-    setState((s) => {
-      const roster = s.roster.map((p) => {
-        const box = result.boxByPlayer[p.id];
-        if (!box) return p;
-        return { ...p, season: { gp: p.season.gp + 1, pts: p.season.pts + box.pts, reb: p.season.reb + box.reb, ast: p.season.ast + box.ast } };
-      });
-      const schedule = s.schedule.map((g) => g.id === nextGame.id
-        ? { ...g, played: true, result: { win: result.win, myScore: result.myScore, oppScore: result.oppScore } }
-        : g);
-      const newWeekIndex = schedule.filter((g) => g.played).length + 1;
-      const weeksElapsed = Math.max(0, newWeekIndex - s.recruitingWeekIndex);
-      const recruitingBoard = weeksElapsed > 0 ? advanceRecruitingWeeks(s.recruitingBoard, weeksElapsed) : s.recruitingBoard;
-      const recruitingPoints = weeksElapsed > 0 ? weeklyRecruitingBudget(team) : s.recruitingPoints;
-      return { ...s, roster, schedule, recruitingBoard, recruitingPoints, recruitingWeekIndex: newWeekIndex };
+    let roster = state.roster.map((p) => {
+      const box = result.boxByPlayer[p.id];
+      if (!box) return p;
+      return { ...p, season: { gp: p.season.gp + 1, pts: p.season.pts + box.pts, reb: p.season.reb + box.reb, ast: p.season.ast + box.ast } };
     });
-    flash(result.win ? `Beat ${opp.name} ${result.myScore}-${result.oppScore}` : `Lost to ${opp.name} ${result.oppScore}-${result.myScore}`);
+    roster = tickInjuries(roster);
+    const inj = maybeInjure(roster, rotationIdsOf(state.depthChart, roster));
+    roster = inj.roster;
+    const box = boxArray(result.boxByPlayer, state.roster);
+
+    const schedule = state.schedule.map((g) => g.id === nextGame.id
+      ? { ...g, played: true, result: { win: result.win, myScore: result.myScore, oppScore: result.oppScore, oppRank, box } }
+      : g);
+    const newWeekIndex = schedule.filter((g) => g.played).length + 1;
+    const weeksElapsed = Math.max(0, newWeekIndex - state.recruitingWeekIndex);
+    const recruitingBoard = weeksElapsed > 0 ? advanceRecruitingWeeks(state.recruitingBoard, weeksElapsed) : state.recruitingBoard;
+    const recruitingPoints = weeksElapsed > 0 ? weeklyRecruitingBudget(team) : state.recruitingPoints;
+
+    setState((s) => ({ ...s, roster, schedule, recruitingBoard, recruitingPoints, recruitingWeekIndex: newWeekIndex }));
+
+    const sig = result.win && oppRank && oppRank <= 25;
+    let msg = result.win
+      ? `Beat ${opp.name} ${result.myScore}-${result.oppScore}${sig ? ` — signature win over No. ${oppRank}!` : ""}`
+      : `Lost to ${opp.name} ${result.oppScore}-${result.myScore}`;
+    if (inj.injured) msg += ` ${inj.injured.name} injured (out ${inj.injured.games}).`;
+    flash(msg);
   }
 
   function simToEndOfSeason() {
-    let cur = { ...state };
-    let games = [...cur.schedule];
-    let roster = [...cur.roster];
-    for (const g of games) {
+    let roster = state.roster.map((p) => ({ ...p }));
+    const games = state.schedule.map((g) => ({ ...g }));
+    let sigWins = 0;
+    for (let idx = 0; idx < games.length; idx++) {
+      const g = games[idx];
       if (g.played) continue;
       const opp = TEAM_MAP[g.oppId];
-      const oppPower = teamPowerRating(opp, cur.strengths, cur.year);
-      const result = simulateGame(roster, cur.depthChart, oppPower);
+      const oppPower = teamPowerRating(opp, state.strengths, state.year);
+      const mom = momentumMod(currentStreak(games.filter((x) => x.played)));
+      const hdc = healthyDepthChart(state.depthChart, roster);
+      const result = simulateGame(roster, hdc, oppPower, mom);
+      const oppRank = rankById[g.oppId] || null;
       roster = roster.map((p) => {
-        const box = result.boxByPlayer[p.id];
-        if (!box) return p;
-        return { ...p, season: { gp: p.season.gp + 1, pts: p.season.pts + box.pts, reb: p.season.reb + box.reb, ast: p.season.ast + box.ast } };
+        const bx = result.boxByPlayer[p.id];
+        if (!bx) return p;
+        return { ...p, season: { gp: p.season.gp + 1, pts: p.season.pts + bx.pts, reb: p.season.reb + bx.reb, ast: p.season.ast + bx.ast } };
       });
+      roster = tickInjuries(roster);
+      roster = maybeInjure(roster, rotationIdsOf(state.depthChart, roster)).roster;
+      const box = boxArray(result.boxByPlayer, roster);
       g.played = true;
-      g.result = { win: result.win, myScore: result.myScore, oppScore: result.oppScore };
+      g.result = { win: result.win, myScore: result.myScore, oppScore: result.oppScore, oppRank, box };
+      if (result.win && oppRank && oppRank <= 25) sigWins += 1;
     }
     setState((s) => {
       const newWeekIndex = games.filter((g) => g.played).length + 1;
@@ -1743,7 +2053,7 @@ function DynastyApp({ initial, onExit }) {
       const recruitingPoints = weeksElapsed > 0 ? weeklyRecruitingBudget(team) : s.recruitingPoints;
       return { ...s, roster, schedule: games, recruitingBoard, recruitingPoints, recruitingWeekIndex: newWeekIndex };
     });
-    flash("Simulated the rest of the season.");
+    flash(`Simulated the rest of the season.${sigWins ? ` ${sigWins} signature win${sigWins > 1 ? "s" : ""}.` : ""}`);
   }
 
   function startPostseason() {
@@ -1891,16 +2201,33 @@ function DynastyApp({ initial, onExit }) {
   }
 
   function advanceYear() {
+    const powerById = powerTableFor(state.strengths, state.year);
+    const awards = computeAwards(state, rankById, ranked, powerById);
+    const early = decideDepartures(state.roster);
+    const seniors = state.roster.filter((p) => p.class === "SR");
+    const draft = draftBoard(early, seniors);
+    const coach = finalizeCoachSeason(state.coach, record, state.postseason, state.teamId);
+    const earlyIds = new Set(early.map((p) => p.id));
+
     const incomingRecruits = state.incomingCommits
       .map((id) => state.recruitingBoard.find((r) => r.id === id))
       .filter(Boolean)
       .map((r) => recruitToPlayer(r, team));
 
     const newYear = state.year + 1;
-    const newRoster = progressRosterForNewYear(state.roster, incomingRecruits, team, newYear);
+    const surviving = state.roster.filter((p) => !earlyIds.has(p.id));
+    const newRoster = progressRosterForNewYear(surviving, incomingRecruits, team, newYear);
     const newStrengths = genSeasonStrengths();
+    const psSummary = postseasonSummary(state.postseason, state.teamId);
 
-    const seniorCount = state.roster.filter((p) => p.class === "SR").length;
+    const recapData = {
+      year: state.year, teamName: team.name,
+      record: { ...record }, postseason: psSummary, awards, draft,
+      early: early.map((p) => ({ name: p.name, pos: p.pos, class: p.class, overall: p.overall })),
+      seniorCount: seniors.length,
+      incomingCount: incomingRecruits.length,
+      repBefore: reputationOf(state.coach), repAfter: reputationOf(coach),
+    };
 
     setState({
       ...state,
@@ -1914,12 +2241,24 @@ function DynastyApp({ initial, onExit }) {
       recruitingWeekIndex: 1,
       strengths: newStrengths,
       postseason: null,
-      history: [...state.history, { year: state.year, wins: record.w, losses: record.l, teamId: state.teamId, postseason: postseasonSummary(state.postseason, state.teamId) }],
+      coach,
+      awardsHistory: [
+        ...(state.awardsHistory || []),
+        ...(awards.userHonors.length ? [{ year: state.year, teamName: team.name, honors: awards.userHonors }] : []),
+      ],
+      draftHistory: [
+        ...(state.draftHistory || []),
+        ...(draft.length ? [{ year: state.year, teamName: team.name, picks: draft }] : []),
+      ],
+      history: [...state.history, { year: state.year, wins: record.w, losses: record.l, teamId: state.teamId, postseason: psSummary, awards, draft }],
     });
-    flash(`Welcome to the ${seasonLabel(newYear)} season. ${seniorCount} seniors graduated.`);
+    setRecap(recapData);
   }
 
   function changeJob(newTeam) {
+    const coach = finalizeCoachSeason(state.coach, record, state.postseason, state.teamId);
+    const powerById = powerTableFor(state.strengths, state.year);
+    const awards = computeAwards(state, rankById, ranked, powerById);
     const newYear = state.year + 1;
     const roster = buildInitialRoster(newTeam, newYear);
     setState({
@@ -1935,7 +2274,12 @@ function DynastyApp({ initial, onExit }) {
       recruitingWeekIndex: 1,
       strengths: genSeasonStrengths(),
       postseason: null,
-      history: [...state.history, { year: state.year, wins: record.w, losses: record.l, teamId: state.teamId, postseason: postseasonSummary(state.postseason, state.teamId) }],
+      coach,
+      awardsHistory: [
+        ...(state.awardsHistory || []),
+        ...(awards.userHonors.length ? [{ year: state.year, teamName: team.name, honors: awards.userHonors }] : []),
+      ],
+      history: [...state.history, { year: state.year, wins: record.w, losses: record.l, teamId: state.teamId, postseason: postseasonSummary(state.postseason, state.teamId), awards }],
     });
     setJobPickerOpen(false);
     setTab("dashboard");
@@ -2021,9 +2365,10 @@ function DynastyApp({ initial, onExit }) {
           {tab === "dashboard" && (
             <DashboardTab state={state} team={team} record={record} nextGame={nextGame}
               onSim={simOneGame} onSimSeason={simToEndOfSeason} seasonOver={seasonOver} onAdvanceYear={advanceYear}
-              onChangeJob={() => setJobPickerOpen(true)} />
+              onChangeJob={() => setJobPickerOpen(true)} reputation={reputation} bracketology={bracketology}
+              onViewPlayer={setPlayerViewId} />
           )}
-          {tab === "roster" && <RosterTab roster={state.roster} />}
+          {tab === "roster" && <RosterTab roster={state.roster} onViewPlayer={setPlayerViewId} />}
           {tab === "depth" && <DepthChartTab roster={state.roster} depthChart={state.depthChart} onMove={moveInDepthChart} />}
           {tab === "recruiting" && (
             <RecruitingTab
@@ -2034,11 +2379,13 @@ function DynastyApp({ initial, onExit }) {
               onAction={doRecruitAction}
               onSign={attemptSign}
               team={team}
+              needs={needs}
             />
           )}
-          {tab === "schedule" && <ScheduleTab schedule={state.schedule} teamConf={team.conf} rankById={rankById} onViewTeam={setViewTeamId} onEditGame={editGame} />}
+          {tab === "schedule" && <ScheduleTab schedule={state.schedule} teamConf={team.conf} rankById={rankById} rivalIds={rivalIds} onViewTeam={setViewTeamId} onEditGame={editGame} onViewBox={setBoxViewId} />}
           {tab === "standings" && <StandingsTab team={team} ranked={ranked} rankById={rankById} userRecord={record} onViewTeam={setViewTeamId} />}
           {tab === "rankings" && <RankingsTab ranked={ranked} userTeamId={state.teamId} onViewTeam={setViewTeamId} />}
+          {tab === "program" && <ProgramTab state={state} team={team} record={record} reputation={reputation} rivalIds={rivalIds} rankById={rankById} />}
           {tab === "postseason" && (
             <PostseasonTab
               postseason={state.postseason}
@@ -2060,18 +2407,37 @@ function DynastyApp({ initial, onExit }) {
         <JobChangeModal
           currentTeamId={state.teamId}
           nextYear={state.year + 1}
+          reputation={reputation}
           onPick={changeJob}
           onClose={() => setJobPickerOpen(false)}
         />
+      )}
+      {playerViewId && (
+        <PlayerModal
+          player={state.roster.find((p) => p.id === playerViewId)}
+          onClose={() => setPlayerViewId(null)}
+        />
+      )}
+      {boxViewId && (
+        <BoxScoreModal
+          game={state.schedule.find((g) => g.id === boxViewId)}
+          teamName={team.name}
+          onClose={() => setBoxViewId(null)}
+        />
+      )}
+      {recap && (
+        <SeasonRecapModal recap={recap} onClose={() => setRecap(null)} />
       )}
     </div>
   );
 }
 
 /* ---------- Dashboard ---------- */
-function DashboardTab({ state, team, record, nextGame, onSim, onSimSeason, seasonOver, onAdvanceYear, onChangeJob }) {
+function DashboardTab({ state, team, record, nextGame, onSim, onSimSeason, seasonOver, onAdvanceYear, onChangeJob, reputation, bracketology, onViewPlayer }) {
   const overall = Math.round(userTeamOverall(state.roster, state.depthChart));
   const topPlayer = [...state.roster].sort((a, b) => b.overall - a.overall)[0];
+  const injured = state.roster.filter(isHurt);
+  const streak = currentStreak(state.schedule);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20, maxWidth: 900 }}>
@@ -2079,6 +2445,27 @@ function DashboardTab({ state, team, record, nextGame, onSim, onSimSeason, seaso
         <StatBlock label="Team Overall" value={overall} />
         <StatBlock label="Record" value={`${record.w}-${record.l}`} />
         <StatBlock label="Roster Size" value={state.roster.length} />
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 14 }}>
+        <Panel style={{ padding: "14px 18px" }}>
+          <div style={{ fontSize: 11, color: C.dim, letterSpacing: "0.08em" }}>BRACKETOLOGY</div>
+          <div className="cbb-num" style={{ fontSize: 20, fontWeight: 700, marginTop: 4, color: bracketology?.inField ? C.gold : C.cream }}>
+            {bracketology ? (bracketology.inField ? `No. ${bracketology.seed} seed` : "Last Four Out") : "Not projected"}
+          </div>
+        </Panel>
+        <Panel style={{ padding: "14px 18px" }}>
+          <div style={{ fontSize: 11, color: C.dim, letterSpacing: "0.08em" }}>REPUTATION</div>
+          <div className="cbb-num" style={{ fontSize: 20, fontWeight: 700, marginTop: 4 }}>
+            {reputation} <span style={{ fontSize: 12, color: C.wood }}>{reputationTier(reputation)}</span>
+          </div>
+        </Panel>
+        <Panel style={{ padding: "14px 18px" }}>
+          <div style={{ fontSize: 11, color: C.dim, letterSpacing: "0.08em" }}>MOMENTUM</div>
+          <div className="cbb-num" style={{ fontSize: 20, fontWeight: 700, marginTop: 4, color: streak > 0 ? C.green : streak < 0 ? C.red : C.cream }}>
+            {streak === 0 ? "—" : `${Math.abs(streak)} ${streak > 0 ? "W" : "L"} streak`}
+          </div>
+        </Panel>
       </div>
 
       <Panel style={{ padding: 20 }}>
@@ -2107,12 +2494,28 @@ function DashboardTab({ state, team, record, nextGame, onSim, onSimSeason, seaso
         )}
       </Panel>
 
+      {injured.length > 0 && (
+        <Panel style={{ padding: 20, borderLeft: `3px solid ${C.red}` }}>
+          <div style={{ fontSize: 11, color: C.dim, letterSpacing: "0.08em", marginBottom: 10, display: "flex", alignItems: "center", gap: 6 }}>
+            <HeartPulse size={13} color={C.red} /> INJURY REPORT
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+            {injured.map((p) => (
+              <div key={p.id} style={{ border: `1px solid ${C.line}`, padding: "6px 10px", fontSize: 12.5 }}>
+                <span style={{ fontWeight: 600 }}>{p.name}</span>
+                <span style={{ color: C.dim }}> · {p.pos} · out {p.injuredGames} game{p.injuredGames > 1 ? "s" : ""}</span>
+              </div>
+            ))}
+          </div>
+        </Panel>
+      )}
+
       {topPlayer && (
         <Panel style={{ padding: 20 }}>
           <div style={{ fontSize: 11, color: C.dim, letterSpacing: "0.08em", marginBottom: 10 }}>PROGRAM CORNERSTONE</div>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <div>
-              <div style={{ fontWeight: 600, fontSize: 16 }}>{topPlayer.name}</div>
+            <div onClick={() => onViewPlayer && onViewPlayer(topPlayer.id)} style={{ cursor: "pointer" }}>
+              <div style={{ fontWeight: 600, fontSize: 16, borderBottom: `1px dotted ${C.dim}`, display: "inline-block" }}>{topPlayer.name}</div>
               <div style={{ fontSize: 12, color: C.dim }}>{topPlayer.pos} · {topPlayer.class} · OVR {topPlayer.overall}</div>
             </div>
             <div style={{ display: "flex", gap: 18 }}>
@@ -2169,16 +2572,15 @@ function MiniStat({ label, value }) {
 function avg(total, gp) { return gp ? (total / gp).toFixed(1) : "0.0"; }
 
 /* ---------- Roster ---------- */
-function RosterTab({ roster }) {
+function RosterTab({ roster, onViewPlayer }) {
   const sorted = [...roster].sort((a, b) => b.overall - a.overall);
   const realCount = roster.filter((p) => p.realName).length;
   return (
     <div>
-      {realCount > 0 && (
-        <div style={{ fontSize: 11.5, color: C.dimmer, marginBottom: 10 }}>
-          {realCount} of {roster.length} names on this roster came from real Torvik data (marked with •). Attributes and stats are still simulated.
-        </div>
-      )}
+      <div style={{ fontSize: 11.5, color: C.dimmer, marginBottom: 10 }}>
+        {realCount > 0 ? `${realCount} of ${roster.length} names came from real Torvik data (marked with •). ` : ""}
+        Click any player for a full profile and game log.
+      </div>
       <Panel style={{ overflow: "hidden" }}>
       <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13.5 }}>
         <thead>
@@ -2189,9 +2591,13 @@ function RosterTab({ roster }) {
         </thead>
         <tbody>
           {sorted.map((p) => (
-            <tr key={p.id} className="cbb-row" style={{ borderBottom: `1px solid ${C.line}` }}>
+            <tr key={p.id} className="cbb-row" style={{ borderBottom: `1px solid ${C.line}`, cursor: "pointer" }}
+              onClick={() => onViewPlayer && onViewPlayer(p.id)}>
               <td style={td}>
-                <div style={{ fontWeight: 600 }}>{p.realName ? "• " : ""}{p.name}</div>
+                <div style={{ fontWeight: 600 }}>
+                  {p.realName ? "• " : ""}{p.name}
+                  {isHurt(p) && <span style={{ fontSize: 9.5, color: C.red, marginLeft: 6, letterSpacing: "0.06em", border: `1px solid ${C.red}`, padding: "1px 4px" }}>OUT {p.injuredGames}</span>}
+                </div>
                 {p.starsAtSigning != null && <StarRow stars={p.starsAtSigning} />}
               </td>
               <td style={td}>{p.pos}</td>
@@ -2224,7 +2630,10 @@ function DepthChartTab({ roster, depthChart, onMove }) {
             return (
               <div key={id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "7px 0", borderBottom: i < depthChart[pos].length - 1 ? `1px solid ${C.line}` : "none" }}>
                 <div>
-                  <div style={{ fontSize: 13, fontWeight: i === 0 ? 700 : 500 }}>{i === 0 ? "★ " : ""}{p.name}</div>
+                  <div style={{ fontSize: 13, fontWeight: i === 0 ? 700 : 500, color: isHurt(p) ? C.dimmer : C.cream }}>
+                    {i === 0 ? "★ " : ""}{p.name}
+                    {isHurt(p) && <span style={{ fontSize: 9, color: C.red, marginLeft: 5 }}>OUT</span>}
+                  </div>
                   <div style={{ fontSize: 11, color: C.dim }}>{p.class} · OVR {p.overall}</div>
                 </div>
                 <div style={{ display: "flex", flexDirection: "column" }}>
@@ -2249,9 +2658,10 @@ function InterestBar({ value, colorHigh }) {
   );
 }
 
-function RecruitingTab({ board, committedIds, points, budget, onAction, onSign, team }) {
+function RecruitingTab({ board, committedIds, points, budget, onAction, onSign, team, needs = [] }) {
   const [posFilter, setPosFilter] = useState("ALL");
   const [openId, setOpenId] = useState(null);
+  const needSet = new Set(needs);
   const list = board
     .filter((r) => posFilter === "ALL" || r.pos === posFilter)
     .filter((r) => !r.committedTo || committedIds.includes(r.id))
@@ -2275,6 +2685,16 @@ function RecruitingTab({ board, committedIds, points, budget, onAction, onSign, 
         </select>
       </div>
 
+      {needs.length > 0 && (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14, padding: "8px 12px", border: `1px solid ${C.wood}`, background: C.panel, fontSize: 12.5 }}>
+          <span style={{ color: C.wood, letterSpacing: "0.06em", fontWeight: 600 }}>TEAM NEEDS</span>
+          <span style={{ color: C.dim }}>Thin next season at</span>
+          {needs.map((p) => (
+            <span key={p} className="cbb-num" style={{ border: `1px solid ${C.wood}`, color: C.gold, padding: "1px 7px", fontWeight: 700 }}>{p}</span>
+          ))}
+        </div>
+      )}
+
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {list.map((r) => {
           const mine = committedIds.includes(r.id);
@@ -2291,6 +2711,11 @@ function RecruitingTab({ board, committedIds, points, budget, onAction, onSign, 
                   <div style={{ minWidth: 150 }}>
                     <div style={{ fontWeight: 600, fontSize: 13.5 }}>
                       {r.name}
+                      {needSet.has(r.pos) && (
+                        <span style={{ fontSize: 9.5, color: C.gold, marginLeft: 6, letterSpacing: "0.06em", border: `1px solid ${C.wood}`, padding: "1px 4px", verticalAlign: "middle" }}>
+                          FILLS NEED
+                        </span>
+                      )}
                       {r.isTransfer && (
                         <span style={{ fontSize: 9.5, color: C.wood, marginLeft: 6, letterSpacing: "0.06em", border: `1px solid ${C.line}`, padding: "1px 4px", verticalAlign: "middle" }}>
                           {r.classYear} TRANSFER
@@ -2507,7 +2932,7 @@ function TeamRosterModal({ teamId, year, strengths, rank, onClose }) {
 }
 
 /* ---------- Coaching Job Change ---------- */
-function JobChangeModal({ currentTeamId, nextYear, onPick, onClose }) {
+function JobChangeModal({ currentTeamId, nextYear, reputation = 0, onPick, onClose }) {
   const [q, setQ] = useState("");
   const filtered = TEAMS
     .filter((t) => t.id !== currentTeamId && t.name.toLowerCase().includes(q.toLowerCase()))
@@ -2516,7 +2941,7 @@ function JobChangeModal({ currentTeamId, nextYear, onPick, onClose }) {
   return (
     <Modal
       title="Take another job"
-      subtitle={`Leave your program to coach a new team starting in ${seasonLabel(nextYear)}. Your current roster stays behind.`}
+      subtitle={`Leave your program to coach a new team starting in ${seasonLabel(nextYear)}. Bigger programs only hire coaches with the reputation to match — you have ${reputation} (${reputationTier(reputation)}). Your current roster stays behind.`}
       onClose={onClose}
       maxWidth={860}
     >
@@ -2527,35 +2952,349 @@ function JobChangeModal({ currentTeamId, nextYear, onPick, onClose }) {
         style={{ width: "100%", background: C.panelAlt, border: `1px solid ${C.line}`, color: C.cream, padding: "10px 14px", fontSize: 14, marginBottom: 16, outline: "none" }}
       />
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 12 }}>
-        {filtered.map((t) => (
-          <button
-            key={t.id}
-            onClick={() => onPick(t)}
-            className="cbb-btn"
-            style={{
-              textAlign: "left", cursor: "pointer", padding: "14px 12px",
-              background: C.panelAlt, border: `1px solid ${C.line}`, borderLeft: `4px solid ${t.primary}`,
-              color: C.cream, display: "flex", flexDirection: "column", gap: 6,
-            }}
-          >
-            <div style={{ fontWeight: 600, fontSize: 14 }}>{t.name}</div>
-            <div style={{ fontSize: 11.5, color: C.dim }}>{t.conf}</div>
-            <div style={{ display: "flex", gap: 2, marginTop: 2 }}>
-              {Array.from({ length: 5 }).map((_, i) => (
-                <div key={i} style={{ width: 12, height: 4, background: i < t.prestige ? C.wood : C.line }} />
-              ))}
-            </div>
-          </button>
-        ))}
+        {filtered.map((t) => {
+          const req = JOB_REP_REQ[t.prestige] ?? 0;
+          const locked = reputation < req;
+          return (
+            <button
+              key={t.id}
+              onClick={() => !locked && onPick(t)}
+              disabled={locked}
+              className="cbb-btn"
+              style={{
+                textAlign: "left", cursor: locked ? "not-allowed" : "pointer", padding: "14px 12px",
+                background: C.panelAlt, border: `1px solid ${C.line}`, borderLeft: `4px solid ${locked ? C.line : t.primary}`,
+                color: locked ? C.dimmer : C.cream, display: "flex", flexDirection: "column", gap: 6, opacity: locked ? 0.7 : 1,
+              }}
+            >
+              <div style={{ fontWeight: 600, fontSize: 14, display: "flex", alignItems: "center", gap: 6 }}>
+                {locked && <Lock size={12} />} {t.name}
+              </div>
+              <div style={{ fontSize: 11.5, color: C.dim }}>{t.conf}</div>
+              <div style={{ display: "flex", gap: 2, marginTop: 2 }}>
+                {Array.from({ length: 5 }).map((_, i) => (
+                  <div key={i} style={{ width: 12, height: 4, background: i < t.prestige ? (locked ? C.dimmer : C.wood) : C.line }} />
+                ))}
+              </div>
+              {locked && <div style={{ fontSize: 10.5, color: C.red }}>Needs {req} reputation</div>}
+            </button>
+          );
+        })}
       </div>
     </Modal>
   );
 }
 
-function ScheduleRow({ g, teamConf, rankById, onViewTeam, onEditGame }) {
+/* ---------- Player Profile ---------- */
+function AttrBar({ label, value }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
+      <div style={{ width: 88, fontSize: 11.5, color: C.dim }}>{label}</div>
+      <div style={{ flex: 1, height: 7, background: C.line, position: "relative" }}>
+        <div style={{ position: "absolute", inset: 0, width: `${clamp(value, 0, 99)}%`, background: value >= 80 ? C.gold : value >= 65 ? C.wood : C.dim }} />
+      </div>
+      <div className="cbb-num" style={{ width: 26, textAlign: "right", fontSize: 12.5, fontWeight: 700 }}>{value}</div>
+    </div>
+  );
+}
+
+function PlayerModal({ player, onClose }) {
+  if (!player) return null;
+  const p = player;
+  const s = p.season, c = p.career;
+  const careerGp = c.gp + s.gp;
+  return (
+    <Modal title={p.name} subtitle={`${p.pos} · ${p.class} · ${p.height} · OVR ${p.overall}${p.realName ? " · real player" : ""}`} onClose={onClose} maxWidth={620}>
+      {isHurt(p) && (
+        <div style={{ marginBottom: 14, padding: "8px 12px", border: `1px solid ${C.red}`, color: C.red, fontSize: 12.5, display: "flex", alignItems: "center", gap: 6 }}>
+          <HeartPulse size={13} /> Injured — out {p.injuredGames} game{p.injuredGames > 1 ? "s" : ""}
+        </div>
+      )}
+      {p.starsAtSigning != null && (
+        <div style={{ marginBottom: 14, display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ fontSize: 11.5, color: C.dim }}>Recruiting grade</span>
+          <StarRow stars={p.starsAtSigning} />
+          {p.ratingAtSigning != null && <span className="cbb-num" style={{ fontSize: 11.5, color: C.dimmer }}>{p.ratingAtSigning.toFixed(3)}</span>}
+        </div>
+      )}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
+        <div>
+          <div style={{ fontSize: 11, color: C.dim, letterSpacing: "0.08em", marginBottom: 10 }}>ATTRIBUTES</div>
+          <AttrBar label="Scoring" value={p.attrs.scoring} />
+          <AttrBar label="Rebounding" value={p.attrs.rebounding} />
+          <AttrBar label="Playmaking" value={p.attrs.playmaking} />
+          <AttrBar label="Defense" value={p.attrs.defense} />
+          <AttrBar label="Potential" value={p.attrs.potential} />
+        </div>
+        <div>
+          <div style={{ fontSize: 11, color: C.dim, letterSpacing: "0.08em", marginBottom: 10 }}>PRODUCTION (PER GAME)</div>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+            <thead>
+              <tr style={{ color: C.dim, fontSize: 11, textAlign: "left" }}>
+                <th style={{ padding: "4px 6px" }}></th><th style={{ padding: "4px 6px" }}>GP</th>
+                <th style={{ padding: "4px 6px" }}>PPG</th><th style={{ padding: "4px 6px" }}>RPG</th><th style={{ padding: "4px 6px" }}>APG</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr style={{ borderTop: `1px solid ${C.line}` }}>
+                <td style={{ padding: "6px 6px", color: C.dim }}>Season</td>
+                <td className="cbb-num" style={{ padding: "6px 6px" }}>{s.gp}</td>
+                <td className="cbb-num" style={{ padding: "6px 6px" }}>{avg(s.pts, s.gp)}</td>
+                <td className="cbb-num" style={{ padding: "6px 6px" }}>{avg(s.reb, s.gp)}</td>
+                <td className="cbb-num" style={{ padding: "6px 6px" }}>{avg(s.ast, s.gp)}</td>
+              </tr>
+              <tr style={{ borderTop: `1px solid ${C.line}` }}>
+                <td style={{ padding: "6px 6px", color: C.dim }}>Career</td>
+                <td className="cbb-num" style={{ padding: "6px 6px" }}>{careerGp}</td>
+                <td className="cbb-num" style={{ padding: "6px 6px" }}>{avg(c.pts + s.pts, careerGp)}</td>
+                <td className="cbb-num" style={{ padding: "6px 6px" }}>{avg(c.reb + s.reb, careerGp)}</td>
+                <td className="cbb-num" style={{ padding: "6px 6px" }}>{avg(c.ast + s.ast, careerGp)}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+/* ---------- Box Score ---------- */
+function BoxScoreModal({ game, teamName, onClose }) {
+  if (!game || !game.result || !game.result.box) return null;
+  const opp = TEAM_MAP[game.oppId];
+  const r = game.result;
+  return (
+    <Modal
+      title={`${r.win ? "W" : "L"} ${r.myScore}-${r.oppScore} ${game.home ? "vs" : "at"} ${opp.name}`}
+      subtitle={`Week ${game.week}${r.oppRank ? ` · No. ${r.oppRank} ${opp.name}` : ""} · ${teamName} box score`}
+      onClose={onClose}
+      maxWidth={560}
+    >
+      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13.5 }}>
+        <thead>
+          <tr style={{ borderBottom: `1px solid ${C.line}`, color: C.dim, fontSize: 11, textAlign: "left" }}>
+            <th style={th}>Player</th><th style={th}>Pos</th><th style={th}>MIN</th><th style={th}>PTS</th><th style={th}>REB</th><th style={th}>AST</th>
+          </tr>
+        </thead>
+        <tbody>
+          {r.box.map((b, i) => (
+            <tr key={i} style={{ borderBottom: `1px solid ${C.line}` }}>
+              <td style={{ ...td, fontWeight: 600 }}>{b.name}</td>
+              <td style={td}>{b.pos}</td>
+              <td className="cbb-num" style={td}>{b.min}</td>
+              <td className="cbb-num" style={{ ...td, fontWeight: 700 }}>{b.pts}</td>
+              <td className="cbb-num" style={td}>{b.reb}</td>
+              <td className="cbb-num" style={td}>{b.ast}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </Modal>
+  );
+}
+
+/* ---------- Season Recap ---------- */
+function SeasonRecapModal({ recap, onClose }) {
+  if (!recap) return null;
+  const a = recap.awards || {};
+  const repDelta = recap.repAfter - recap.repBefore;
+  return (
+    <Modal title={`${seasonLabel(recap.year)} Season Recap`} subtitle={`${recap.teamName} finished ${recap.record.w}-${recap.record.l}`} onClose={onClose} maxWidth={620}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <RecapChip label="Record" value={`${recap.record.w}-${recap.record.l}`} />
+          <RecapChip label="Postseason" value={recap.postseason || "None"} gold={recap.postseason === "National Champions"} />
+          <RecapChip label="Reputation" value={`${recap.repAfter}${repDelta ? ` (+${repDelta})` : ""}`} />
+          <RecapChip label="Incoming class" value={`${recap.incomingCount} signed`} />
+        </div>
+
+        {a.userHonors && a.userHonors.length > 0 && (
+          <div>
+            <div style={{ fontSize: 11, color: C.gold, letterSpacing: "0.08em", marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}><Medal size={13} /> YOUR PLAYERS HONORED</div>
+            {a.userHonors.map((h, i) => (
+              <div key={i} style={{ fontSize: 13, marginBottom: 3 }}>
+                <span style={{ fontWeight: 600 }}>{h.name}</span> <span style={{ color: C.dim }}>({h.pos})</span> — {h.honors.join(", ")}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {a.poy && (
+          <div>
+            <div style={{ fontSize: 11, color: C.dim, letterSpacing: "0.08em", marginBottom: 8 }}>NATIONAL PLAYER OF THE YEAR</div>
+            <div style={{ fontSize: 14, fontWeight: 600, color: a.poy.isUser ? C.gold : C.cream }}>
+              {a.poy.name} <span style={{ fontSize: 12, color: C.dim, fontWeight: 400 }}>{a.poy.pos} · {a.poy.teamName}</span>
+            </div>
+          </div>
+        )}
+
+        {a.allAmerica && a.allAmerica.length > 0 && (
+          <div>
+            <div style={{ fontSize: 11, color: C.dim, letterSpacing: "0.08em", marginBottom: 8 }}>ALL-AMERICA FIRST TEAM</div>
+            {a.allAmerica.map((c, i) => (
+              <div key={i} style={{ fontSize: 12.5, marginBottom: 2, color: c.isUser ? C.gold : C.cream }}>
+                {c.name} <span style={{ color: C.dim }}>{c.pos} · {c.teamName} · {c.ppg.toFixed(1)} / {c.rpg.toFixed(1)} / {c.apg.toFixed(1)}</span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {recap.draft && recap.draft.length > 0 && (
+          <div>
+            <div style={{ fontSize: 11, color: C.dim, letterSpacing: "0.08em", marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}><GraduationCap size={13} /> LEAVING FOR THE NBA DRAFT</div>
+            {recap.draft.map((d, i) => (
+              <div key={i} style={{ fontSize: 12.5, marginBottom: 2 }}>
+                <span className="cbb-num" style={{ color: C.wood }}>#{d.pick}</span> {d.name} <span style={{ color: C.dim }}>{d.pos} · OVR {d.overall} · {d.early ? `${d.class} (early entry)` : "senior"}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+      <div style={{ marginTop: 20, textAlign: "right" }}>
+        <button onClick={onClose} className="cbb-btn" style={btnStyle(C.wood)}>Continue</button>
+      </div>
+    </Modal>
+  );
+}
+function RecapChip({ label, value, gold }) {
+  return (
+    <div style={{ border: `1px solid ${gold ? C.gold : C.line}`, padding: "8px 12px", minWidth: 96 }}>
+      <div style={{ fontSize: 10, color: C.dim, letterSpacing: "0.06em" }}>{label.toUpperCase()}</div>
+      <div className="cbb-num" style={{ fontSize: 14, fontWeight: 700, color: gold ? C.gold : C.cream, marginTop: 2 }}>{value}</div>
+    </div>
+  );
+}
+
+/* ---------- Program (career, trophy case, records) ---------- */
+function ProgramTab({ state, team, record, reputation, rivalIds, rankById }) {
+  const coach = state.coach || EMPTY_COACH;
+  const careerW = coach.wins, careerL = coach.losses;
+  const winPct = careerW + careerL > 0 ? (careerW / (careerW + careerL)).toFixed(3).replace(/^0/, "") : "—";
+  const sigWins = state.schedule.filter((g) => g.played && g.result.win && g.result.oppRank && g.result.oppRank <= 25);
+  const awardsHistory = state.awardsHistory || [];
+  const draftHistory = state.draftHistory || [];
+  const rivalNames = [...rivalIds].map((id) => TEAM_MAP[id]?.name).filter(Boolean);
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 20, maxWidth: 940 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 14 }}>
+        <StatBlock label="Career Record" value={`${careerW}-${careerL}`} />
+        <StatBlock label="Win %" value={winPct} />
+        <StatBlock label="Seasons" value={coach.seasons} />
+        <StatBlock label="Reputation" value={reputation} />
+      </div>
+
+      <Panel style={{ padding: 20 }}>
+        <div style={{ fontSize: 11, color: C.dim, letterSpacing: "0.08em", marginBottom: 12, display: "flex", alignItems: "center", gap: 6 }}><Trophy size={13} color={C.gold} /> TROPHY CASE</div>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <TrophyBadge count={coach.natTitles} label="National Titles" gold />
+          <TrophyBadge count={coach.finalFours} label="Final Fours" />
+          <TrophyBadge count={coach.confTourneyTitles} label="Conf. Tournament Titles" />
+          <TrophyBadge count={coach.tourneyApps} label="NCAA Appearances" />
+        </div>
+        <div style={{ fontSize: 11.5, color: C.dimmer, marginTop: 12 }}>
+          {reputationTier(reputation)} — {reputation} reputation. Win games, make deep tournament runs, and cut down nets to unlock jobs at blue-blood programs.
+        </div>
+      </Panel>
+
+      <Panel style={{ padding: 20 }}>
+        <div style={{ fontSize: 11, color: C.dim, letterSpacing: "0.08em", marginBottom: 12, display: "flex", alignItems: "center", gap: 6 }}><Flame size={13} color={C.wood} /> SIGNATURE WINS · {seasonLabel(state.year)}</div>
+        {sigWins.length ? (
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {sigWins.map((g) => (
+              <div key={g.id} style={{ fontSize: 13 }}>
+                <span style={{ color: C.green, fontWeight: 600 }}>W {g.result.myScore}-{g.result.oppScore}</span>{" "}
+                <span style={{ color: C.dim }}>{g.home ? "vs" : "at"}</span>{" "}
+                <span style={{ fontWeight: 600 }}>No. {g.result.oppRank} {TEAM_MAP[g.oppId].name}</span>
+              </div>
+            ))}
+          </div>
+        ) : <div style={{ fontSize: 12.5, color: C.dimmer }}>No wins over ranked teams yet this season.</div>}
+        {rivalNames.length > 0 && (
+          <div style={{ fontSize: 11.5, color: C.dimmer, marginTop: 12, display: "flex", alignItems: "center", gap: 6 }}>
+            <Swords size={12} color={C.red} /> Conference rivals: {rivalNames.join(", ")}
+          </div>
+        )}
+      </Panel>
+
+      {state.history.length > 0 && (
+        <Panel style={{ padding: 20 }}>
+          <div style={{ fontSize: 11, color: C.dim, letterSpacing: "0.08em", marginBottom: 12 }}>SEASON BY SEASON</div>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+            <thead>
+              <tr style={{ borderBottom: `1px solid ${C.line}`, color: C.dim, fontSize: 11, textAlign: "left" }}>
+                <th style={th}>Season</th><th style={th}>Program</th><th style={th}>Record</th><th style={th}>Postseason</th><th style={th}>Team POY</th>
+              </tr>
+            </thead>
+            <tbody>
+              {[...state.history].reverse().map((h) => {
+                const title = h.postseason === "National Champions";
+                const poy = h.awards && h.awards.poy && h.awards.poy.isUser ? h.awards.poy.name : null;
+                return (
+                  <tr key={h.year} style={{ borderBottom: `1px solid ${C.line}` }}>
+                    <td className="cbb-num" style={td}>{seasonLabel(h.year)}</td>
+                    <td style={td}>{TEAM_MAP[h.teamId]?.name || "—"}</td>
+                    <td className="cbb-num" style={td}>{h.wins}-{h.losses}</td>
+                    <td style={{ ...td, color: title ? C.gold : h.postseason ? C.wood : C.dimmer }}>{h.postseason || "—"}</td>
+                    <td style={{ ...td, color: poy ? C.gold : C.dimmer }}>{poy || "—"}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </Panel>
+      )}
+
+      {awardsHistory.length > 0 && (
+        <Panel style={{ padding: 20 }}>
+          <div style={{ fontSize: 11, color: C.dim, letterSpacing: "0.08em", marginBottom: 12, display: "flex", alignItems: "center", gap: 6 }}><Medal size={13} color={C.gold} /> PLAYER HONORS</div>
+          {[...awardsHistory].reverse().map((yr, i) => (
+            <div key={i} style={{ marginBottom: 10 }}>
+              <div className="cbb-num" style={{ fontSize: 12, color: C.dim, marginBottom: 3 }}>{seasonLabel(yr.year)} · {yr.teamName}</div>
+              {yr.honors.map((h, j) => (
+                <div key={j} style={{ fontSize: 12.5 }}>
+                  <span style={{ fontWeight: 600 }}>{h.name}</span> <span style={{ color: C.dim }}>({h.pos})</span> — {h.honors.join(", ")}
+                </div>
+              ))}
+            </div>
+          ))}
+        </Panel>
+      )}
+
+      {draftHistory.length > 0 && (
+        <Panel style={{ padding: 20 }}>
+          <div style={{ fontSize: 11, color: C.dim, letterSpacing: "0.08em", marginBottom: 12, display: "flex", alignItems: "center", gap: 6 }}><GraduationCap size={13} color={C.wood} /> NBA DRAFT PIPELINE</div>
+          {[...draftHistory].reverse().map((yr, i) => (
+            <div key={i} style={{ marginBottom: 10 }}>
+              <div className="cbb-num" style={{ fontSize: 12, color: C.dim, marginBottom: 3 }}>{seasonLabel(yr.year)}</div>
+              {yr.picks.map((d, j) => (
+                <div key={j} style={{ fontSize: 12.5 }}>
+                  <span className="cbb-num" style={{ color: C.wood }}>#{d.pick}</span> {d.name} <span style={{ color: C.dim }}>{d.pos} · {d.early ? `${d.class} early entry` : "senior"}</span>
+                </div>
+              ))}
+            </div>
+          ))}
+        </Panel>
+      )}
+    </div>
+  );
+}
+function TrophyBadge({ count, label, gold }) {
+  const has = count > 0;
+  return (
+    <div style={{ border: `1px solid ${has && gold ? C.gold : has ? C.wood : C.line}`, padding: "10px 14px", minWidth: 120, opacity: has ? 1 : 0.55 }}>
+      <div className="cbb-num" style={{ fontSize: 24, fontWeight: 700, color: has && gold ? C.gold : has ? C.wood : C.dimmer }}>{count}</div>
+      <div style={{ fontSize: 10.5, color: C.dim, marginTop: 2 }}>{label}</div>
+    </div>
+  );
+}
+
+function ScheduleRow({ g, teamConf, rankById, isRival, onViewTeam, onEditGame, onViewBox }) {
   const [editing, setEditing] = useState(false);
   const opp = TEAM_MAP[g.oppId];
   const editable = !g.conf && !g.played && !!onEditGame;
+  const signature = g.played && g.result.win && g.result.oppRank && g.result.oppRank <= 25;
+  const hasBox = g.played && g.result.box && g.result.box.length > 0;
   // Non-conference opponents = every program outside your conference.
   const options = editable
     ? TEAMS.filter((t) => t.conf !== teamConf).sort((a, b) => a.name.localeCompare(b.name))
@@ -2585,6 +3324,7 @@ function ScheduleRow({ g, teamConf, rankById, onViewTeam, onEditGame }) {
         )}
         <span style={{ color: C.dimmer, fontSize: 11, marginLeft: 6 }}>({opp.conf})</span>
         {g.conf && <span style={{ color: C.wood, fontSize: 10, marginLeft: 6, letterSpacing: "0.06em" }}>CONF</span>}
+        {isRival && <span style={{ color: C.red, fontSize: 10, marginLeft: 6, letterSpacing: "0.06em", display: "inline-flex", alignItems: "center", gap: 3 }}><Swords size={11} /> RIVALRY</span>}
       </td>
       <td style={td}>
         {editable ? (
@@ -2599,13 +3339,17 @@ function ScheduleRow({ g, teamConf, rankById, onViewTeam, onEditGame }) {
       </td>
       <td style={td}>
         {g.played ? (
-          <span style={{ color: g.result.win ? C.green : C.red, fontWeight: 600 }}>
+          <span
+            onClick={() => hasBox && onViewBox && onViewBox(g.id)}
+            style={{ color: g.result.win ? C.green : C.red, fontWeight: 600, cursor: hasBox ? "pointer" : "default" }}
+          >
             {g.result.win ? "W" : "L"} {g.result.myScore}-{g.result.oppScore}
+            {signature && <Star size={11} fill={C.gold} color={C.gold} style={{ marginLeft: 5, verticalAlign: "middle" }} />}
           </span>
         ) : <span style={{ color: C.dimmer }}>—</span>}
       </td>
       <td style={{ ...td, textAlign: "right" }}>
-        {editable && (
+        {editable ? (
           <button
             onClick={() => setEditing((v) => !v)}
             className="cbb-btn"
@@ -2613,13 +3357,21 @@ function ScheduleRow({ g, teamConf, rankById, onViewTeam, onEditGame }) {
           >
             {editing ? "Close" : "Change"}
           </button>
-        )}
+        ) : hasBox ? (
+          <button
+            onClick={() => onViewBox && onViewBox(g.id)}
+            className="cbb-btn"
+            style={{ background: "none", border: `1px solid ${C.line}`, color: C.dim, padding: "3px 9px", fontSize: 11.5, cursor: "pointer" }}
+          >
+            Box
+          </button>
+        ) : null}
       </td>
     </tr>
   );
 }
 
-function ScheduleTab({ schedule, teamConf, rankById, onViewTeam, onEditGame }) {
+function ScheduleTab({ schedule, teamConf, rankById, rivalIds, onViewTeam, onEditGame, onViewBox }) {
   const nonConf = schedule.filter((g) => !g.conf);
   const conf = schedule.filter((g) => g.conf);
 
@@ -2633,7 +3385,9 @@ function ScheduleTab({ schedule, teamConf, rankById, onViewTeam, onEditGame }) {
         </thead>
         <tbody>
           {games.map((g) => (
-            <ScheduleRow key={g.id} g={g} teamConf={teamConf} rankById={rankById} onViewTeam={onViewTeam} onEditGame={editable ? onEditGame : null} />
+            <ScheduleRow key={g.id} g={g} teamConf={teamConf} rankById={rankById}
+              isRival={rivalIds && rivalIds.has(g.oppId)}
+              onViewTeam={onViewTeam} onEditGame={editable ? onEditGame : null} onViewBox={onViewBox} />
           ))}
         </tbody>
       </table>
@@ -2968,20 +3722,21 @@ function SectionIntro({ children }) {
    ========================================================================= */
 export default function CBBDynasty() {
   const [loading, setLoading] = useState(true);
-  const [savedState, setSavedState] = useState(null);
-  const [session, setSession] = useState(null); // null = team select
+  const [slots, setSlots] = useState({}); // { 1: state|null, 2: ..., 3: ... }
+  const [session, setSession] = useState(null); // active dynasty state
+  const [pickingTeamFor, setPickingTeamFor] = useState(null); // slot number when choosing a team
 
   useEffect(() => {
     (async () => {
-      const s = await loadDynasty();
-      setSavedState(s);
+      setSlots(await loadAllSlots());
       setLoading(false);
     })();
   }, []);
 
-  function startDynasty(team, year = FIRST_YEAR) {
+  function startDynasty(team, slot, year = FIRST_YEAR) {
     const roster = buildInitialRoster(team, year);
     const state = {
+      slot,
       teamId: team.id,
       year,
       roster,
@@ -2994,14 +3749,19 @@ export default function CBBDynasty() {
       strengths: genSeasonStrengths(),
       history: [],
       postseason: null,
+      coach: { ...EMPTY_COACH },
+      awardsHistory: [],
+      draftHistory: [],
     };
+    setPickingTeamFor(null);
     setSession(state);
   }
 
-  function exitToSelect() {
-    deleteDynasty();
+  async function exitToSelect() {
+    if (session && session.slot) await deleteSlot(session.slot);
     setSession(null);
-    setSavedState(null);
+    setPickingTeamFor(null);
+    setSlots(await loadAllSlots());
   }
 
   if (loading) {
@@ -3012,22 +3772,61 @@ export default function CBBDynasty() {
     return <DynastyApp initial={session} onExit={exitToSelect} />;
   }
 
-  if (savedState) {
-    return (
-      <div className="cbb-root" style={{ minHeight: "100vh", background: C.bg, color: C.cream, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
-        <GlobalStyle />
-        <Panel style={{ padding: 30, maxWidth: 420, textAlign: "center" }}>
-          <div style={{ fontSize: 11, color: C.dim, letterSpacing: "0.08em", marginBottom: 8 }}>SAVE FOUND</div>
-          <h2 className="cbb-num" style={{ fontSize: 24, fontWeight: 700, marginBottom: 6 }}>{TEAM_MAP[savedState.teamId].name}</h2>
-          <div style={{ color: C.dim, fontSize: 13, marginBottom: 20 }}>{seasonLabel(savedState.year)} season in progress</div>
-          <div style={{ display: "flex", gap: 10, justifyContent: "center" }}>
-            <button onClick={() => setSession(savedState)} className="cbb-btn" style={btnStyle(C.wood)}>Continue Dynasty</button>
-            <button onClick={exitToSelect} className="cbb-btn" style={btnStyle(C.panelAlt, C.cream)}>Start New</button>
-          </div>
-        </Panel>
-      </div>
-    );
+  if (pickingTeamFor) {
+    return <TeamSelect onPick={(team, year) => startDynasty(team, pickingTeamFor, year)} />;
   }
 
-  return <TeamSelect onPick={startDynasty} />;
+  const anySave = SAVE_SLOTS.some((s) => slots[s]);
+  if (!anySave) {
+    // First-ever run: go straight to team select in slot 1.
+    return <TeamSelect onPick={(team, year) => startDynasty(team, 1, year)} />;
+  }
+
+  return (
+    <div className="cbb-root" style={{ minHeight: "100vh", background: C.bg, color: C.cream, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+      <GlobalStyle />
+      <Panel style={{ padding: 30, maxWidth: 560, width: "100%" }}>
+        <div style={{ fontSize: 11, color: C.dim, letterSpacing: "0.08em", marginBottom: 4 }}>CBB DYNASTY</div>
+        <h2 className="cbb-num" style={{ fontSize: 24, fontWeight: 700, marginBottom: 18 }}>Choose a save slot</h2>
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          {SAVE_SLOTS.map((slot) => {
+            const s = slots[slot];
+            return (
+              <div key={slot} style={{ border: `1px solid ${C.line}`, padding: "14px 16px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: 10, color: C.dim, letterSpacing: "0.06em" }}>SLOT {slot}</div>
+                  {s ? (
+                    <>
+                      <div className="cbb-num" style={{ fontSize: 17, fontWeight: 700 }}>{TEAM_MAP[s.teamId]?.name || "—"}</div>
+                      <div style={{ fontSize: 12, color: C.dim }}>
+                        {seasonLabel(s.year)}{s.coach ? ` · ${s.coach.wins}-${s.coach.losses} career · ${reputationTier(reputationOf(s.coach))}` : ""}
+                      </div>
+                    </>
+                  ) : (
+                    <div style={{ fontSize: 14, color: C.dimmer, marginTop: 4 }}>Empty</div>
+                  )}
+                </div>
+                <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
+                  {s ? (
+                    <>
+                      <button onClick={() => setSession(s)} className="cbb-btn" style={btnStyle(C.wood)}>Continue</button>
+                      <button
+                        onClick={async () => { await deleteSlot(slot); setSlots(await loadAllSlots()); }}
+                        className="cbb-btn"
+                        style={{ background: "transparent", border: `1px solid ${C.line}`, color: C.dim, padding: "9px 12px", fontSize: 12.5, cursor: "pointer" }}
+                      >
+                        Delete
+                      </button>
+                    </>
+                  ) : (
+                    <button onClick={() => setPickingTeamFor(slot)} className="cbb-btn" style={btnStyle(C.panelAlt, C.cream)}>New Dynasty</button>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </Panel>
+    </div>
+  );
 }
