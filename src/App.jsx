@@ -1215,6 +1215,8 @@ function DynastyApp({ initial, onExit }) {
   const [state, setState] = useState(initial);
   const [tab, setTab] = useState("dashboard");
   const [toast, setToast] = useState(null);
+  const [viewTeamId, setViewTeamId] = useState(null);
+  const [jobPickerOpen, setJobPickerOpen] = useState(false);
   const saveTimer = useRef(null);
 
   useEffect(() => {
@@ -1353,9 +1355,31 @@ function DynastyApp({ initial, onExit }) {
       recruitingPoints: weeklyRecruitingBudget(team),
       recruitingWeekIndex: 1,
       strengths: newStrengths,
-      history: [...state.history, { year: state.year, wins: record.w, losses: record.l }],
+      history: [...state.history, { year: state.year, wins: record.w, losses: record.l, teamId: state.teamId }],
     });
     flash(`Welcome to the ${newYear}-${String(newYear + 1).slice(2)} season. ${seniorCount} seniors graduated.`);
+  }
+
+  function changeJob(newTeam) {
+    const newYear = state.year + 1;
+    const roster = buildInitialRoster(newTeam, newYear);
+    setState({
+      ...state,
+      teamId: newTeam.id,
+      year: newYear,
+      roster,
+      depthChart: defaultDepthChart(roster),
+      schedule: genSchedule(newTeam, newYear),
+      recruitingBoard: genRecruitPool(newYear + 1),
+      incomingCommits: [],
+      recruitingPoints: weeklyRecruitingBudget(newTeam),
+      recruitingWeekIndex: 1,
+      strengths: Object.fromEntries(TEAMS.map((t) => [t.id, rand(-6, 6)])),
+      history: [...state.history, { year: state.year, wins: record.w, losses: record.l, teamId: state.teamId }],
+    });
+    setJobPickerOpen(false);
+    setTab("dashboard");
+    flash(`New job accepted — you're now the head coach at ${newTeam.name}.`);
   }
 
   const seasonOver = state.schedule.every((g) => g.played);
@@ -1425,7 +1449,8 @@ function DynastyApp({ initial, onExit }) {
         <div className="cbb-scroll" style={{ flex: 1, overflowY: "auto", padding: 28 }}>
           {tab === "dashboard" && (
             <DashboardTab state={state} team={team} record={record} nextGame={nextGame}
-              onSim={simOneGame} onSimSeason={simToEndOfSeason} seasonOver={seasonOver} onAdvanceYear={advanceYear} />
+              onSim={simOneGame} onSimSeason={simToEndOfSeason} seasonOver={seasonOver} onAdvanceYear={advanceYear}
+              onChangeJob={() => setJobPickerOpen(true)} />
           )}
           {tab === "roster" && <RosterTab roster={state.roster} />}
           {tab === "depth" && <DepthChartTab roster={state.roster} depthChart={state.depthChart} onMove={moveInDepthChart} />}
@@ -1440,16 +1465,28 @@ function DynastyApp({ initial, onExit }) {
               team={team}
             />
           )}
-          {tab === "schedule" && <ScheduleTab schedule={state.schedule} />}
-          {tab === "standings" && <StandingsTab team={team} strengths={state.strengths} userRecord={record} year={state.year} />}
+          {tab === "schedule" && <ScheduleTab schedule={state.schedule} onViewTeam={setViewTeamId} />}
+          {tab === "standings" && <StandingsTab team={team} strengths={state.strengths} userRecord={record} year={state.year} onViewTeam={setViewTeamId} />}
         </div>
       </div>
+
+      {viewTeamId && (
+        <TeamRosterModal teamId={viewTeamId} year={state.year} onClose={() => setViewTeamId(null)} />
+      )}
+      {jobPickerOpen && (
+        <JobChangeModal
+          currentTeamId={state.teamId}
+          nextYear={state.year + 1}
+          onPick={changeJob}
+          onClose={() => setJobPickerOpen(false)}
+        />
+      )}
     </div>
   );
 }
 
 /* ---------- Dashboard ---------- */
-function DashboardTab({ state, team, record, nextGame, onSim, onSimSeason, seasonOver, onAdvanceYear }) {
+function DashboardTab({ state, team, record, nextGame, onSim, onSimSeason, seasonOver, onAdvanceYear, onChangeJob }) {
   const overall = Math.round(userTeamOverall(state.roster, state.depthChart));
   const topPlayer = [...state.roster].sort((a, b) => b.overall - a.overall)[0];
 
@@ -1477,9 +1514,12 @@ function DashboardTab({ state, team, record, nextGame, onSim, onSimSeason, seaso
             </div>
           </div>
         ) : (
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-            <div style={{ color: C.dim, fontSize: 14 }}>Season complete — {record.w}-{record.l}. Head to Recruiting to finish your class, then advance the year.</div>
-            <button onClick={onAdvanceYear} className="cbb-btn" style={btnStyle(C.gold, "#221a00")}><TrendingUp size={13} /> Advance to {state.year + 1}</button>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 14, flexWrap: "wrap" }}>
+            <div style={{ color: C.dim, fontSize: 14, flex: 1, minWidth: 220 }}>Season complete — {record.w}-{record.l}. Head to Recruiting to finish your class, then advance the year — or take a new job elsewhere.</div>
+            <div style={{ display: "flex", gap: 10 }}>
+              <button onClick={onChangeJob} className="cbb-btn" style={btnStyle(C.panelAlt, C.cream)}><Users size={13} /> Take Another Job</button>
+              <button onClick={onAdvanceYear} className="cbb-btn" style={btnStyle(C.gold, "#221a00")}><TrendingUp size={13} /> Advance to {state.year + 1}</button>
+            </div>
           </div>
         )}
       </Panel>
@@ -1727,8 +1767,139 @@ function RecruitingTab({ board, committedIds, points, budget, onAction, onSign, 
 }
 
 /* ---------- Schedule ---------- */
-function ScheduleTab({ schedule }) {
+/* ---------- Shared Modal ---------- */
+function Modal({ title, subtitle, onClose, children, maxWidth = 760 }) {
+  useEffect(() => {
+    function onKey(e) { if (e.key === "Escape") onClose(); }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
   return (
+    <div
+      onClick={onClose}
+      className="cbb-scroll"
+      style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.62)", display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "48px 20px", zIndex: 50, overflowY: "auto" }}
+    >
+      <div onClick={(e) => e.stopPropagation()} style={{ width: "100%", maxWidth, background: C.panel, border: `1px solid ${C.line}`, borderTop: `3px solid ${C.wood}` }}>
+        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", padding: "16px 20px", borderBottom: `1px solid ${C.line}`, position: "sticky", top: 0, background: C.panel }}>
+          <div>
+            <div className="cbb-num" style={{ fontSize: 19, fontWeight: 700 }}>{title}</div>
+            {subtitle && <div style={{ fontSize: 12, color: C.dim, marginTop: 3 }}>{subtitle}</div>}
+          </div>
+          <button onClick={onClose} aria-label="Close" className="cbb-btn" style={{ background: "none", border: "none", color: C.dim, cursor: "pointer", padding: 2 }}><X size={18} /></button>
+        </div>
+        <div style={{ padding: 20 }}>{children}</div>
+      </div>
+    </div>
+  );
+}
+
+/* ---------- Opponent Roster Viewer ---------- */
+function TeamRosterModal({ teamId, year, onClose }) {
+  const team = TEAM_MAP[teamId];
+  const roster = useMemo(() => {
+    const r = buildInitialRoster(team, year);
+    return [...r].sort((a, b) => b.overall - a.overall);
+  }, [teamId, year]);
+  const realCount = roster.filter((p) => p.realName).length;
+
+  return (
+    <Modal
+      title={team.name}
+      subtitle={`${team.conf} · projected ${year}–${String(year + 1).slice(2)} roster`}
+      onClose={onClose}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+        <div style={{ width: 10, height: 10, background: team.primary }} />
+        <div style={{ display: "flex", gap: 2 }}>
+          {Array.from({ length: 5 }).map((_, i) => (
+            <div key={i} style={{ width: 14, height: 4, background: i < team.prestige ? C.wood : C.line }} />
+          ))}
+        </div>
+        {realCount > 0 && (
+          <span style={{ fontSize: 11, color: C.dimmer, marginLeft: 4 }}>
+            {realCount} real names from Torvik data (•)
+          </span>
+        )}
+      </div>
+      <Panel style={{ overflow: "hidden" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13.5 }}>
+          <thead>
+            <tr style={{ borderBottom: `1px solid ${C.line}`, color: C.dim, fontSize: 11, textAlign: "left" }}>
+              <th style={th}>Player</th><th style={th}>Pos</th><th style={th}>Class</th><th style={th}>OVR</th>
+            </tr>
+          </thead>
+          <tbody>
+            {roster.map((p) => (
+              <tr key={p.id} className="cbb-row" style={{ borderBottom: `1px solid ${C.line}` }}>
+                <td style={td}>
+                  <div style={{ fontWeight: 600 }}>{p.realName ? "• " : ""}{p.name}</div>
+                  {p.starsAtSigning != null && <StarRow stars={p.starsAtSigning} />}
+                </td>
+                <td style={td}>{p.pos}</td>
+                <td style={td}>{p.class}</td>
+                <td style={{ ...td, fontWeight: 700 }} className="cbb-num">{p.overall}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </Panel>
+    </Modal>
+  );
+}
+
+/* ---------- Coaching Job Change ---------- */
+function JobChangeModal({ currentTeamId, nextYear, onPick, onClose }) {
+  const [q, setQ] = useState("");
+  const filtered = TEAMS
+    .filter((t) => t.id !== currentTeamId && t.name.toLowerCase().includes(q.toLowerCase()))
+    .sort((a, b) => b.prestige - a.prestige || a.name.localeCompare(b.name));
+
+  return (
+    <Modal
+      title="Take another job"
+      subtitle={`Leave your program to coach a new team starting in ${nextYear}–${String(nextYear + 1).slice(2)}. Your current roster stays behind.`}
+      onClose={onClose}
+      maxWidth={860}
+    >
+      <input
+        value={q}
+        onChange={(e) => setQ(e.target.value)}
+        placeholder="Search programs…"
+        style={{ width: "100%", background: C.panelAlt, border: `1px solid ${C.line}`, color: C.cream, padding: "10px 14px", fontSize: 14, marginBottom: 16, outline: "none" }}
+      />
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 12 }}>
+        {filtered.map((t) => (
+          <button
+            key={t.id}
+            onClick={() => onPick(t)}
+            className="cbb-btn"
+            style={{
+              textAlign: "left", cursor: "pointer", padding: "14px 12px",
+              background: C.panelAlt, border: `1px solid ${C.line}`, borderLeft: `4px solid ${t.primary}`,
+              color: C.cream, display: "flex", flexDirection: "column", gap: 6,
+            }}
+          >
+            <div style={{ fontWeight: 600, fontSize: 14 }}>{t.name}</div>
+            <div style={{ fontSize: 11.5, color: C.dim }}>{t.conf}</div>
+            <div style={{ display: "flex", gap: 2, marginTop: 2 }}>
+              {Array.from({ length: 5 }).map((_, i) => (
+                <div key={i} style={{ width: 12, height: 4, background: i < t.prestige ? C.wood : C.line }} />
+              ))}
+            </div>
+          </button>
+        ))}
+      </div>
+    </Modal>
+  );
+}
+
+function ScheduleTab({ schedule, onViewTeam }) {
+  return (
+    <div>
+      <div style={{ fontSize: 11.5, color: C.dimmer, marginBottom: 10 }}>
+        Click any opponent to preview their roster.
+      </div>
     <Panel style={{ overflow: "hidden" }}>
       <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13.5 }}>
         <thead>
@@ -1740,9 +1911,9 @@ function ScheduleTab({ schedule }) {
           {schedule.map((g) => {
             const opp = TEAM_MAP[g.oppId];
             return (
-              <tr key={g.id} className="cbb-row" style={{ borderBottom: `1px solid ${C.line}` }}>
+              <tr key={g.id} className="cbb-row" style={{ borderBottom: `1px solid ${C.line}`, cursor: "pointer" }} onClick={() => onViewTeam(g.oppId)}>
                 <td style={td}>{g.week}</td>
-                <td style={td}>{opp.name} <span style={{ color: C.dimmer, fontSize: 11 }}>({opp.conf})</span></td>
+                <td style={td}><span style={{ borderBottom: `1px dotted ${C.dim}` }}>{opp.name}</span> <span style={{ color: C.dimmer, fontSize: 11 }}>({opp.conf})</span></td>
                 <td style={td}>{g.home ? "Home" : "Away"}</td>
                 <td style={td}>
                   {g.played ? (
@@ -1757,11 +1928,12 @@ function ScheduleTab({ schedule }) {
         </tbody>
       </table>
     </Panel>
+    </div>
   );
 }
 
 /* ---------- Standings ---------- */
-function StandingsTab({ team, strengths, userRecord, year }) {
+function StandingsTab({ team, strengths, userRecord, year, onViewTeam }) {
   const rows = TEAMS.map((t) => {
     if (t.id === team.id) return { ...t, wins: userRecord.w, losses: userRecord.l, isUser: true };
     const power = teamPowerRating(t, strengths, year);
@@ -1773,7 +1945,7 @@ function StandingsTab({ team, strengths, userRecord, year }) {
   return (
     <div>
       <div style={{ fontSize: 11.5, color: C.dimmer, marginBottom: 10 }}>
-        Projected national standings — other programs are simulated from a strength rating, not a full box-score sim.
+        Projected national standings — other programs are simulated from a strength rating, not a full box-score sim. Click any team to preview their roster.
       </div>
       <Panel style={{ overflow: "hidden" }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13.5 }}>
@@ -1784,9 +1956,9 @@ function StandingsTab({ team, strengths, userRecord, year }) {
           </thead>
           <tbody>
             {rows.map((t, i) => (
-              <tr key={t.id} className="cbb-row" style={{ borderBottom: `1px solid ${C.line}`, background: t.isUser ? C.panelAlt : "transparent" }}>
+              <tr key={t.id} className="cbb-row" style={{ borderBottom: `1px solid ${C.line}`, background: t.isUser ? C.panelAlt : "transparent", cursor: "pointer" }} onClick={() => onViewTeam(t.id)}>
                 <td style={td}>{i + 1}</td>
-                <td style={{ ...td, fontWeight: t.isUser ? 700 : 500 }}>{t.name}{t.isUser ? " (you)" : ""}</td>
+                <td style={{ ...td, fontWeight: t.isUser ? 700 : 500 }}><span style={{ borderBottom: t.isUser ? "none" : `1px dotted ${C.dim}` }}>{t.name}</span>{t.isUser ? " (you)" : ""}</td>
                 <td style={td}>{t.conf}</td>
                 <td style={td} className="cbb-num">{t.wins}</td>
                 <td style={td} className="cbb-num">{t.losses}</td>
