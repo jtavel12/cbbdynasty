@@ -29,12 +29,35 @@ const C = {
 };
 
 const POSITIONS = ["PG", "SG", "SF", "PF", "C"];
+
+// The granular attribute model. Every player carries a rating for each of
+// these; a position's overall is a weighted blend of them (POS_WEIGHTS below).
+// Because the blend differs by position, the SAME attribute set produces a
+// different overall at each slot — which is how playing out of position costs
+// value (a pass-first PG graded under center weights loses his strengths).
+const ATTR_KEYS = [
+  "scoring", "threePoint", "rebounding", "passing", "ballHandling",
+  "steals", "blocks", "perimeterDefense", "postDefense", "athleticism",
+];
+const ATTR_LABELS = {
+  scoring: "Scoring", threePoint: "3PT Shooting", rebounding: "Rebounding",
+  passing: "Passing", ballHandling: "Ball Handling", steals: "Steals",
+  blocks: "Blocks", perimeterDefense: "Perimeter D", postDefense: "Post D",
+  athleticism: "Athleticism",
+};
+// How guard-like each slot is (1 = pure point guard, 0 = pure center). Drives
+// which attributes a position leans on and biases attribute generation so
+// guards handle/shoot and bigs rebound/protect the rim.
+const POS_GUARDNESS = { PG: 1, SG: 0.72, SF: 0.5, PF: 0.28, C: 0 };
+
+// Per-position weights over the 10 attributes. Each row sums to 1.0 so overalls
+// stay on the same 40-99 band regardless of position.
 const POS_WEIGHTS = {
-  PG: { scoring: 0.30, rebounding: 0.05, playmaking: 0.42, defense: 0.23 },
-  SG: { scoring: 0.42, rebounding: 0.10, playmaking: 0.20, defense: 0.28 },
-  SF: { scoring: 0.35, rebounding: 0.20, playmaking: 0.18, defense: 0.27 },
-  PF: { scoring: 0.28, rebounding: 0.37, playmaking: 0.08, defense: 0.27 },
-  C:  { scoring: 0.24, rebounding: 0.42, playmaking: 0.05, defense: 0.29 },
+  PG: { scoring: 0.12, threePoint: 0.12, rebounding: 0.03, passing: 0.20, ballHandling: 0.20, steals: 0.08, blocks: 0.01, perimeterDefense: 0.13, postDefense: 0.04, athleticism: 0.07 },
+  SG: { scoring: 0.20, threePoint: 0.20, rebounding: 0.06, passing: 0.08, ballHandling: 0.12, steals: 0.07, blocks: 0.02, perimeterDefense: 0.13, postDefense: 0.04, athleticism: 0.08 },
+  SF: { scoring: 0.18, threePoint: 0.14, rebounding: 0.12, passing: 0.08, ballHandling: 0.09, steals: 0.06, blocks: 0.04, perimeterDefense: 0.12, postDefense: 0.07, athleticism: 0.10 },
+  PF: { scoring: 0.15, threePoint: 0.07, rebounding: 0.22, passing: 0.05, ballHandling: 0.04, steals: 0.04, blocks: 0.12, perimeterDefense: 0.06, postDefense: 0.15, athleticism: 0.10 },
+  C:  { scoring: 0.14, threePoint: 0.03, rebounding: 0.24, passing: 0.04, ballHandling: 0.02, steals: 0.03, blocks: 0.16, perimeterDefense: 0.04, postDefense: 0.21, athleticism: 0.09 },
 };
 const CLASS_ORDER = ["FR", "SO", "JR", "SR"];
 
@@ -658,9 +681,28 @@ function careerOutlierBonus(name) {
 // floored at 40), so the minutes-weighted team overalls and sim math all sit
 // on the same band.
 function computeOverall(pos, attrs) {
-  const w = POS_WEIGHTS[pos];
-  return clamp(Math.round(attrs.scoring * w.scoring + attrs.rebounding * w.rebounding +
-    attrs.playmaking * w.playmaking + attrs.defense * w.defense), 40, 99);
+  const w = POS_WEIGHTS[pos] || POS_WEIGHTS.SF;
+  let sum = 0;
+  for (const k of ATTR_KEYS) sum += (attrs[k] ?? 40) * (w[k] ?? 0);
+  return clamp(Math.round(sum), 40, 99);
+}
+
+// A player's effective overall if fielded at `pos` — identical to their listed
+// overall at their natural position, lower when slotted somewhere their skills
+// don't fit. This is the out-of-position penalty, applied wherever the depth
+// chart actually plays someone.
+function overallAtPos(player, pos) {
+  return computeOverall(pos, player.attrs);
+}
+
+// Re-apply persisted progression points on top of a freshly (re)derived
+// attribute set. Real players re-derive from their real stat line every year,
+// so their manually-earned development would vanish without this.
+function applyBoosts(attrs, boosts) {
+  if (!boosts) return attrs;
+  const out = { ...attrs };
+  for (const k of ATTR_KEYS) if (boosts[k]) out[k] = clamp((out[k] ?? 40) + boosts[k], 40, 99);
+  return out;
 }
 
 function ratingToStars(rating) {
@@ -681,17 +723,25 @@ function competitionMultiplier(tier) {
   return 0.65 + tier * 0.8; // tier 0 (weakest programs) -> 0.65x, tier 1 (blue bloods) -> 1.45x
 }
 
-function genAttrsFromTier(tier) {
+function genAttrsFromTier(tier, pos = "SF") {
   // tier ~ 0..1, higher = more talented incoming baseline. Mapped onto the
   // 40-99 scale: a bottom-tier program's baseline lands near 40, a blue-blood's
-  // near 86. Only the very top tier with a high roll reaches the low 90s, and a
-  // 99 is extremely rare — it takes elite talent AND lucky rolls on the
-  // attributes that drive the position's overall.
+  // near 86. Attributes are biased by position so a generated PG handles/shoots
+  // and a generated C rebounds/protects the rim.
   const base = 40 + tier * 46;
-  const spread = 9;
-  const a = () => clamp(Math.round(rand(base - spread, base + spread)), 40, 99);
+  const g = POS_GUARDNESS[pos] ?? 0.5, big = 1 - g;
+  const a = (bias = 0) => clamp(Math.round(rand(base - 9, base + 9) + bias), 40, 99);
   return {
-    scoring: a(), rebounding: a(), playmaking: a(), defense: a(),
+    scoring: a(),
+    threePoint: a(g * 6 - 3),
+    rebounding: a(big * 8 - 4),
+    passing: a(g * 6 - 3),
+    ballHandling: a(g * 8 - 4),
+    steals: a(g * 4 - 2),
+    blocks: a(big * 8 - 4),
+    perimeterDefense: a(g * 4 - 2),
+    postDefense: a(big * 8 - 4),
+    athleticism: a(),
     potential: clamp(Math.round(rand(base, base + 24)), 40, 99),
   };
 }
@@ -701,7 +751,7 @@ function genAttrsFromTier(tier) {
 // rate as a good player instead of a random dice roll. `tier` should be the
 // strength of competition they actually earned these stats against (the
 // team they played for), NOT necessarily the team signing them.
-function genAttrsFromRealStats(real, tier, careerBonus = 0) {
+function genAttrsFromRealStats(real, tier, careerBonus = 0, pos = "SF") {
   const mult = competitionMultiplier(tier);
   // Convert season totals -> per game, then scale by competition and damp
   // tiny samples so a 3-game fluke can't out-rate a full-season contributor.
@@ -709,20 +759,28 @@ function genAttrsFromRealStats(real, tier, careerBonus = 0) {
   const ppg = perGame(real.ppg, real.gp) * mult * rel;
   const rpg = perGame(real.rpg, real.gp) * mult * rel;
   const apg = perGame(real.apg, real.gp) * mult * rel;
-  // careerBonus (0-12) nudges proven outliers up regardless of the level they
-  // played at, so a special talent at a small school still grades like a star.
-  const scoring = clamp(Math.round(42 + ppg * 2.3 + careerBonus), 40, 99);
-  const rebounding = clamp(Math.round(40 + rpg * 4.6 + careerBonus * 0.5), 40, 99);
-  const playmaking = clamp(Math.round(40 + apg * 6.0 + careerBonus * 0.5), 40, 99);
-  // No reliable real defensive stat wired in yet — blend level of competition
-  // with the player's OWN production, so a deep-bench body at a blue blood
-  // doesn't inherit an elite defensive rating off prestige alone.
   const prod = ppg + rpg + apg;
-  const tierBase = 44 + tier * 22;
-  const defense = clamp(Math.round(rand(tierBase - 6, tierBase + 6) + Math.min(prod, 22) * 0.5 + careerBonus * 0.4), 40, 99);
-  const peak = Math.max(scoring, rebounding, playmaking);
+  const g = POS_GUARDNESS[pos] ?? 0.5, big = 1 - g;
+  const cb = careerBonus; // 0-12, credit for proven outliers regardless of level
+  const R = (v) => clamp(Math.round(v), 40, 99);
+  // Only ppg/rpg/apg are available, so each attribute is derived from the box
+  // stat that best correlates with it, then shaded by position tendency:
+  // scoring/passing/rebounding come straight off production; shooting and ball
+  // handling lean guard; blocks and post defense lean big; steals/perimeter D
+  // lean guard. Career + competition credit lifts genuine talents.
+  const scoring = R(42 + ppg * 2.3 + cb);
+  const threePoint = R(42 + ppg * 1.3 * (0.5 + g) + g * 8 + cb * 0.6);
+  const rebounding = R(40 + rpg * 4.6 + big * 4 + cb * 0.5);
+  const passing = R(40 + apg * 6.0 + cb * 0.5);
+  const ballHandling = R(42 + apg * 3.5 + g * 14 + cb * 0.4);
+  const steals = R(42 + apg * 1.6 + g * 8 + Math.min(prod, 20) * 0.2 + cb * 0.3);
+  const blocks = R(40 + rpg * 2.2 + big * 12 + cb * 0.3);
+  const perimeterDefense = R(44 + g * 10 + Math.min(prod, 22) * 0.3 + tier * 10 + cb * 0.3);
+  const postDefense = R(42 + rpg * 2.6 + big * 12 + tier * 8 + cb * 0.3);
+  const athleticism = R(46 + Math.min(prod, 24) * 0.6 + tier * 8 + cb * 0.4);
+  const peak = Math.max(scoring, rebounding, passing);
   const potential = clamp(Math.round(rand(peak - 2, Math.min(99, peak + 10))), 40, 99);
-  return { scoring, rebounding, playmaking, defense, potential };
+  return { scoring, threePoint, rebounding, passing, ballHandling, steals, blocks, perimeterDefense, postDefense, athleticism, potential };
 }
 
 // A real player who logged no games / no production barely played. Rate them
@@ -734,13 +792,10 @@ function genAttrsFromRealStats(real, tier, careerBonus = 0) {
 // construction (all four driving attributes are drawn from 40-45).
 function genAttrsWalkOn() {
   const a = () => clamp(randInt(40, 45), 40, 45);
-  return {
-    scoring: a(), rebounding: a(), playmaking: a(), defense: a(),
-    potential: clamp(randInt(44, 60), 40, 99),
-  };
-}
-function genAttrsBenchReal() {
-  return genAttrsWalkOn();
+  const out = {};
+  for (const k of ATTR_KEYS) out[k] = a();
+  out.potential = clamp(randInt(44, 60), 40, 99);
+  return out;
 }
 
 // Maps CBBD's free-text position strings onto our five roster slots. Returns
@@ -811,7 +866,7 @@ function isPlausibleRosterRow(r) {
   return true;
 }
 
-function makePlayer({ pos, classYear, prestige, starsAtSigning, real }) {
+function makePlayer({ pos, classYear, prestige, starsAtSigning, real, walkOn }) {
   const tier = clamp((prestige - 1) / 4 + rand(-0.12, 0.12), 0, 1);
   const gp = Number(real?.gp) || 0;
   // A real player only rates off their box score if they actually PRODUCED —
@@ -821,12 +876,11 @@ function makePlayer({ pos, classYear, prestige, starsAtSigning, real }) {
   // blue bloods reading like rotation pieces).
   const combinedPg = perGame(real?.ppg, gp) + perGame(real?.rpg, gp) + perGame(real?.apg, gp);
   const hasStats = !!real && gp >= 5 && combinedPg >= 3;
-  const isRealBench = !!real && !hasStats;
   // Real contributor -> derive from real production (+ career-outlier credit).
   // Everyone else — real no-stat benchwarmers AND purely generated filler /
   // walk-ons — rates in the 40-45 band.
   const attrs = hasStats
-    ? genAttrsFromRealStats(real, tier, careerOutlierBonus(real.player))
+    ? genAttrsFromRealStats(real, tier, careerOutlierBonus(real.player), pos)
     : genAttrsWalkOn();
   const overall = computeOverall(pos, attrs);
   return {
@@ -836,6 +890,12 @@ function makePlayer({ pos, classYear, prestige, starsAtSigning, real }) {
     realKey: real?.player || null,
     originalTier: tier,
     realStats: hasStats,
+    // Purely generated roster filler (no real-data counterpart) are walk-ons and
+    // can never hold a scholarship. Real players are scholarship-eligible; the
+    // final scholarship/non-scholarship split is decided by assignScholarships.
+    generatedWalkOn: !real && !!walkOn,
+    scholarship: !!real,
+    boosts: {},
     pos,
     class: classYear,
     height: `${randInt(6, 6)}'${randInt(9, 11)}"`.replace("6'11\"", "6'11\""),
@@ -847,67 +907,49 @@ function makePlayer({ pos, classYear, prestige, starsAtSigning, real }) {
   };
 }
 
-const ROSTER_MIN = 10;
-const ROSTER_MAX = 13;
+const ROSTER_SIZE = 16;        // every team carries a full 16-man roster
+const SCHOLARSHIP_LIMIT = 13;  // at most 13 of them are on scholarship
 
-// Base 2-per-position (10 total, satisfying ROSTER_MIN by construction),
-// then randomly distribute up to 3 extra bench spots to reach ROSTER_MAX.
-function rosterSlotPlan() {
-  const base = { PG: 2, SG: 2, SF: 2, PF: 2, C: 2 };
-  const extras = randInt(0, ROSTER_MAX - ROSTER_MIN);
-  for (let i = 0; i < extras; i++) {
-    const pos = pick(POSITIONS);
-    if (base[pos] < 4) base[pos] += 1;
-  }
-  return POSITIONS.map((p) => [p, base[p]]);
+// Decide who holds a scholarship: generated walk-ons never do; among the real
+// players, the top 13 by overall are on scholarship and any beyond that (a team
+// carrying more than 13 real players) drop to non-scholarship — i.e. the
+// statistically weakest real players lose the scholarship, per the roster rules.
+function assignScholarships(roster) {
+  const realOnes = roster.filter((p) => !p.generatedWalkOn);
+  const ranked = [...realOnes].sort((a, b) => b.overall - a.overall);
+  const scho = new Set(ranked.slice(0, SCHOLARSHIP_LIMIT).map((p) => p.id));
+  return roster.map((p) => ({ ...p, scholarship: !p.generatedWalkOn && scho.has(p.id) }));
 }
 
 function buildInitialRoster(team, year) {
-  const slots = rosterSlotPlan();
   const classesForSlot = ["SR", "JR", "SO", "FR"];
-  const realPlayers = shuffled(realPlayersFor(team, year));
-  const byPos = { PG: [], SG: [], SF: [], PF: [], C: [], UNK: [] };
-  realPlayers.forEach((r) => {
-    const p = resolvePosition(r) || "UNK";
-    byPos[p].push(r);
-  });
-
   // Use the player's TRUE career start (earliest season anywhere in the data),
   // not the data's per-team startSeason — otherwise every transfer reads FR.
-  function realClassFor(real) {
-    return realClassForName(real?.player, year, real?.startSeason);
+  const realClassFor = (real) => realClassForName(real?.player, year, real?.startSeason);
+
+  // Every real player on the team makes the roster — no position-slot cap can
+  // drop a genuine contributor (the bug that hid Tulane's Rowan Brumbaugh).
+  let roster = shuffled(realPlayersFor(team, year)).map((r, i) => {
+    const pos = resolvePosition(r) || "SF";
+    return makePlayer({ pos, classYear: realClassFor(r) || classesForSlot[i % classesForSlot.length], prestige: team.prestige, real: r });
+  });
+
+  // If a team somehow lists more than 16 real players, keep the best 16 so the
+  // stars are never the ones cut.
+  if (roster.length > ROSTER_SIZE) {
+    roster = [...roster].sort((a, b) => b.overall - a.overall).slice(0, ROSTER_SIZE);
   }
 
-  // Pass 1: fill each slot preferentially with a real player at that exact
-  // position. Slots that can't be filled this way stay null for now
-  // rather than immediately going generated — a team can easily have more
-  // real players at one position than we have slots for, and those extras
-  // shouldn't be thrown away while another position goes fully synthetic.
-  const roster = [];
-  const openSlots = [];
-  slots.forEach(([pos, count]) => {
-    for (let i = 0; i < count; i++) {
-      const real = byPos[pos].shift();
-      if (real) {
-        roster.push(makePlayer({ pos, classYear: realClassFor(real) || classesForSlot[i % classesForSlot.length], prestige: team.prestige, real }));
-      } else {
-        openSlots.push({ pos, i });
-      }
-    }
-  });
+  // Fill any remaining spots to a full 16 with generated walk-ons at whatever
+  // position is currently thinnest.
+  while (roster.length < ROSTER_SIZE) {
+    const counts = Object.fromEntries(POSITIONS.map((p) => [p, 0]));
+    roster.forEach((p) => { counts[p.pos] = (counts[p.pos] || 0) + 1; });
+    const thinnest = POSITIONS.reduce((a, b) => (counts[a] <= counts[b] ? a : b));
+    roster.push(makePlayer({ pos: thinnest, classYear: pick(["FR", "SO", "JR"]), prestige: team.prestige, walkOn: true }));
+  }
 
-  // Pass 2: backfill remaining open slots with ANY leftover real player
-  // (surplus at an over-represented position, or unmapped/UNK position) —
-  // labeled as playing the slot's position in-game, since a coarse
-  // position tag matters far less than actually being a real person.
-  const leftoverReal = [...POSITIONS.flatMap((p) => byPos[p]), ...byPos.UNK];
-  openSlots.forEach(({ pos, i }) => {
-    const real = leftoverReal.shift();
-    const classYear = realClassFor(real) || classesForSlot[i % classesForSlot.length];
-    roster.push(makePlayer({ pos, classYear, prestige: team.prestige, real }));
-  });
-
-  return roster;
+  return assignScholarships(roster);
 }
 
 function defaultDepthChart(roster) {
@@ -1185,7 +1227,7 @@ function recruitToPlayer(recruit, team) {
     // signing team's — a recruit's proven talent shouldn't change just
     // because they land somewhere different than where they played.
     const originalTier = clamp(((recruit.originalPrestige ?? team.prestige) - 1) / 4, 0, 1);
-    const attrs = genAttrsFromRealStats(recruit.realStats, originalTier, careerOutlierBonus(recruit.name));
+    const attrs = genAttrsFromRealStats(recruit.realStats, originalTier, careerOutlierBonus(recruit.name), recruit.pos);
     const overall = computeOverall(recruit.pos, attrs);
     return {
       id: uid(),
@@ -1194,6 +1236,9 @@ function recruitToPlayer(recruit, team) {
       realKey: recruit.name,
       originalTier,
       realStats: true,
+      generatedWalkOn: false,
+      scholarship: true,
+      boosts: {},
       pos: recruit.pos,
       class: recruit.classYear || "FR",
       height: `6'${randInt(0, 11)}"`,
@@ -1213,11 +1258,14 @@ function recruitToPlayer(recruit, team) {
     stars = ratingToStars(rating);
   }
   const tier = clamp((rating - 0.70) / 0.30, 0, 1);
-  const attrs = genAttrsFromTier(tier);
+  const attrs = genAttrsFromTier(tier, recruit.pos);
   const overall = computeOverall(recruit.pos, attrs);
   return {
     id: uid(),
     name: recruit.name,
+    generatedWalkOn: false,
+    scholarship: true,
+    boosts: {},
     pos: recruit.pos,
     class: "FR",
     height: `6'${randInt(0, 11)}"`,
@@ -1239,6 +1287,10 @@ const CONF_GAMES = 19;
 // exactly the length of the regular season.
 const TOTAL_SEASON_WEEKS = NONCONF_GAMES + CONF_GAMES;
 const OFFSEASON_WEEKS = 4;
+// Offseason player development: a fixed pool of points to distribute across the
+// whole roster, capped so no single attribute on a player gains more than this.
+const DEV_POINTS_PER_OFFSEASON = 50;
+const DEV_MAX_PER_ATTR = 5;
 
 // Conference games are the real, "correct" slate — every conference mate,
 // home-and-away when that stays within a sane game count, otherwise once
@@ -1562,7 +1614,9 @@ function userTeamOverall(roster, depthChart) {
     order.forEach((id, i) => {
       const pl = roster.find((p) => p.id === id);
       if (!pl || !mins[i]) return;
-      sum += pl.overall * mins[i];
+      // Grade each player at the slot they're actually playing, so fielding
+      // someone out of position costs the team real strength.
+      sum += overallAtPos(pl, pos) * mins[i];
       totalW += mins[i];
     });
   });
@@ -1595,7 +1649,7 @@ function simulateGame(roster, depthChart, oppPower, momentum = 0) {
       const pl = roster.find((p) => p.id === id);
       const pts = Math.max(0, Math.round((m / 30) * (pl.attrs.scoring / 99) * 24 * rand(0.7, 1.3)));
       const reb = Math.max(0, Math.round((m / 30) * (pl.attrs.rebounding / 99) * 11 * rand(0.6, 1.4)));
-      const ast = Math.max(0, Math.round((m / 30) * (pl.attrs.playmaking / 99) * 7 * rand(0.5, 1.5)));
+      const ast = Math.max(0, Math.round((m / 30) * (pl.attrs.passing / 99) * 7 * rand(0.5, 1.5)));
       boxByPlayer[id] = { pts, reb, ast, min: m };
     });
   });
@@ -1640,7 +1694,9 @@ function progressRosterForNewYear(roster, incoming, team, newYear) {
         if (row && gp > 0 && (row.ppg != null || row.rpg != null || row.apg != null)) {
           const ourTeam = findOurTeamByRealName(row.team);
           const tier = ourTeam ? clamp((ourTeam.prestige - 1) / 4, 0, 1) : (p.originalTier ?? 0.5);
-          const attrs = genAttrsFromRealStats(row, tier, careerOutlierBonus(p.realKey));
+          // Re-derive from the real stat line, then re-apply any progression
+          // points spent on this player so development persists year to year.
+          const attrs = applyBoosts(genAttrsFromRealStats(row, tier, careerOutlierBonus(p.realKey), p.pos), p.boosts);
           return {
             ...p, class: nextClass, attrs, overall: computeOverall(p.pos, attrs),
             career: rolledCareer, season: { gp: 0, pts: 0, reb: 0, ast: 0 },
@@ -1649,16 +1705,12 @@ function progressRosterForNewYear(roster, incoming, team, newYear) {
       }
 
       // Generated players (and real players past their real career) develop
-      // synthetically toward their potential.
+      // synthetically toward their potential. Attributes already carry any past
+      // progression, so growth compounds on top of it.
       const growth = Math.round((p.attrs.potential - p.overall) * rand(0.05, 0.22));
       const bump = clamp(growth, -2, 9);
-      const attrs = {
-        scoring: clamp(p.attrs.scoring + Math.round(bump * rand(0.6, 1.2)), 25, 99),
-        rebounding: clamp(p.attrs.rebounding + Math.round(bump * rand(0.6, 1.2)), 25, 99),
-        playmaking: clamp(p.attrs.playmaking + Math.round(bump * rand(0.6, 1.2)), 25, 99),
-        defense: clamp(p.attrs.defense + Math.round(bump * rand(0.6, 1.2)), 25, 99),
-        potential: p.attrs.potential,
-      };
+      const attrs = { potential: p.attrs.potential };
+      for (const k of ATTR_KEYS) attrs[k] = clamp((p.attrs[k] ?? 40) + Math.round(bump * rand(0.6, 1.2)), 40, 99);
       return {
         ...p,
         class: nextClass,
@@ -1670,24 +1722,22 @@ function progressRosterForNewYear(roster, incoming, team, newYear) {
     });
   let combined = [...survivors, ...incoming];
 
-  // enforce the scholarship ceiling: trim weakest non-freshmen first
-  if (combined.length > ROSTER_MAX) {
+  // Cap at a full 16-man roster: if incoming recruits overfill it, the weakest
+  // non-freshmen are the ones squeezed out.
+  if (combined.length > ROSTER_SIZE) {
     combined.sort((a, b) => (a.class === "FR" ? 1 : 0) - (b.class === "FR" ? 1 : 0) || a.overall - b.overall);
-    combined.splice(0, combined.length - ROSTER_MAX);
+    combined.splice(0, combined.length - ROSTER_SIZE);
   }
 
-  // enforce the floor: a team that lost too many seniors and didn't
-  // recruit enough shouldn't drop below a real minimum roster size —
-  // fill remaining spots with walk-on-tier freshmen at whatever
-  // position is currently thinnest.
-  while (combined.length < ROSTER_MIN) {
+  // Fill up to a full 16 with walk-on freshmen at whatever position is thinnest.
+  while (combined.length < ROSTER_SIZE) {
     const counts = Object.fromEntries(POSITIONS.map((p) => [p, 0]));
     combined.forEach((p) => { counts[p.pos] = (counts[p.pos] || 0) + 1; });
     const thinnest = POSITIONS.reduce((a, b) => (counts[a] <= counts[b] ? a : b));
-    combined.push(makePlayer({ pos: thinnest, classYear: "FR", prestige: team?.prestige ?? 2 }));
+    combined.push(makePlayer({ pos: thinnest, classYear: "FR", prestige: team?.prestige ?? 2, walkOn: true }));
   }
 
-  return combined;
+  return assignScholarships(combined);
 }
 
 /* =========================================================================
@@ -2158,6 +2208,16 @@ function DynastyApp({ initial, onExit }) {
   const needs = useMemo(() => positionNeeds(state.roster), [state.roster]);
   const bracketology = projectedSeed(rankById[state.teamId]);
 
+  // Scholarship accounting drives recruiting: 13 total, minus scholarship
+  // players returning next season (non-seniors) and anyone already committed
+  // this cycle. When this hits zero the coach must cut a player to sign more.
+  const scholarshipInfo = useMemo(() => {
+    const returning = state.roster.filter((p) => p.scholarship && p.class !== "SR").length;
+    const committed = state.incomingCommits.length + (state.offseason?.committedTransfers?.length || 0);
+    const used = returning + committed;
+    return { returning, committed, used, open: Math.max(0, SCHOLARSHIP_LIMIT - used) };
+  }, [state.roster, state.incomingCommits, state.offseason]);
+
   function simOneGame() {
     if (!nextGame) return;
     const opp = TEAM_MAP[nextGame.oppId];
@@ -2285,6 +2345,8 @@ function DynastyApp({ initial, onExit }) {
         points: weeklyRecruitingBudget(team),
         scheduleDraft: genSchedule(team, nextYear),
         done: false,
+        devPoints: DEV_POINTS_PER_OFFSEASON,
+        devSpent: {},
       },
     }));
     setTab("offseason");
@@ -2310,7 +2372,7 @@ function DynastyApp({ initial, onExit }) {
   function attemptSignTransfer(recruit) {
     const os = state.offseason;
     if (!os) return;
-    if ((os.committedTransfers.length + state.incomingCommits.length) >= 8) { flash("Recruiting class is full for this cycle."); return; }
+    if (scholarshipInfo.open <= 0) { flash("No scholarships available — cut a player to open a spot."); return; }
     if (!recruit.offerExtended) { flash("Extend a scholarship offer before you can sign a transfer."); return; }
     const chance = signChance(recruit);
     if (Math.random() < chance) {
@@ -2481,7 +2543,7 @@ function DynastyApp({ initial, onExit }) {
   }
 
   function attemptSign(recruit) {
-    if (state.incomingCommits.length >= 5) { flash("Class is full (5 max) for this cycle."); return; }
+    if (scholarshipInfo.open <= 0) { flash("No scholarships available — cut a player in the offseason to open a spot."); return; }
     if (!recruit.offerExtended) { flash("Extend a scholarship offer before you can sign them."); return; }
     const chance = signChance(recruit);
     const success = Math.random() < chance;
@@ -2527,6 +2589,57 @@ function DynastyApp({ initial, onExit }) {
       const dc = {};
       POSITIONS.forEach((p) => { dc[p] = s.depthChart[p].filter((id) => id !== playerId); });
       return { ...s, depthChart: dc };
+    });
+  }
+
+  // Offseason roster cut: drop a player entirely, pull them from the depth
+  // chart, refund any development points spent on them this offseason, and
+  // recompute the scholarship split (opening a spot for recruiting).
+  function cutPlayer(playerId) {
+    setState((s) => {
+      const player = s.roster.find((p) => p.id === playerId);
+      if (!player) return s;
+      const roster = assignScholarships(s.roster.filter((p) => p.id !== playerId));
+      const dc = {};
+      POSITIONS.forEach((p) => { dc[p] = (s.depthChart[p] || []).filter((id) => id !== playerId); });
+      let offseason = s.offseason;
+      if (offseason && offseason.devSpent && offseason.devSpent[playerId]) {
+        const refunded = Object.values(offseason.devSpent[playerId]).reduce((a, b) => a + b, 0);
+        const devSpent = { ...offseason.devSpent };
+        delete devSpent[playerId];
+        offseason = { ...offseason, devPoints: (offseason.devPoints || 0) + refunded, devSpent };
+      }
+      return { ...s, roster, depthChart: dc, offseason };
+    });
+    flash("Player cut — a scholarship has opened up.");
+  }
+
+  // Spend (or refund) a development point on one attribute. Enforces the shared
+  // pool, the per-attribute cap, and the 40-99 attribute range. Boosts are
+  // recorded on the player so real players keep the gain after next year's
+  // stat-based re-derivation.
+  function adjustPlayerAttr(playerId, attr, delta) {
+    setState((s) => {
+      const os = s.offseason;
+      if (!os) return s;
+      const player = s.roster.find((p) => p.id === playerId);
+      if (!player) return s;
+      const spentMap = os.devSpent || {};
+      const playerSpent = spentMap[playerId] || {};
+      const already = playerSpent[attr] || 0;
+      const cur = player.attrs[attr] ?? 40;
+      if (delta > 0) {
+        if ((os.devPoints || 0) <= 0 || already >= DEV_MAX_PER_ATTR || cur >= 99) return s;
+      } else {
+        if (already <= 0) return s;
+      }
+      const newAttrs = { ...player.attrs, [attr]: clamp(cur + delta, 40, 99) };
+      const roster = s.roster.map((p) => p.id === playerId
+        ? { ...p, attrs: newAttrs, overall: computeOverall(p.pos, newAttrs), boosts: { ...(p.boosts || {}), [attr]: ((p.boosts || {})[attr] || 0) + delta } }
+        : p);
+      const nextPlayerSpent = { ...playerSpent, [attr]: already + delta };
+      const devSpent = { ...spentMap, [playerId]: nextPlayerSpent };
+      return { ...s, roster, offseason: { ...os, devPoints: (os.devPoints || 0) - delta, devSpent } };
     });
   }
 
@@ -2742,6 +2855,7 @@ function DynastyApp({ initial, onExit }) {
               onSign={attemptSign}
               team={team}
               needs={needs}
+              scholarshipInfo={scholarshipInfo}
             />
           )}
           {tab === "offseason" && (
@@ -2749,8 +2863,10 @@ function DynastyApp({ initial, onExit }) {
               stage={stage}
               offseason={state.offseason}
               team={team}
+              roster={state.roster}
               nextYear={state.year + 1}
               committedFreshmen={state.incomingCommits.length}
+              scholarshipInfo={scholarshipInfo}
               rankById={rankById}
               onAction={doTransferAction}
               onSign={attemptSignTransfer}
@@ -2759,6 +2875,9 @@ function DynastyApp({ initial, onExit }) {
               onChangeJob={() => setJobPickerOpen(true)}
               onAdvanceYear={advanceYear}
               onViewTeam={setViewTeamId}
+              onViewPlayer={setPlayerViewId}
+              onCut={cutPlayer}
+              onDev={adjustPlayerAttr}
             />
           )}
           {tab === "schedule" && <ScheduleTab schedule={state.schedule} teamConf={team.conf} rankById={rankById} rivalIds={rivalIds} onViewTeam={setViewTeamId} onEditGame={editGame} onViewBox={setBoxViewId} />}
@@ -3033,7 +3152,7 @@ function DepthChartTab({ roster, depthChart, onMove, onAssign, onRemove }) {
   return (
     <div>
       <div style={{ fontSize: 11.5, color: C.dimmer, marginBottom: 12, maxWidth: 720 }}>
-        Slot any player at any position — a point guard can back up at the two, three, even the four or five. Arrows set the rotation order (the top name plays the most minutes), the dropdown moves a player to another spot, and Bench pulls them out of the rotation.
+        Slot any player at any position — a point guard can back up at the two, three, even the four or five. Playing someone out of position lowers their effective rating (shown in red), since their skills don&apos;t fit that role. Arrows set the rotation order (the top name plays the most minutes), the dropdown moves a player to another spot, and Bench pulls them out of the rotation.
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(230px, 1fr))", gap: 14 }}>
         {POSITIONS.map((pos) => (
@@ -3044,6 +3163,7 @@ function DepthChartTab({ roster, depthChart, onMove, onAssign, onRemove }) {
               const p = roster.find((pl) => pl.id === id);
               if (!p) return null;
               const outOfPos = p.pos !== pos;
+              const eff = computeOverall(pos, p.attrs);
               const last = i === depthChart[pos].length - 1;
               return (
                 <div key={id} style={{ padding: "7px 0", borderBottom: last ? "none" : `1px solid ${C.line}` }}>
@@ -3053,8 +3173,8 @@ function DepthChartTab({ roster, depthChart, onMove, onAssign, onRemove }) {
                         {i === 0 ? "★ " : ""}{p.name}
                         {isHurt(p) && <span style={{ fontSize: 9, color: C.red, marginLeft: 5 }}>OUT</span>}
                       </div>
-                      <div style={{ fontSize: 11, color: C.dim }}>
-                        {p.class} · OVR {p.overall}{outOfPos ? ` · natural ${p.pos}` : ""}
+                      <div style={{ fontSize: 11, color: outOfPos ? C.red : C.dim }}>
+                        {p.class} · OVR {eff}{outOfPos ? ` · natural ${p.pos} ${p.overall}` : ""}
                       </div>
                     </div>
                     <div style={{ display: "flex", flexDirection: "column" }}>
@@ -3116,6 +3236,7 @@ function RecruitBoard({ board, committedIds, targets, onToggleTarget, points, we
   const [view, setView] = useState("all"); // all | targets | committed
   const [posFilter, setPosFilter] = useState("ALL");
   const [starFilter, setStarFilter] = useState(0);
+  const [sortBy, setSortBy] = useState("interest"); // interest | stars | rank
   const [query, setQuery] = useState("");
   const [openId, setOpenId] = useState(null);
   const needSet = new Set(needs || []);
@@ -3132,10 +3253,14 @@ function RecruitBoard({ board, committedIds, targets, onToggleTarget, points, we
     if (q && !`${r.name} ${r.state} ${r.pos}`.toLowerCase().includes(q)) return false;
     return true;
   });
+  const sortFns = {
+    interest: (a, b) => (b.interest - a.interest) || ((a.nationalRank || 999) - (b.nationalRank || 999)),
+    stars: (a, b) => ((b.stars || 0) - (a.stars || 0)) || ((a.nationalRank || 999) - (b.nationalRank || 999)),
+    rank: (a, b) => (a.nationalRank || 999) - (b.nationalRank || 999),
+  };
   list = list.sort((a, b) =>
     (Number(committedIds.includes(b.id)) - Number(committedIds.includes(a.id))) ||
-    ((b.interest - b.rivalPressure) - (a.interest - a.rivalPressure)) ||
-    ((a.nationalRank || 999) - (b.nationalRank || 999))
+    (sortFns[sortBy] || sortFns.interest)(a, b)
   );
   const shown = list.slice(0, 80);
   const canTarget = typeof onToggleTarget === "function";
@@ -3168,6 +3293,12 @@ function RecruitBoard({ board, committedIds, targets, onToggleTarget, points, we
           style={{ background: C.panel, border: `1px solid ${C.line}`, color: C.cream, padding: "6px 10px", fontSize: 13 }}>
           <option value={0}>Any stars</option>
           {[5, 4, 3, 2].map((s) => <option key={s} value={s}>{s}★ and up</option>)}
+        </select>
+        <select value={sortBy} onChange={(e) => setSortBy(e.target.value)}
+          style={{ background: C.panel, border: `1px solid ${C.line}`, color: C.cream, padding: "6px 10px", fontSize: 13 }}>
+          <option value="interest">Sort: Interest</option>
+          <option value="stars">Sort: Stars</option>
+          <option value="rank">Sort: National rank</option>
         </select>
       </div>
 
@@ -3272,17 +3403,24 @@ function RecruitBoard({ board, committedIds, targets, onToggleTarget, points, we
   );
 }
 
-function RecruitingTab({ board, committedIds, targets, onToggleTarget, points, budget, weekIndex, totalWeeks, onAction, onSign, team, needs = [] }) {
+function RecruitingTab({ board, committedIds, targets, onToggleTarget, points, budget, weekIndex, totalWeeks, onAction, onSign, team, needs = [], scholarshipInfo }) {
   const pct = Math.round(clamp((weekIndex - 1) / totalWeeks, 0, 1) * 100);
+  const open = scholarshipInfo?.open ?? 0;
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
         <div style={{ display: "flex", gap: 18, flexWrap: "wrap" }}>
-          <div style={{ fontSize: 13, color: C.dim }}>Class: <strong style={{ color: C.cream }}>{committedIds.length}/5</strong> signed</div>
+          <div style={{ fontSize: 13, color: C.dim }}>Open scholarships: <strong style={{ color: open > 0 ? C.gold : C.red }}>{open}</strong> / {SCHOLARSHIP_LIMIT}</div>
+          <div style={{ fontSize: 13, color: C.dim }}>Committed: <strong style={{ color: C.cream }}>{committedIds.length}</strong></div>
           <div style={{ fontSize: 13, color: C.dim }}>Points this week: <strong style={{ color: C.gold }}>{points}</strong> / {budget}</div>
           <div style={{ fontSize: 13, color: C.dim }}>Signing period: <strong style={{ color: C.cream }}>{pct}%</strong> elapsed</div>
         </div>
       </div>
+      {open <= 0 && (
+        <div style={{ fontSize: 12, color: C.red, border: `1px solid ${C.red}`, padding: "8px 12px", marginBottom: 12 }}>
+          All 13 scholarships are committed. Cut a player in the offseason to open a spot before signing anyone new.
+        </div>
+      )}
       <RecruitBoard
         board={board} committedIds={committedIds} targets={targets} onToggleTarget={onToggleTarget}
         points={points} weekIndex={weekIndex} totalWeeks={totalWeeks}
@@ -3296,8 +3434,122 @@ function RecruitingTab({ board, committedIds, targets, onToggleTarget, points, b
   );
 }
 
+/* ---------- Offseason: player development ---------- */
+function DevStepper({ label, value, spent, canAdd, canSub, onAdd, onSub }) {
+  const step = { width: 22, height: 22, display: "flex", alignItems: "center", justifyContent: "center", border: `1px solid ${C.line}`, background: "transparent", cursor: "pointer", fontSize: 14, lineHeight: 1 };
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 5 }}>
+      <div style={{ width: 96, fontSize: 11.5, color: C.dim }}>{label}</div>
+      <div style={{ flex: 1, height: 7, background: C.line, position: "relative" }}>
+        <div style={{ position: "absolute", inset: 0, width: `${clamp(value, 0, 99)}%`, background: value >= 80 ? C.gold : value >= 65 ? C.wood : C.dim }} />
+      </div>
+      <div className="cbb-num" style={{ width: 24, textAlign: "right", fontSize: 12.5, fontWeight: 700 }}>{value}</div>
+      {spent > 0 && <span className="cbb-num" style={{ fontSize: 10, color: C.green, width: 22 }}>+{spent}</span>}
+      {spent === 0 && <span style={{ width: 22 }} />}
+      <button className="cbb-btn" onClick={onSub} disabled={!canSub} style={{ ...step, color: canSub ? C.cream : C.dimmer, cursor: canSub ? "pointer" : "not-allowed" }}>−</button>
+      <button className="cbb-btn" onClick={onAdd} disabled={!canAdd} style={{ ...step, color: canAdd ? C.cream : C.dimmer, cursor: canAdd ? "pointer" : "not-allowed" }}>+</button>
+    </div>
+  );
+}
+
+function ProgressionPanel({ roster, devPoints, devSpent, onDev, onViewPlayer }) {
+  const [openId, setOpenId] = useState(null);
+  const sorted = [...roster].sort((a, b) => b.overall - a.overall);
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 10, flexWrap: "wrap" }}>
+        <span style={{ fontSize: 13, color: C.dim }}>Development points left: <strong style={{ color: devPoints > 0 ? C.gold : C.dimmer }}>{devPoints}</strong></span>
+        <span style={{ fontSize: 11.5, color: C.dimmer }}>Spend up to {DEV_MAX_PER_ATTR} on any single attribute per player.</span>
+      </div>
+      <Panel style={{ padding: 0 }}>
+        {sorted.map((p, idx) => {
+          const open = openId === p.id;
+          const pSpent = (devSpent && devSpent[p.id]) || {};
+          const totalSpent = Object.values(pSpent).reduce((a, b) => a + b, 0);
+          return (
+            <div key={p.id} style={{ borderBottom: idx === sorted.length - 1 ? "none" : `1px solid ${C.line}` }}>
+              <div className="cbb-row" onClick={() => setOpenId(open ? null : p.id)}
+                style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 14px", cursor: "pointer" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
+                  <span className="cbb-num" style={{ width: 30, fontWeight: 700, fontSize: 14, color: C.wood }}>{p.pos}</span>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontSize: 13, fontWeight: 600 }}>{p.realName ? "• " : ""}{p.name}{!p.scholarship && <span style={{ fontSize: 9, color: C.dimmer, marginLeft: 6, border: `1px solid ${C.line}`, padding: "1px 4px" }}>WALK-ON</span>}</div>
+                    <div style={{ fontSize: 11, color: C.dim }}>{p.class} · OVR {p.overall}{totalSpent > 0 ? ` · +${totalSpent} spent` : ""}</div>
+                  </div>
+                </div>
+                <span style={{ fontSize: 11, color: C.dim }}>{open ? "Hide" : "Develop"}</span>
+              </div>
+              {open && (
+                <div style={{ padding: "4px 14px 14px" }}>
+                  {ATTR_KEYS.map((k) => {
+                    const spent = pSpent[k] || 0;
+                    const val = p.attrs[k] ?? 40;
+                    return (
+                      <DevStepper key={k} label={ATTR_LABELS[k]} value={val} spent={spent}
+                        canAdd={devPoints > 0 && spent < DEV_MAX_PER_ATTR && val < 99}
+                        canSub={spent > 0}
+                        onAdd={() => onDev(p.id, k, 1)} onSub={() => onDev(p.id, k, -1)} />
+                    );
+                  })}
+                  {onViewPlayer && (
+                    <button className="cbb-btn" onClick={() => onViewPlayer(p.id)}
+                      style={{ marginTop: 6, fontSize: 11.5, background: "transparent", border: `1px solid ${C.line}`, color: C.dim, padding: "4px 10px", cursor: "pointer" }}>
+                      View full profile
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </Panel>
+    </div>
+  );
+}
+
+function CutsPanel({ roster, scholarshipInfo, onCut, onViewPlayer }) {
+  const sorted = [...roster].sort((a, b) => b.overall - a.overall);
+  return (
+    <div>
+      <div style={{ fontSize: 11.5, color: C.dimmer, marginBottom: 10, maxWidth: 720 }}>
+        You can carry 16 players but only {SCHOLARSHIP_LIMIT} scholarships. Cutting a scholarship player frees a spot to sign a recruit or transfer. Walk-ons don&apos;t use a scholarship.
+      </div>
+      <Panel style={{ overflow: "hidden" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13.5 }}>
+          <thead>
+            <tr style={{ borderBottom: `1px solid ${C.line}`, color: C.dim, fontSize: 11, textAlign: "left" }}>
+              <th style={th}>Player</th><th style={th}>Pos</th><th style={th}>Class</th><th style={th}>OVR</th><th style={th}>Status</th><th style={th}></th>
+            </tr>
+          </thead>
+          <tbody>
+            {sorted.map((p) => (
+              <tr key={p.id} className="cbb-row" style={{ borderBottom: `1px solid ${C.line}` }}>
+                <td style={{ ...td, cursor: onViewPlayer ? "pointer" : "default", fontWeight: 600 }} onClick={() => onViewPlayer && onViewPlayer(p.id)}>{p.realName ? "• " : ""}{p.name}</td>
+                <td style={td}>{p.pos}</td>
+                <td style={td}>{p.class}</td>
+                <td style={{ ...td, fontWeight: 700 }} className="cbb-num">{p.overall}</td>
+                <td style={td}>
+                  {p.scholarship
+                    ? <span style={{ fontSize: 10.5, color: C.gold, border: `1px solid ${C.wood}`, padding: "1px 6px" }}>SCHOLARSHIP</span>
+                    : <span style={{ fontSize: 10.5, color: C.dimmer, border: `1px solid ${C.line}`, padding: "1px 6px" }}>WALK-ON</span>}
+                </td>
+                <td style={td}>
+                  <button className="cbb-btn" onClick={() => onCut(p.id)}
+                    style={{ fontSize: 11.5, background: "transparent", border: `1px solid ${C.red}`, color: C.red, padding: "3px 12px", cursor: "pointer" }}>
+                    Cut
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </Panel>
+    </div>
+  );
+}
+
 /* ---------- Offseason ---------- */
-function OffseasonTab({ stage, offseason, team, nextYear, committedFreshmen, rankById, onAction, onSign, onAdvanceWeek, onEditGame, onChangeJob, onAdvanceYear, onViewTeam }) {
+function OffseasonTab({ stage, offseason, team, roster, nextYear, committedFreshmen, scholarshipInfo, rankById, onAction, onSign, onAdvanceWeek, onEditGame, onChangeJob, onAdvanceYear, onViewTeam, onViewPlayer, onCut, onDev }) {
   if (!offseason) {
     return (
       <div>
@@ -3332,12 +3584,20 @@ function OffseasonTab({ stage, offseason, team, nextYear, committedFreshmen, ran
       </div>
 
       <div style={{ display: "flex", gap: 18, flexWrap: "wrap", marginBottom: 14, fontSize: 13, color: C.dim }}>
+        <div>Open scholarships: <strong style={{ color: (scholarshipInfo?.open ?? 0) > 0 ? C.gold : C.red }}>{scholarshipInfo?.open ?? 0}</strong> / {SCHOLARSHIP_LIMIT}</div>
         <div>Portal points this week: <strong style={{ color: C.gold }}>{offseason.points}</strong></div>
         <div>Transfers committed: <strong style={{ color: C.cream }}>{committed.length}</strong></div>
         <div>HS signees this cycle: <strong style={{ color: C.cream }}>{committedFreshmen}</strong></div>
       </div>
 
-      <div style={{ fontSize: 12, color: C.wood, fontWeight: 600, letterSpacing: "0.06em", marginBottom: 8 }}>TRANSFER PORTAL</div>
+      <div style={{ fontSize: 12, color: C.wood, fontWeight: 600, letterSpacing: "0.06em", marginBottom: 8 }}>PLAYER DEVELOPMENT</div>
+      <div style={{ fontSize: 11.5, color: C.dimmer, marginBottom: 10, maxWidth: 720 }}>Spend {DEV_POINTS_PER_OFFSEASON} development points improving your roster&apos;s attributes for next season. Real players keep these gains permanently on top of their production.</div>
+      <ProgressionPanel roster={roster} devPoints={offseason.devPoints ?? 0} devSpent={offseason.devSpent} onDev={onDev} onViewPlayer={onViewPlayer} />
+
+      <div style={{ fontSize: 12, color: C.wood, fontWeight: 600, letterSpacing: "0.06em", margin: "22px 0 8px" }}>ROSTER &amp; CUTS</div>
+      <CutsPanel roster={roster} scholarshipInfo={scholarshipInfo} onCut={onCut} onViewPlayer={onViewPlayer} />
+
+      <div style={{ fontSize: 12, color: C.wood, fontWeight: 600, letterSpacing: "0.06em", margin: "22px 0 8px" }}>TRANSFER PORTAL</div>
       <RecruitBoard
         board={offseason.transferBoard}
         committedIds={committed}
@@ -3603,10 +3863,7 @@ function PlayerModal({ player, onClose }) {
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
         <div>
           <div style={{ fontSize: 11, color: C.dim, letterSpacing: "0.08em", marginBottom: 10 }}>ATTRIBUTES</div>
-          <AttrBar label="Scoring" value={p.attrs.scoring} />
-          <AttrBar label="Rebounding" value={p.attrs.rebounding} />
-          <AttrBar label="Playmaking" value={p.attrs.playmaking} />
-          <AttrBar label="Defense" value={p.attrs.defense} />
+          {ATTR_KEYS.map((k) => <AttrBar key={k} label={ATTR_LABELS[k]} value={p.attrs[k] ?? 40} />)}
           <AttrBar label="Potential" value={p.attrs.potential} />
         </div>
         <div>
