@@ -596,7 +596,19 @@ const CAREER_INDEX = (() => {
 
 function careerStartYear(name, fallback) {
   const c = CAREER_INDEX[name];
-  return c && c.length ? c[0].year : (fallback ?? null);
+  if (!c || !c.length) return fallback ?? null;
+  // Each row's `startSeason` is the player's first season at THAT team, so it
+  // resets on transfer — but the MINIMUM across all their rows is their true
+  // career origin. Crucially, startSeason can predate the dataset's earliest
+  // year (e.g. DeMarcus Nelson reads startSeason 2005 in a 2008 row), so it
+  // recovers the correct class for players whose careers began before 2008,
+  // which the earliest-appearance heuristic alone gets wrong (labeling them FR).
+  let start = null;
+  for (const r of c) {
+    const s = typeof r.startSeason === "number" ? r.startSeason : r.year;
+    if (start == null || s < start) start = s;
+  }
+  return start ?? fallback ?? null;
 }
 
 // Class label from true career start, capped at senior. Fifth-year+ players
