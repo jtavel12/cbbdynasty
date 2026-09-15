@@ -428,6 +428,38 @@ const TEAM_MAP = Object.fromEntries(TEAMS.map((t) => [t.id, t]));
 const torvikSeasons = torvikSeasonsRaw || {};
 const torvikPlayers = torvikPlayersRaw || {};
 
+// Every season we have real player data for, ascending. Torvik keys each
+// season by its ENDING calendar year (key "2009" == the 2008–09 season),
+// which is also the convention our internal `year` uses.
+const AVAILABLE_YEARS = Object.keys(torvikPlayers)
+  .map(Number)
+  .filter((n) => !Number.isNaN(n))
+  .sort((a, b) => a - b);
+const FIRST_YEAR = AVAILABLE_YEARS[0] ?? 2008;
+const LAST_YEAR = AVAILABLE_YEARS[AVAILABLE_YEARS.length - 1] ?? 2026;
+
+// Season display label. Internal `year` is the season's ENDING year, so
+// year 2009 renders as "2008–09". Keeps the UI consistent with how college
+// basketball seasons are actually named.
+function seasonLabel(year) {
+  return `${year - 1}–${String(year).slice(2)}`;
+}
+
+// The imported ppg/rpg/apg fields are SEASON TOTALS, not per-game averages.
+// Everything that reasons about production must divide by games played.
+function perGame(total, gp) {
+  const g = gp || 0;
+  if (g <= 0) return 0;
+  return (total ?? 0) / g;
+}
+
+// Small-sample guard: a player with a handful of games shouldn't be rated
+// off a fluky per-game line. Full credit at ~10+ games, damped below that,
+// never below half.
+function sampleReliability(gp) {
+  return clamp((gp || 0) / 10, 0.5, 1);
+}
+
 // Evidence from a real data pull: CBBD keeps well-known acronyms as-is
 // (its data literally has a team named "BYU", not "Brigham Young") — so
 // the old aliases redirecting BYU/SMU/TCU/UCF/USC/UIC to expanded names
@@ -592,9 +624,12 @@ function genAttrsFromTier(tier) {
 // team they played for), NOT necessarily the team signing them.
 function genAttrsFromRealStats(real, tier) {
   const mult = competitionMultiplier(tier);
-  const ppg = (real.ppg ?? 0) * mult;
-  const rpg = (real.rpg ?? 0) * mult;
-  const apg = (real.apg ?? 0) * mult;
+  // Convert season totals -> per game, then scale by competition and damp
+  // tiny samples so a 3-game fluke can't out-rate a full-season contributor.
+  const rel = sampleReliability(real.gp);
+  const ppg = perGame(real.ppg, real.gp) * mult * rel;
+  const rpg = perGame(real.rpg, real.gp) * mult * rel;
+  const apg = perGame(real.apg, real.gp) * mult * rel;
   const scoring = clamp(Math.round(32 + ppg * 2.6), 25, 99);
   const rebounding = clamp(Math.round(30 + rpg * 5.0), 25, 99);
   const playmaking = clamp(Math.round(30 + apg * 6.5), 25, 99);
@@ -747,12 +782,14 @@ function realRecruitsFor(year) {
     .map((r) => {
       const originalPrestige = findOurTeamByRealName(r.team)?.prestige ?? 2;
       const tier = clamp((originalPrestige - 1) / 4, 0, 1);
-      // Value used for star rating / sort order is production ADJUSTED for
-      // strength of competition — this is the fix for "20 ppg at a small
-      // program shouldn't outrank 10 ppg at a high-major." Raw stats are
-      // still kept (and shown) separately so the board stays honest about
-      // what actually happened on the court.
-      const adjustedPpg = (r.ppg ?? 0) * competitionMultiplier(tier);
+      // Value used for star rating / sort order is per-game production
+      // ADJUSTED for strength of competition — this is the fix for "20 ppg
+      // at a small program shouldn't outrank 10 ppg at a high-major." Raw
+      // per-game stats are still kept (and shown) separately so the board
+      // stays honest about what actually happened on the court.
+      const realPpg = perGame(r.ppg, r.gp);
+      const realRpg = perGame(r.rpg, r.gp);
+      const adjustedPpg = realPpg * competitionMultiplier(tier) * sampleReliability(r.gp);
       const stars = adjustedPpg >= 16 ? 5 : adjustedPpg >= 11 ? 4 : adjustedPpg >= 6 ? 3 : null;
       const rating = stars ? clamp(0.70 + (adjustedPpg / 30) * 0.30, 0.70, 1.0) : null;
       return {
@@ -764,11 +801,11 @@ function realRecruitsFor(year) {
         stars,
         rating: rating ? Math.round(rating * 10000) / 10000 : null,
         real: true,
-        realStats: { ppg: r.ppg, rpg: r.rpg, apg: r.apg },
+        realStats: { ppg: r.ppg, rpg: r.rpg, apg: r.apg, gp: r.gp },
         originalTeam: r.team,
         originalPrestige,
         adjustedValue: adjustedPpg,
-        hsStatline: { ppg: (r.ppg ?? 0).toFixed(1), rpg: (r.rpg ?? 0).toFixed(1) },
+        hsStatline: { ppg: realPpg.toFixed(1), rpg: realRpg.toFixed(1) },
         committedTo: null,
         interest: 0,
         rivalPressure: randInt(15, 45),
@@ -945,20 +982,38 @@ function recruitToPlayer(recruit, team) {
 /* =========================================================================
    SCHEDULE + SIM
    ========================================================================= */
+const NONCONF_GAMES = 11;
+
+// Conference games are the real, "correct" slate — every conference mate,
+// home-and-away when that stays within a sane game count, otherwise once
+// each. These are locked. Non-conference games are seeded with random
+// opponents but left fully editable by the coach.
 function genSchedule(team, year) {
   const conf = TEAMS.filter((t) => t.conf === team.conf && t.id !== team.id);
   const nonConf = TEAMS.filter((t) => t.conf !== team.conf && t.id !== team.id);
   const games = [];
   let week = 1;
-  // non-conference (8 games)
-  for (let i = 0; i < 8; i++) {
-    games.push({ id: uid(), week: week++, oppId: pick(nonConf).id, home: Math.random() > 0.4, played: false, result: null });
+
+  // Non-conference slots (freely editable).
+  const seeds = shuffled(nonConf).slice(0, NONCONF_GAMES);
+  for (let i = 0; i < NONCONF_GAMES; i++) {
+    const opp = seeds[i] || pick(nonConf);
+    games.push({ id: uid(), week: week++, oppId: opp.id, home: i % 2 === 0, conf: false, played: false, result: null });
   }
-  // conference (18 games, round-robin-ish w/ repeats if small conf)
+
+  // Conference slate. Double round-robin (home + away) when the conference
+  // is small enough; single round-robin for larger leagues.
+  const doubleRoundRobin = conf.length > 0 && conf.length <= 10;
   const confPool = conf.length ? conf : nonConf;
-  for (let i = 0; i < 18; i++) {
-    games.push({ id: uid(), week: week++, oppId: pick(confPool).id, home: i % 2 === 0, played: false, result: null });
-  }
+  shuffled(confPool).forEach((opp, i) => {
+    if (doubleRoundRobin) {
+      games.push({ id: uid(), week: week++, oppId: opp.id, home: true, conf: true, played: false, result: null });
+      games.push({ id: uid(), week: week++, oppId: opp.id, home: false, conf: true, played: false, result: null });
+    } else {
+      games.push({ id: uid(), week: week++, oppId: opp.id, home: i % 2 === 0, conf: true, played: false, result: null });
+    }
+  });
+
   return games;
 }
 
@@ -1150,6 +1205,7 @@ function Panel({ children, style, className }) {
    ========================================================================= */
 function TeamSelect({ onPick }) {
   const [q, setQ] = useState("");
+  const [year, setYear] = useState(FIRST_YEAR);
   const filtered = TEAMS.filter((t) => t.name.toLowerCase().includes(q.toLowerCase()))
     .sort((a, b) => b.prestige - a.prestige || a.name.localeCompare(b.name));
 
@@ -1157,12 +1213,33 @@ function TeamSelect({ onPick }) {
     <div className="cbb-root cbb-scroll" style={{ minHeight: "100vh", background: C.bg, color: C.cream, padding: "40px 24px", overflowY: "auto" }}>
       <div style={{ maxWidth: 980, margin: "0 auto" }}>
         <div style={{ borderBottom: `2px solid ${C.wood}`, paddingBottom: 18, marginBottom: 28 }}>
-          <div className="cbb-num" style={{ fontSize: 13, letterSpacing: "0.14em", color: C.wood, fontWeight: 600 }}>DYNASTY MODE · TIP-OFF 2008</div>
+          <div className="cbb-num" style={{ fontSize: 13, letterSpacing: "0.14em", color: C.wood, fontWeight: 600 }}>DYNASTY MODE · TIP-OFF {seasonLabel(year)}</div>
           <h1 className="cbb-num" style={{ fontSize: 40, fontWeight: 700, margin: "6px 0 8px" }}>Pick your program.</h1>
           <p style={{ color: C.dim, fontSize: 15, maxWidth: 620 }}>
-            Every dynasty starts in the 2007–08 season. Build the roster, sign your classes, and coach every
+            Choose your starting season, then build the roster, sign your classes, and coach every
             season forward from there — your save carries the program year after year.
           </p>
+        </div>
+
+        <div style={{ marginBottom: 20 }}>
+          <div style={{ fontSize: 12, color: C.wood, fontWeight: 600, letterSpacing: "0.06em", marginBottom: 8 }}>STARTING SEASON</div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+            {AVAILABLE_YEARS.map((y) => (
+              <button
+                key={y}
+                onClick={() => setYear(y)}
+                className="cbb-btn"
+                style={{
+                  cursor: "pointer", padding: "7px 12px", fontSize: 13, fontWeight: 600,
+                  background: y === year ? C.wood : C.panel,
+                  border: `1px solid ${y === year ? C.wood : C.line}`,
+                  color: y === year ? "#1a1206" : C.cream,
+                }}
+              >
+                {seasonLabel(y)}
+              </button>
+            ))}
+          </div>
         </div>
 
         <input
@@ -1176,7 +1253,7 @@ function TeamSelect({ onPick }) {
           {filtered.map((t) => (
             <button
               key={t.id}
-              onClick={() => onPick(t)}
+              onClick={() => onPick(t, year)}
               className="cbb-btn"
               style={{
                 textAlign: "left", cursor: "pointer", padding: "16px 14px",
@@ -1357,7 +1434,7 @@ function DynastyApp({ initial, onExit }) {
       strengths: newStrengths,
       history: [...state.history, { year: state.year, wins: record.w, losses: record.l, teamId: state.teamId }],
     });
-    flash(`Welcome to the ${newYear}-${String(newYear + 1).slice(2)} season. ${seniorCount} seniors graduated.`);
+    flash(`Welcome to the ${seasonLabel(newYear)} season. ${seniorCount} seniors graduated.`);
   }
 
   function changeJob(newTeam) {
@@ -1380,6 +1457,17 @@ function DynastyApp({ initial, onExit }) {
     setJobPickerOpen(false);
     setTab("dashboard");
     flash(`New job accepted — you're now the head coach at ${newTeam.name}.`);
+  }
+
+  // Coach edits a non-conference matchup (opponent or home/away). Conference
+  // and already-played games are guarded in the UI, and defensively here.
+  function editGame(gameId, changes) {
+    setState((s) => ({
+      ...s,
+      schedule: s.schedule.map((g) =>
+        g.id === gameId && !g.conf && !g.played ? { ...g, ...changes } : g
+      ),
+    }));
   }
 
   const seasonOver = state.schedule.every((g) => g.played);
@@ -1434,7 +1522,7 @@ function DynastyApp({ initial, onExit }) {
           <div style={{ display: "flex", alignItems: "baseline", gap: 22 }}>
             <div>
               <div style={{ fontSize: 10, color: C.dim, letterSpacing: "0.1em" }}>SEASON</div>
-              <div className="cbb-num" style={{ fontSize: 22, fontWeight: 700 }}>{state.year}–{String(state.year + 1).slice(2)}</div>
+              <div className="cbb-num" style={{ fontSize: 22, fontWeight: 700 }}>{seasonLabel(state.year)}</div>
             </div>
             <div>
               <div style={{ fontSize: 10, color: C.dim, letterSpacing: "0.1em" }}>RECORD</div>
@@ -1465,7 +1553,7 @@ function DynastyApp({ initial, onExit }) {
               team={team}
             />
           )}
-          {tab === "schedule" && <ScheduleTab schedule={state.schedule} onViewTeam={setViewTeamId} />}
+          {tab === "schedule" && <ScheduleTab schedule={state.schedule} teamConf={team.conf} onViewTeam={setViewTeamId} onEditGame={editGame} />}
           {tab === "standings" && <StandingsTab team={team} strengths={state.strengths} userRecord={record} year={state.year} onViewTeam={setViewTeamId} />}
         </div>
       </div>
@@ -1518,7 +1606,7 @@ function DashboardTab({ state, team, record, nextGame, onSim, onSimSeason, seaso
             <div style={{ color: C.dim, fontSize: 14, flex: 1, minWidth: 220 }}>Season complete — {record.w}-{record.l}. Head to Recruiting to finish your class, then advance the year — or take a new job elsewhere.</div>
             <div style={{ display: "flex", gap: 10 }}>
               <button onClick={onChangeJob} className="cbb-btn" style={btnStyle(C.panelAlt, C.cream)}><Users size={13} /> Take Another Job</button>
-              <button onClick={onAdvanceYear} className="cbb-btn" style={btnStyle(C.gold, "#221a00")}><TrendingUp size={13} /> Advance to {state.year + 1}</button>
+              <button onClick={onAdvanceYear} className="cbb-btn" style={btnStyle(C.gold, "#221a00")}><TrendingUp size={13} /> Advance to {seasonLabel(state.year + 1)}</button>
             </div>
           </div>
         )}
@@ -1547,7 +1635,7 @@ function DashboardTab({ state, team, record, nextGame, onSim, onSimSeason, seaso
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             {state.history.map((h) => (
               <div key={h.year} style={{ border: `1px solid ${C.line}`, padding: "8px 12px", minWidth: 74 }}>
-                <div className="cbb-num" style={{ fontSize: 13, color: C.dim }}>{h.year}</div>
+                <div className="cbb-num" style={{ fontSize: 13, color: C.dim }}>{seasonLabel(h.year)}</div>
                 <div className="cbb-num" style={{ fontSize: 16, fontWeight: 600 }}>{h.wins}-{h.losses}</div>
               </div>
             ))}
@@ -1806,7 +1894,7 @@ function TeamRosterModal({ teamId, year, onClose }) {
   return (
     <Modal
       title={team.name}
-      subtitle={`${team.conf} · projected ${year}–${String(year + 1).slice(2)} roster`}
+      subtitle={`${team.conf} · projected ${seasonLabel(year)} roster`}
       onClose={onClose}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
@@ -1858,7 +1946,7 @@ function JobChangeModal({ currentTeamId, nextYear, onPick, onClose }) {
   return (
     <Modal
       title="Take another job"
-      subtitle={`Leave your program to coach a new team starting in ${nextYear}–${String(nextYear + 1).slice(2)}. Your current roster stays behind.`}
+      subtitle={`Leave your program to coach a new team starting in ${seasonLabel(nextYear)}. Your current roster stays behind.`}
       onClose={onClose}
       maxWidth={860}
     >
@@ -1894,40 +1982,105 @@ function JobChangeModal({ currentTeamId, nextYear, onPick, onClose }) {
   );
 }
 
-function ScheduleTab({ schedule, onViewTeam }) {
+function ScheduleRow({ g, teamConf, onViewTeam, onEditGame }) {
+  const [editing, setEditing] = useState(false);
+  const opp = TEAM_MAP[g.oppId];
+  const editable = !g.conf && !g.played && !!onEditGame;
+  // Non-conference opponents = every program outside your conference.
+  const options = editable
+    ? TEAMS.filter((t) => t.conf !== teamConf).sort((a, b) => a.name.localeCompare(b.name))
+    : [];
+
   return (
-    <div>
-      <div style={{ fontSize: 11.5, color: C.dimmer, marginBottom: 10 }}>
-        Click any opponent to preview their roster.
-      </div>
-    <Panel style={{ overflow: "hidden" }}>
+    <tr className="cbb-row" style={{ borderBottom: `1px solid ${C.line}` }}>
+      <td style={td}>{g.week}</td>
+      <td style={td}>
+        {editing ? (
+          <select
+            value={g.oppId}
+            autoFocus
+            onChange={(e) => { onEditGame(g.id, { oppId: e.target.value }); setEditing(false); }}
+            onBlur={() => setEditing(false)}
+            style={{ background: C.panelAlt, border: `1px solid ${C.wood}`, color: C.cream, padding: "4px 6px", fontSize: 13, maxWidth: 220 }}
+          >
+            {options.map((t) => (
+              <option key={t.id} value={t.id}>{t.name} ({t.conf})</option>
+            ))}
+          </select>
+        ) : (
+          <span
+            onClick={() => onViewTeam(g.oppId)}
+            style={{ cursor: "pointer", borderBottom: `1px dotted ${C.dim}` }}
+          >
+            {opp.name}
+          </span>
+        )}
+        <span style={{ color: C.dimmer, fontSize: 11, marginLeft: 6 }}>({opp.conf})</span>
+        {g.conf && <span style={{ color: C.wood, fontSize: 10, marginLeft: 6, letterSpacing: "0.06em" }}>CONF</span>}
+      </td>
+      <td style={td}>
+        {editable ? (
+          <button
+            onClick={() => onEditGame(g.id, { home: !g.home })}
+            className="cbb-btn"
+            style={{ background: C.panelAlt, border: `1px solid ${C.line}`, color: C.cream, padding: "3px 9px", fontSize: 12, cursor: "pointer" }}
+          >
+            {g.home ? "Home" : "Away"}
+          </button>
+        ) : (g.home ? "Home" : "Away")}
+      </td>
+      <td style={td}>
+        {g.played ? (
+          <span style={{ color: g.result.win ? C.green : C.red, fontWeight: 600 }}>
+            {g.result.win ? "W" : "L"} {g.result.myScore}-{g.result.oppScore}
+          </span>
+        ) : <span style={{ color: C.dimmer }}>—</span>}
+      </td>
+      <td style={{ ...td, textAlign: "right" }}>
+        {editable && (
+          <button
+            onClick={() => setEditing((v) => !v)}
+            className="cbb-btn"
+            style={{ background: "none", border: `1px solid ${C.line}`, color: C.dim, padding: "3px 9px", fontSize: 11.5, cursor: "pointer" }}
+          >
+            {editing ? "Close" : "Change"}
+          </button>
+        )}
+      </td>
+    </tr>
+  );
+}
+
+function ScheduleTab({ schedule, teamConf, onViewTeam, onEditGame }) {
+  const nonConf = schedule.filter((g) => !g.conf);
+  const conf = schedule.filter((g) => g.conf);
+
+  const table = (games, editable) => (
+    <Panel style={{ overflow: "hidden", marginBottom: 18 }}>
       <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13.5 }}>
         <thead>
           <tr style={{ borderBottom: `1px solid ${C.line}`, color: C.dim, fontSize: 11, textAlign: "left" }}>
-            <th style={th}>Wk</th><th style={th}>Opponent</th><th style={th}>Site</th><th style={th}>Result</th>
+            <th style={th}>Wk</th><th style={th}>Opponent</th><th style={th}>Site</th><th style={th}>Result</th><th style={th}></th>
           </tr>
         </thead>
         <tbody>
-          {schedule.map((g) => {
-            const opp = TEAM_MAP[g.oppId];
-            return (
-              <tr key={g.id} className="cbb-row" style={{ borderBottom: `1px solid ${C.line}`, cursor: "pointer" }} onClick={() => onViewTeam(g.oppId)}>
-                <td style={td}>{g.week}</td>
-                <td style={td}><span style={{ borderBottom: `1px dotted ${C.dim}` }}>{opp.name}</span> <span style={{ color: C.dimmer, fontSize: 11 }}>({opp.conf})</span></td>
-                <td style={td}>{g.home ? "Home" : "Away"}</td>
-                <td style={td}>
-                  {g.played ? (
-                    <span style={{ color: g.result.win ? C.green : C.red, fontWeight: 600 }}>
-                      {g.result.win ? "W" : "L"} {g.result.myScore}-{g.result.oppScore}
-                    </span>
-                  ) : <span style={{ color: C.dimmer }}>—</span>}
-                </td>
-              </tr>
-            );
-          })}
+          {games.map((g) => (
+            <ScheduleRow key={g.id} g={g} teamConf={teamConf} onViewTeam={onViewTeam} onEditGame={editable ? onEditGame : null} />
+          ))}
         </tbody>
       </table>
     </Panel>
+  );
+
+  return (
+    <div>
+      <div style={{ fontSize: 11.5, color: C.dimmer, marginBottom: 10 }}>
+        Non-conference games are yours to schedule — use <strong>Change</strong> to pick an opponent or flip home/away before you play them. Your conference slate is locked. Click any opponent to preview their roster.
+      </div>
+      <div style={{ fontSize: 12, color: C.wood, fontWeight: 600, letterSpacing: "0.06em", marginBottom: 8 }}>NON-CONFERENCE</div>
+      {table(nonConf, true)}
+      <div style={{ fontSize: 12, color: C.wood, fontWeight: 600, letterSpacing: "0.06em", marginBottom: 8 }}>CONFERENCE</div>
+      {table(conf, false)}
     </div>
   );
 }
@@ -1987,8 +2140,7 @@ export default function CBBDynasty() {
     })();
   }, []);
 
-  function startDynasty(team) {
-    const year = 2008;
+  function startDynasty(team, year = FIRST_YEAR) {
     const roster = buildInitialRoster(team, year);
     const state = {
       teamId: team.id,
@@ -2027,7 +2179,7 @@ export default function CBBDynasty() {
         <Panel style={{ padding: 30, maxWidth: 420, textAlign: "center" }}>
           <div style={{ fontSize: 11, color: C.dim, letterSpacing: "0.08em", marginBottom: 8 }}>SAVE FOUND</div>
           <h2 className="cbb-num" style={{ fontSize: 24, fontWeight: 700, marginBottom: 6 }}>{TEAM_MAP[savedState.teamId].name}</h2>
-          <div style={{ color: C.dim, fontSize: 13, marginBottom: 20 }}>{savedState.year}–{String(savedState.year + 1).slice(2)} season in progress</div>
+          <div style={{ color: C.dim, fontSize: 13, marginBottom: 20 }}>{seasonLabel(savedState.year)} season in progress</div>
           <div style={{ display: "flex", gap: 10, justifyContent: "center" }}>
             <button onClick={() => setSession(savedState)} className="cbb-btn" style={btnStyle(C.wood)}>Continue Dynasty</button>
             <button onClick={exitToSelect} className="cbb-btn" style={btnStyle(C.panelAlt, C.cream)}>Start New</button>
