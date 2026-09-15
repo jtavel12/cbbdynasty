@@ -4,7 +4,7 @@ import torvikPlayersRaw from "./data/torvik-players.json";
 import {
   LayoutDashboard, Users, ListOrdered, Search, CalendarDays, Trophy,
   Save, RotateCcw, ChevronUp, ChevronDown, Play, FastForward, Star,
-  ShieldCheck, X, Check, TrendingUp
+  ShieldCheck, X, Check, TrendingUp, Award, Crown
 } from "lucide-react";
 
 /* =========================================================================
@@ -1165,6 +1165,217 @@ function projectedRecord(team, powerById) {
   return { wins, losses: games - wins };
 }
 
+/* =========================================================================
+   RANKINGS
+   Every team gets a record (user = real, others = projected) and a poll-style
+   ranking score. Score blends win% (regressed toward .500 for small samples so
+   a 1-0 start can't top the poll) with team quality, so blue bloods with good
+   records rank high AND a dominant mid-major can crack the Top 25.
+   ========================================================================= */
+function powerTableFor(strengths, year) {
+  return Object.fromEntries(
+    TEAMS.map((t) => [t.id, teamPowerRating(t, strengths, year, { noise: false })])
+  );
+}
+
+function recordTableFor(powerById, userTeamId, userRecord) {
+  const rec = {};
+  for (const t of TEAMS) {
+    rec[t.id] = t.id === userTeamId
+      ? { wins: userRecord.w, losses: userRecord.l }
+      : projectedRecord(t, powerById);
+  }
+  return rec;
+}
+
+function rankingScore(wins, losses, power) {
+  const games = wins + losses;
+  const shrunkWinPct = (wins + 3) / (games + 6); // Bayesian shrink toward .500
+  const quality = clamp((power - 25) / (92 - 25), 0, 1);
+  // Winning is weighted heavily so a dominant lower-prestige team can crack the
+  // poll, but quality still keeps blue bloods near the top of a crowded field.
+  return shrunkWinPct * 0.78 + quality * 0.22;
+}
+
+// Returns { ranked: [{team,wins,losses,power,score}], rankById } sorted best-first.
+function computeRankings(powerById, recordById) {
+  const ranked = TEAMS.map((t) => {
+    const r = recordById[t.id];
+    return { team: t, wins: r.wins, losses: r.losses, power: powerById[t.id], score: rankingScore(r.wins, r.losses, powerById[t.id]) };
+  }).sort((a, b) => b.score - a.score || b.wins - a.wins || a.losses - b.losses || b.power - a.power);
+  const rankById = {};
+  ranked.forEach((row, i) => { rankById[row.team.id] = i + 1; });
+  return { ranked, rankById };
+}
+
+/* =========================================================================
+   BRACKET ENGINE (single elimination)
+   A bracket is { seeds:[teamId..], rounds:[[matchup..]..], champion, done }.
+   A matchup is { a, b, aSeed, bSeed, winner, scoreA, scoreB, bye }.
+   b === null means a bye (a auto-advances). Seeding follows the standard
+   bracket order so the 1 seed meets the last seed first and the top two seeds
+   can only collide in the final.
+   ========================================================================= */
+function nextPow2(n) { let p = 1; while (p < n) p *= 2; return p; }
+
+// Standard tournament seed slot order for a bracket of `size` (power of two):
+// size 4 -> [1,4,2,3]; size 8 -> [1,8,4,5,2,7,3,6]; etc.
+function seedSlots(size) {
+  let arr = [1, 2];
+  while (arr.length < size) {
+    const sum = arr.length * 2 + 1;
+    const next = [];
+    for (const s of arr) { next.push(s); next.push(sum - s); }
+    arr = next;
+  }
+  return arr;
+}
+
+// seededIds: team ids in seed order (index 0 = 1 seed).
+function buildSingleElim(seededIds) {
+  const n = seededIds.length;
+  if (n === 0) return { seeds: [], rounds: [], champion: null, done: true };
+  if (n === 1) return { seeds: seededIds, rounds: [], champion: seededIds[0], done: true };
+  const size = nextPow2(n);
+  const slots = seedSlots(size);
+  const at = (seed) => (seed <= n ? seededIds[seed - 1] : null);
+  const first = [];
+  for (let i = 0; i < size; i += 2) {
+    const aSeed = slots[i], bSeed = slots[i + 1];
+    first.push({ a: at(aSeed), b: at(bSeed), aSeed, bSeed, winner: null, scoreA: null, scoreB: null, bye: false });
+  }
+  return { seeds: seededIds, rounds: [first], champion: null, done: false };
+}
+
+function fabricateScore(winnerPower, loserPower) {
+  const base = 64 + (winnerPower + loserPower) / 12;
+  const spread = clamp((winnerPower - loserPower) * 0.45, 1, 26) + rand(1, 9);
+  const w = Math.round(base + spread / 2);
+  const l = Math.round(base - spread / 2);
+  return { w: Math.max(w, 52), l: Math.max(Math.min(l, w - 1), 47) };
+}
+
+// Resolve a single matchup. When the user's team is involved we sim with their
+// real roster so postseason games honor the depth chart they've built.
+function simMatchup(m, ctx) {
+  if (m.winner) return m;
+  if (m.a && !m.b) return { ...m, winner: m.a, bye: true };
+  if (m.b && !m.a) return { ...m, winner: m.b, bye: true };
+  if (!m.a && !m.b) return m;
+
+  const { powerById, userTeamId, roster, depthChart, strengths, year } = ctx;
+  if (userTeamId && (m.a === userTeamId || m.b === userTeamId)) {
+    const oppId = m.a === userTeamId ? m.b : m.a;
+    const oppPower = teamPowerRating(TEAM_MAP[oppId], strengths, year);
+    const res = simulateGame(roster, depthChart, oppPower);
+    const winner = res.win ? userTeamId : oppId;
+    const uScore = res.myScore, oScore = res.oppScore;
+    return {
+      ...m, winner,
+      scoreA: m.a === userTeamId ? uScore : oScore,
+      scoreB: m.b === userTeamId ? uScore : oScore,
+      userBox: res.boxByPlayer,
+    };
+  }
+  const pa = powerById[m.a], pb = powerById[m.b];
+  const aWins = Math.random() < gameWinProb(pa, pb);
+  const sc = fabricateScore(aWins ? pa : pb, aWins ? pb : pa);
+  return { ...m, winner: aWins ? m.a : m.b, scoreA: aWins ? sc.w : sc.l, scoreB: aWins ? sc.l : sc.w };
+}
+
+// Play the current (last, unfinished) round of a bracket, then wire up the next.
+function advanceBracketRound(bracket, ctx) {
+  if (bracket.done || bracket.rounds.length === 0) return bracket;
+  const rounds = bracket.rounds.map((r) => r.map((m) => ({ ...m })));
+  const cur = rounds[rounds.length - 1];
+  const simmed = cur.map((m) => simMatchup(m, ctx));
+  rounds[rounds.length - 1] = simmed;
+  const winners = simmed.map((m) => m.winner).filter(Boolean);
+  if (winners.length <= 1) {
+    return { ...bracket, rounds, champion: winners[0] || null, done: true };
+  }
+  const next = [];
+  for (let i = 0; i < winners.length; i += 2) {
+    next.push({ a: winners[i], b: winners[i + 1] ?? null, winner: null, scoreA: null, scoreB: null, bye: false });
+  }
+  rounds.push(next);
+  return { ...bracket, rounds, champion: null, done: false };
+}
+
+function bracketFullyPlayed(b) { return b.done; }
+
+/* =========================================================================
+   POSTSEASON: conference tournaments -> March Madness
+   ========================================================================= */
+const CONF_LIST = [...new Set(TEAMS.map((t) => t.conf))].sort();
+const REGION_NAMES = ["East", "West", "South", "Midwest"];
+
+// Seed each conference by its members' national ranking (best = 1 seed), then
+// build a single-elim bracket where the top seed meets the bottom seed first.
+function buildConfBrackets(rankById) {
+  const byConf = {};
+  for (const conf of CONF_LIST) {
+    const members = TEAMS.filter((t) => t.conf === conf)
+      .sort((a, b) => rankById[a.id] - rankById[b.id])
+      .map((t) => t.id);
+    byConf[conf] = buildSingleElim(members);
+  }
+  return byConf;
+}
+
+// 64-team field: every conference champ earns an auto-bid, then the highest
+// remaining ranked teams fill the at-large pool. Seeds 1-16 across 4 regions
+// are assigned by national rank in an S-curve so the regions are balanced.
+function buildMadness(confChampions, rankById) {
+  const championIds = new Set(Object.values(confChampions));
+  const autoBids = [...championIds];
+  const atLargePool = TEAMS
+    .filter((t) => !championIds.has(t.id))
+    .sort((a, b) => rankById[a.id] - rankById[b.id])
+    .map((t) => t.id);
+  const need = Math.max(0, 64 - autoBids.length);
+  const field = [...autoBids, ...atLargePool.slice(0, need)].slice(0, 64);
+
+  // Order the whole field by national rank, then snake seed lines into regions.
+  field.sort((a, b) => rankById[a] - rankById[b]);
+  const regionSeeds = [[], [], [], []]; // each fills to 16, index = seed-1
+  for (let line = 0; line < 16; line++) {
+    const four = field.slice(line * 4, line * 4 + 4);
+    const order = line % 2 === 0 ? [0, 1, 2, 3] : [3, 2, 1, 0];
+    four.forEach((id, i) => { regionSeeds[order[i]].push(id); });
+  }
+  const regions = regionSeeds.map((ids, i) => ({
+    name: REGION_NAMES[i],
+    bracket: buildSingleElim(ids),
+  }));
+  return { regions, finalFour: null, champion: null };
+}
+
+// True once all four regions have crowned a champion.
+function regionsComplete(madness) {
+  return madness.regions.every((r) => r.bracket.done && r.bracket.champion);
+}
+
+// Short label for the season-history row describing how the user's postseason
+// ended (national champ, Final Four, conference champ, or a round exit).
+function postseasonSummary(ps, userTeamId) {
+  if (!ps) return null;
+  if (ps.champion === userTeamId) return "National Champions";
+  const md = ps.madness;
+  if (md) {
+    if (md.finalFour) {
+      const inFF = md.finalFour.seeds.includes(userTeamId);
+      if (md.finalFour.done && md.finalFour.champion !== userTeamId && inFF) return "Runner-up";
+      if (inFF) return "Final Four";
+    }
+    const inField = md.regions.some((r) => r.bracket.seeds.includes(userTeamId));
+    if (inField) return "NCAA Tournament";
+  }
+  const myConf = TEAM_MAP[userTeamId]?.conf;
+  if (myConf && ps.confChampions?.[myConf] === userTeamId) return "Conference Champions";
+  return null;
+}
+
 function depthChartMinutes(order) {
   // returns array parallel to `order` with minutes for that position group (40 total)
   const splits = [24, 11, 5, 0, 0];
@@ -1444,6 +1655,8 @@ const TABS = [
   { id: "recruiting", label: "Recruiting", icon: Search },
   { id: "schedule", label: "Schedule", icon: CalendarDays },
   { id: "standings", label: "Standings", icon: Trophy },
+  { id: "rankings", label: "Rankings", icon: Award },
+  { id: "postseason", label: "Postseason", icon: Crown },
 ];
 
 function DynastyApp({ initial, onExit }) {
@@ -1473,6 +1686,14 @@ function DynastyApp({ initial, onExit }) {
     const l = state.schedule.filter((g) => g.played && !g.result.win).length;
     return { w, l };
   }, [state.schedule]);
+
+  // National rankings, recomputed as results change. Shared by the Rankings
+  // tab, schedule/standings rank badges, and postseason seeding.
+  const { rankById, ranked } = useMemo(() => {
+    const powerById = powerTableFor(state.strengths, state.year);
+    const recordById = recordTableFor(powerById, state.teamId, record);
+    return computeRankings(powerById, recordById);
+  }, [state.strengths, state.year, state.teamId, record]);
 
   function simOneGame() {
     if (!nextGame) return;
@@ -1523,6 +1744,108 @@ function DynastyApp({ initial, onExit }) {
       return { ...s, roster, schedule: games, recruitingBoard, recruitingPoints, recruitingWeekIndex: newWeekIndex };
     });
     flash("Simulated the rest of the season.");
+  }
+
+  function startPostseason() {
+    if (!seasonOver || state.postseason) return;
+    setState((s) => ({
+      ...s,
+      postseason: {
+        phase: "conf",
+        confBrackets: buildConfBrackets(rankById),
+        confChampions: {},
+        madness: null,
+        champion: null,
+        seedRankById: rankById,
+      },
+    }));
+    setTab("postseason");
+    flash("Conference tournaments are underway.");
+  }
+
+  // Advances every live bracket one round. The user's games are simulated with
+  // their real roster; box scores accrue to season stats just like the regular
+  // season. Everything else auto-resolves by power rating.
+  function simPostseasonRound() {
+    const ps = state.postseason;
+    if (!ps || ps.phase === "done") return;
+
+    const ctx = {
+      powerById: powerTableFor(state.strengths, state.year),
+      userTeamId: state.teamId,
+      roster: state.roster,
+      depthChart: state.depthChart,
+      strengths: state.strengths,
+      year: state.year,
+    };
+    let userBox = null;
+    const captureBox = (bracket) => {
+      const last = bracket.rounds[bracket.rounds.length - 1];
+      if (last) for (const m of last) if (m.userBox) userBox = m.userBox;
+    };
+
+    setState((s) => {
+      const next = { ...s.postseason };
+
+      if (next.phase === "conf") {
+        const confBrackets = { ...next.confBrackets };
+        const confChampions = { ...next.confChampions };
+        for (const conf of CONF_LIST) {
+          const before = confBrackets[conf];
+          if (before.done) continue;
+          const after = advanceBracketRound(before, ctx);
+          captureBox(after);
+          confBrackets[conf] = after;
+          if (after.done && after.champion) confChampions[conf] = after.champion;
+        }
+        next.confBrackets = confBrackets;
+        next.confChampions = confChampions;
+        const allDone = CONF_LIST.every((c) => confBrackets[c].done);
+        if (allDone) {
+          next.phase = "madness";
+          next.madness = buildMadness(confChampions, next.seedRankById);
+        }
+      } else if (next.phase === "madness") {
+        const md = { ...next.madness };
+        if (!regionsComplete(md)) {
+          md.regions = md.regions.map((r) => {
+            if (r.bracket.done) return r;
+            const after = advanceBracketRound(r.bracket, ctx);
+            captureBox(after);
+            return { ...r, bracket: after };
+          });
+          if (regionsComplete(md) && !md.finalFour) {
+            // Region champs meet in the Final Four; pair region 0v1, 2v3.
+            const champs = md.regions.map((r) => r.bracket.champion);
+            md.finalFour = {
+              seeds: champs,
+              rounds: [[
+                { a: champs[0], b: champs[1], winner: null, scoreA: null, scoreB: null, bye: false },
+                { a: champs[2], b: champs[3], winner: null, scoreA: null, scoreB: null, bye: false },
+              ]],
+              champion: null, done: false,
+            };
+          }
+        } else if (md.finalFour && !md.finalFour.done) {
+          const after = advanceBracketRound(md.finalFour, ctx);
+          captureBox(after);
+          md.finalFour = after;
+          if (after.done) { next.champion = after.champion; next.phase = "done"; }
+        }
+        next.madness = md;
+      }
+
+      // Apply the user's postseason box score to season totals if they played.
+      let roster = s.roster;
+      if (userBox) {
+        roster = s.roster.map((p) => {
+          const box = userBox[p.id];
+          if (!box) return p;
+          return { ...p, season: { gp: p.season.gp + 1, pts: p.season.pts + box.pts, reb: p.season.reb + box.reb, ast: p.season.ast + box.ast } };
+        });
+      }
+      return { ...s, roster, postseason: next };
+    });
   }
 
   function doRecruitAction(recruit, actionKey) {
@@ -1590,7 +1913,8 @@ function DynastyApp({ initial, onExit }) {
       recruitingPoints: weeklyRecruitingBudget(team),
       recruitingWeekIndex: 1,
       strengths: newStrengths,
-      history: [...state.history, { year: state.year, wins: record.w, losses: record.l, teamId: state.teamId }],
+      postseason: null,
+      history: [...state.history, { year: state.year, wins: record.w, losses: record.l, teamId: state.teamId, postseason: postseasonSummary(state.postseason, state.teamId) }],
     });
     flash(`Welcome to the ${seasonLabel(newYear)} season. ${seniorCount} seniors graduated.`);
   }
@@ -1610,7 +1934,8 @@ function DynastyApp({ initial, onExit }) {
       recruitingPoints: weeklyRecruitingBudget(newTeam),
       recruitingWeekIndex: 1,
       strengths: genSeasonStrengths(),
-      history: [...state.history, { year: state.year, wins: record.w, losses: record.l, teamId: state.teamId }],
+      postseason: null,
+      history: [...state.history, { year: state.year, wins: record.w, losses: record.l, teamId: state.teamId, postseason: postseasonSummary(state.postseason, state.teamId) }],
     });
     setJobPickerOpen(false);
     setTab("dashboard");
@@ -1711,13 +2036,25 @@ function DynastyApp({ initial, onExit }) {
               team={team}
             />
           )}
-          {tab === "schedule" && <ScheduleTab schedule={state.schedule} teamConf={team.conf} onViewTeam={setViewTeamId} onEditGame={editGame} />}
-          {tab === "standings" && <StandingsTab team={team} strengths={state.strengths} userRecord={record} year={state.year} onViewTeam={setViewTeamId} />}
+          {tab === "schedule" && <ScheduleTab schedule={state.schedule} teamConf={team.conf} rankById={rankById} onViewTeam={setViewTeamId} onEditGame={editGame} />}
+          {tab === "standings" && <StandingsTab team={team} ranked={ranked} rankById={rankById} userRecord={record} onViewTeam={setViewTeamId} />}
+          {tab === "rankings" && <RankingsTab ranked={ranked} userTeamId={state.teamId} onViewTeam={setViewTeamId} />}
+          {tab === "postseason" && (
+            <PostseasonTab
+              postseason={state.postseason}
+              userTeamId={state.teamId}
+              seasonOver={seasonOver}
+              rankById={rankById}
+              onStart={startPostseason}
+              onSimRound={simPostseasonRound}
+              onViewTeam={setViewTeamId}
+            />
+          )}
         </div>
       </div>
 
       {viewTeamId && (
-        <TeamRosterModal teamId={viewTeamId} year={state.year} strengths={state.strengths} onClose={() => setViewTeamId(null)} />
+        <TeamRosterModal teamId={viewTeamId} year={state.year} strengths={state.strengths} rank={rankById[viewTeamId]} onClose={() => setViewTeamId(null)} />
       )}
       {jobPickerOpen && (
         <JobChangeModal
@@ -1791,12 +2128,18 @@ function DashboardTab({ state, team, record, nextGame, onSim, onSimSeason, seaso
         <Panel style={{ padding: 20 }}>
           <div style={{ fontSize: 11, color: C.dim, letterSpacing: "0.08em", marginBottom: 12 }}>PROGRAM HISTORY</div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            {state.history.map((h) => (
-              <div key={h.year} style={{ border: `1px solid ${C.line}`, padding: "8px 12px", minWidth: 74 }}>
-                <div className="cbb-num" style={{ fontSize: 13, color: C.dim }}>{seasonLabel(h.year)}</div>
-                <div className="cbb-num" style={{ fontSize: 16, fontWeight: 600 }}>{h.wins}-{h.losses}</div>
-              </div>
-            ))}
+            {state.history.map((h) => {
+              const title = h.postseason === "National Champions";
+              return (
+                <div key={h.year} style={{ border: `1px solid ${title ? C.gold : C.line}`, padding: "8px 12px", minWidth: 74 }}>
+                  <div className="cbb-num" style={{ fontSize: 13, color: C.dim }}>{seasonLabel(h.year)}</div>
+                  <div className="cbb-num" style={{ fontSize: 16, fontWeight: 600 }}>{h.wins}-{h.losses}</div>
+                  {h.postseason && (
+                    <div style={{ fontSize: 9.5, color: title ? C.gold : C.wood, marginTop: 3, letterSpacing: "0.03em" }}>{h.postseason}</div>
+                  )}
+                </div>
+              );
+            })}
           </div>
         </Panel>
       )}
@@ -2048,7 +2391,7 @@ function Modal({ title, subtitle, onClose, children, maxWidth = 760 }) {
 }
 
 /* ---------- Opponent Roster Viewer ---------- */
-function TeamRosterModal({ teamId, year, strengths, onClose }) {
+function TeamRosterModal({ teamId, year, strengths, rank, onClose }) {
   const team = TEAM_MAP[teamId];
   const [view, setView] = useState("roster");
   const roster = useMemo(() => {
@@ -2076,8 +2419,8 @@ function TeamRosterModal({ teamId, year, strengths, onClose }) {
 
   return (
     <Modal
-      title={team.name}
-      subtitle={`${team.conf} · projected ${seasonLabel(year)}`}
+      title={rank && rank <= 25 ? `#${rank} ${team.name}` : team.name}
+      subtitle={`${team.conf} · projected ${seasonLabel(year)}${rank && rank <= 25 ? ` · ranked #${rank}` : ""}`}
       onClose={onClose}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}>
@@ -2209,7 +2552,7 @@ function JobChangeModal({ currentTeamId, nextYear, onPick, onClose }) {
   );
 }
 
-function ScheduleRow({ g, teamConf, onViewTeam, onEditGame }) {
+function ScheduleRow({ g, teamConf, rankById, onViewTeam, onEditGame }) {
   const [editing, setEditing] = useState(false);
   const opp = TEAM_MAP[g.oppId];
   const editable = !g.conf && !g.played && !!onEditGame;
@@ -2235,11 +2578,9 @@ function ScheduleRow({ g, teamConf, onViewTeam, onEditGame }) {
             ))}
           </select>
         ) : (
-          <span
-            onClick={() => onViewTeam(g.oppId)}
-            style={{ cursor: "pointer", borderBottom: `1px dotted ${C.dim}` }}
-          >
-            {opp.name}
+          <span onClick={() => onViewTeam(g.oppId)} style={{ cursor: "pointer" }}>
+            <RankBadge rank={rankById?.[g.oppId]} />
+            <span style={{ borderBottom: `1px dotted ${C.dim}` }}>{opp.name}</span>
           </span>
         )}
         <span style={{ color: C.dimmer, fontSize: 11, marginLeft: 6 }}>({opp.conf})</span>
@@ -2278,7 +2619,7 @@ function ScheduleRow({ g, teamConf, onViewTeam, onEditGame }) {
   );
 }
 
-function ScheduleTab({ schedule, teamConf, onViewTeam, onEditGame }) {
+function ScheduleTab({ schedule, teamConf, rankById, onViewTeam, onEditGame }) {
   const nonConf = schedule.filter((g) => !g.conf);
   const conf = schedule.filter((g) => g.conf);
 
@@ -2292,7 +2633,7 @@ function ScheduleTab({ schedule, teamConf, onViewTeam, onEditGame }) {
         </thead>
         <tbody>
           {games.map((g) => (
-            <ScheduleRow key={g.id} g={g} teamConf={teamConf} onViewTeam={onViewTeam} onEditGame={editable ? onEditGame : null} />
+            <ScheduleRow key={g.id} g={g} teamConf={teamConf} rankById={rankById} onViewTeam={onViewTeam} onEditGame={editable ? onEditGame : null} />
           ))}
         </tbody>
       </table>
@@ -2313,18 +2654,17 @@ function ScheduleTab({ schedule, teamConf, onViewTeam, onEditGame }) {
 }
 
 /* ---------- Standings ---------- */
-function StandingsTab({ team, strengths, userRecord, year, onViewTeam }) {
-  // Compute every team's (deterministic) power once, then project records
-  // against strength of schedule so the table reflects conference dominance
-  // rather than a flat prestige ranking.
-  const powerById = Object.fromEntries(
-    TEAMS.map((t) => [t.id, teamPowerRating(t, strengths, year, { noise: false })])
-  );
-  const rows = TEAMS.map((t) => {
-    if (t.id === team.id) return { ...t, wins: userRecord.w, losses: userRecord.l, isUser: true };
-    const { wins, losses } = projectedRecord(t, powerById);
-    return { ...t, wins, losses, isUser: false };
-  }).sort((a, b) => b.wins - a.wins || a.losses - b.losses || b.prestige - a.prestige);
+function StandingsTab({ team, ranked, rankById, userRecord, onViewTeam }) {
+  // Standings is the win/loss table: reuse the shared record data but sort by
+  // record (not poll score). Top-25 teams still surface their national rank.
+  const rows = ranked
+    .map((r) => ({
+      ...r.team,
+      wins: r.team.id === team.id ? userRecord.w : r.wins,
+      losses: r.team.id === team.id ? userRecord.l : r.losses,
+      isUser: r.team.id === team.id,
+    }))
+    .sort((a, b) => b.wins - a.wins || a.losses - b.losses || b.prestige - a.prestige);
 
   return (
     <div>
@@ -2342,7 +2682,10 @@ function StandingsTab({ team, strengths, userRecord, year, onViewTeam }) {
             {rows.map((t, i) => (
               <tr key={t.id} className="cbb-row" style={{ borderBottom: `1px solid ${C.line}`, background: t.isUser ? C.panelAlt : "transparent", cursor: "pointer" }} onClick={() => onViewTeam(t.id)}>
                 <td style={td}>{i + 1}</td>
-                <td style={{ ...td, fontWeight: t.isUser ? 700 : 500 }}><span style={{ borderBottom: t.isUser ? "none" : `1px dotted ${C.dim}` }}>{t.name}</span>{t.isUser ? " (you)" : ""}</td>
+                <td style={{ ...td, fontWeight: t.isUser ? 700 : 500 }}>
+                  <RankBadge rank={rankById[t.id]} />
+                  <span style={{ borderBottom: t.isUser ? "none" : `1px dotted ${C.dim}` }}>{t.name}</span>{t.isUser ? " (you)" : ""}
+                </td>
                 <td style={td}>{t.conf}</td>
                 <td style={td} className="cbb-num">{t.wins}</td>
                 <td style={td} className="cbb-num">{t.losses}</td>
@@ -2353,6 +2696,271 @@ function StandingsTab({ team, strengths, userRecord, year, onViewTeam }) {
       </Panel>
     </div>
   );
+}
+
+/* ---------- Rankings ---------- */
+// A #N chip shown next to top-25 teams throughout the app.
+function RankBadge({ rank, size = "sm" }) {
+  if (!rank || rank > 25) return null;
+  const big = size === "lg";
+  return (
+    <span
+      className="cbb-num"
+      style={{
+        display: "inline-flex", alignItems: "center", justifyContent: "center",
+        minWidth: big ? 30 : 22, height: big ? 30 : 18, padding: "0 5px",
+        marginRight: 8, background: C.wood, color: "#1a1206",
+        fontSize: big ? 15 : 11, fontWeight: 700, verticalAlign: "middle",
+      }}
+    >
+      {rank}
+    </span>
+  );
+}
+
+function RankingsTab({ ranked, userTeamId, onViewTeam }) {
+  const [showAll, setShowAll] = useState(false);
+  const top25 = ranked.slice(0, 25);
+  const rest = ranked.slice(25);
+
+  const row = (r, i) => {
+    const isUser = r.team.id === userTeamId;
+    return (
+      <tr key={r.team.id} className="cbb-row" style={{ borderBottom: `1px solid ${C.line}`, background: isUser ? C.panelAlt : "transparent", cursor: "pointer" }} onClick={() => onViewTeam(r.team.id)}>
+        <td style={{ ...td, width: 44 }}>
+          <span className="cbb-num" style={{ fontSize: 17, fontWeight: 700, color: i < 25 ? C.wood : C.dim }}>{i + 1}</span>
+        </td>
+        <td style={{ ...td, fontWeight: isUser ? 700 : 500 }}>
+          <span style={{ borderBottom: isUser ? "none" : `1px dotted ${C.dim}` }}>{r.team.name}</span>{isUser ? " (you)" : ""}
+        </td>
+        <td style={{ ...td, color: C.dim }}>{r.team.conf}</td>
+        <td style={td} className="cbb-num">{r.wins}-{r.losses}</td>
+      </tr>
+    );
+  };
+
+  return (
+    <div>
+      <div style={{ fontSize: 11.5, color: C.dimmer, marginBottom: 14, maxWidth: 720 }}>
+        AP-style Top 25 — a blend of win percentage and team quality, so blue bloods with strong records rank high while a dominant mid-major that keeps winning can climb into the poll. Rankings drive tournament seeding. Click any team to preview them.
+      </div>
+      <Panel style={{ overflow: "hidden" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13.5 }}>
+          <thead>
+            <tr style={{ borderBottom: `1px solid ${C.line}`, color: C.dim, fontSize: 11, textAlign: "left" }}>
+              <th style={{ ...th, width: 44 }}>Rk</th><th style={th}>Team</th><th style={th}>Conf</th><th style={th}>Record</th>
+            </tr>
+          </thead>
+          <tbody>
+            {top25.map((r, i) => row(r, i))}
+            {showAll && rest.map((r, i) => row(r, i + 25))}
+          </tbody>
+        </table>
+      </Panel>
+      <button
+        onClick={() => setShowAll((v) => !v)}
+        className="cbb-btn"
+        style={{ marginTop: 14, background: "transparent", border: `1px solid ${C.line}`, color: C.dim, padding: "8px 16px", fontSize: 12.5, cursor: "pointer" }}
+      >
+        {showAll ? "Show Top 25 only" : `Show all ${ranked.length} teams`}
+      </button>
+    </div>
+  );
+}
+
+/* ---------- Postseason ---------- */
+function roundLabel(numMatchups) {
+  if (numMatchups === 1) return "FINAL";
+  if (numMatchups === 2) return "SEMIFINALS";
+  if (numMatchups === 4) return "QUARTERFINALS";
+  return `ROUND OF ${numMatchups * 2}`;
+}
+
+function MatchupBox({ m, seedOf, userTeamId, onViewTeam }) {
+  const line = (id, score, top) => {
+    if (!id) {
+      return <div style={{ padding: "5px 8px", color: C.dimmer, fontSize: 12, borderBottom: top ? `1px solid ${C.line}` : "none" }}>—</div>;
+    }
+    const t = TEAM_MAP[id];
+    const isWinner = m.winner === id;
+    const decided = !!m.winner;
+    const isUser = id === userTeamId;
+    const seed = seedOf ? seedOf(id) : null;
+    return (
+      <div
+        onClick={(e) => { e.stopPropagation(); onViewTeam && onViewTeam(id); }}
+        style={{
+          display: "flex", justifyContent: "space-between", alignItems: "center", gap: 6,
+          padding: "5px 8px", cursor: onViewTeam ? "pointer" : "default",
+          background: isUser ? C.panelAlt : "transparent",
+          borderBottom: top ? `1px solid ${C.line}` : "none",
+          color: decided && !isWinner ? C.dimmer : C.cream,
+          fontWeight: isWinner ? 700 : 400,
+        }}
+      >
+        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12 }}>
+          {seed ? <span className="cbb-num" style={{ color: C.dim, marginRight: 5, fontSize: 10.5 }}>{seed}</span> : null}
+          {t.name}
+        </span>
+        <span className="cbb-num" style={{ fontSize: 12, color: isWinner ? C.wood : C.dimmer }}>{score ?? ""}</span>
+      </div>
+    );
+  };
+  return (
+    <div style={{ border: `1px solid ${C.line}`, background: C.panel, minWidth: 158 }}>
+      {line(m.a, m.scoreA, true)}
+      {line(m.b, m.scoreB, false)}
+    </div>
+  );
+}
+
+function BracketView({ bracket, userTeamId, onViewTeam }) {
+  if (!bracket || bracket.rounds.length === 0) {
+    const champ = bracket?.champion;
+    return (
+      <div style={{ fontSize: 12, color: C.dim, padding: 8 }}>
+        {champ ? <>Auto-berth: <strong style={{ color: C.cream }}>{TEAM_MAP[champ].name}</strong></> : "No bracket"}
+      </div>
+    );
+  }
+  const seedOf = (id) => {
+    const i = bracket.seeds.indexOf(id);
+    return i >= 0 ? i + 1 : null;
+  };
+  return (
+    <div className="cbb-scroll" style={{ display: "flex", gap: 12, overflowX: "auto", paddingBottom: 6 }}>
+      {bracket.rounds.map((round, ri) => (
+        <div key={ri} style={{ display: "flex", flexDirection: "column", justifyContent: "space-around", gap: 8, minWidth: 158 }}>
+          <div style={{ fontSize: 9.5, color: C.dim, letterSpacing: "0.1em" }}>{roundLabel(round.length)}</div>
+          {round.map((m, mi) => (
+            <MatchupBox key={mi} m={m} seedOf={seedOf} userTeamId={userTeamId} onViewTeam={onViewTeam} />
+          ))}
+        </div>
+      ))}
+      {bracket.done && bracket.champion && (
+        <div style={{ display: "flex", flexDirection: "column", justifyContent: "center", minWidth: 150 }}>
+          <div style={{ fontSize: 9.5, color: C.gold, letterSpacing: "0.1em", marginBottom: 6 }}>CHAMPION</div>
+          <div style={{ border: `1px solid ${C.gold}`, background: C.panelAlt, padding: "8px 10px", display: "flex", alignItems: "center", gap: 8 }}>
+            <Crown size={15} color={C.gold} />
+            <span style={{ fontWeight: 700, fontSize: 13, color: bracket.champion === userTeamId ? C.gold : C.cream }}>{TEAM_MAP[bracket.champion].name}</span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PostseasonTab({ postseason, userTeamId, seasonOver, rankById, onStart, onSimRound, onViewTeam }) {
+  const userConf = TEAM_MAP[userTeamId].conf;
+
+  if (!postseason) {
+    return (
+      <div>
+        <SectionIntro>The road to the national title. Win your conference tournament for an automatic bid, or earn an at-large berth from the rankings, then survive six rounds of March Madness.</SectionIntro>
+        <Panel style={{ padding: 28, textAlign: "center", maxWidth: 460 }}>
+          {seasonOver ? (
+            <>
+              <Crown size={26} color={C.wood} />
+              <h3 className="cbb-num" style={{ fontSize: 20, fontWeight: 700, margin: "10px 0 6px" }}>Regular season complete</h3>
+              <div style={{ color: C.dim, fontSize: 13, marginBottom: 18 }}>Tip off the conference tournaments — brackets are seeded off the current rankings.</div>
+              <button onClick={onStart} className="cbb-btn" style={btnStyle(C.wood)}><Play size={13} /> Start Postseason</button>
+            </>
+          ) : (
+            <>
+              <div style={{ color: C.dim, fontSize: 13 }}>Finish the regular season on the Dashboard to unlock the postseason.</div>
+            </>
+          )}
+        </Panel>
+      </div>
+    );
+  }
+
+  const ps = postseason;
+  const phaseLabel = ps.phase === "conf" ? "Conference Tournaments" : ps.phase === "madness" ? "March Madness" : "Complete";
+  const canSim = ps.phase !== "done";
+
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12, marginBottom: 16 }}>
+        <div>
+          <div style={{ fontSize: 11, color: C.wood, letterSpacing: "0.08em", fontWeight: 600 }}>POSTSEASON</div>
+          <h2 className="cbb-num" style={{ fontSize: 24, fontWeight: 700, margin: "2px 0" }}>{phaseLabel}</h2>
+        </div>
+        {canSim && (
+          <button onClick={onSimRound} className="cbb-btn" style={btnStyle(C.wood)}>
+            <FastForward size={13} /> Sim Next Round
+          </button>
+        )}
+      </div>
+
+      {ps.champion && (
+        <Panel style={{ padding: 20, marginBottom: 18, borderColor: C.gold, background: C.panelAlt, display: "flex", alignItems: "center", gap: 14 }}>
+          <Crown size={30} color={C.gold} />
+          <div>
+            <div style={{ fontSize: 11, color: C.gold, letterSpacing: "0.1em" }}>NATIONAL CHAMPION</div>
+            <div className="cbb-num" style={{ fontSize: 26, fontWeight: 700, color: ps.champion === userTeamId ? C.gold : C.cream }}>
+              {TEAM_MAP[ps.champion].name}{ps.champion === userTeamId ? " — that's you!" : ""}
+            </div>
+            <div style={{ fontSize: 12, color: C.dim, marginTop: 2 }}>Head to the Dashboard to advance to next season.</div>
+          </div>
+        </Panel>
+      )}
+
+      {ps.phase === "conf" && (
+        <div>
+          <div style={{ fontSize: 12, color: C.wood, fontWeight: 600, letterSpacing: "0.06em", marginBottom: 8 }}>YOUR CONFERENCE — {userConf.toUpperCase()}</div>
+          <Panel style={{ padding: 14, marginBottom: 20 }}>
+            <BracketView bracket={ps.confBrackets[userConf]} userTeamId={userTeamId} onViewTeam={onViewTeam} />
+          </Panel>
+          <div style={{ fontSize: 12, color: C.wood, fontWeight: 600, letterSpacing: "0.06em", marginBottom: 8 }}>
+            CONFERENCE CHAMPIONS ({Object.keys(ps.confChampions).length}/{CONF_LIST.length})
+          </div>
+          <Panel style={{ overflow: "hidden" }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))" }}>
+              {CONF_LIST.map((conf) => {
+                const champ = ps.confChampions[conf];
+                return (
+                  <div key={conf} style={{ padding: "8px 12px", borderBottom: `1px solid ${C.line}`, borderRight: `1px solid ${C.line}`, display: "flex", justifyContent: "space-between", gap: 8 }}>
+                    <span style={{ fontSize: 11.5, color: C.dim, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{conf}</span>
+                    <span style={{ fontSize: 12, fontWeight: 600, color: champ ? (champ === userTeamId ? C.gold : C.cream) : C.dimmer }}>
+                      {champ ? TEAM_MAP[champ].name : "—"}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          </Panel>
+        </div>
+      )}
+
+      {ps.phase !== "conf" && ps.madness && (
+        <div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 16, marginBottom: 18 }}>
+            {ps.madness.regions.map((r) => (
+              <div key={r.name}>
+                <div style={{ fontSize: 12, color: C.wood, fontWeight: 600, letterSpacing: "0.06em", marginBottom: 8 }}>{r.name.toUpperCase()} REGION</div>
+                <Panel style={{ padding: 12 }}>
+                  <BracketView bracket={r.bracket} userTeamId={userTeamId} onViewTeam={onViewTeam} />
+                </Panel>
+              </div>
+            ))}
+          </div>
+          {ps.madness.finalFour && (
+            <div>
+              <div style={{ fontSize: 12, color: C.gold, fontWeight: 600, letterSpacing: "0.06em", marginBottom: 8 }}>FINAL FOUR</div>
+              <Panel style={{ padding: 14 }}>
+                <BracketView bracket={ps.madness.finalFour} userTeamId={userTeamId} onViewTeam={onViewTeam} />
+              </Panel>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SectionIntro({ children }) {
+  return <div style={{ fontSize: 11.5, color: C.dimmer, marginBottom: 14, maxWidth: 720 }}>{children}</div>;
 }
 
 /* =========================================================================
@@ -2385,6 +2993,7 @@ export default function CBBDynasty() {
       recruitingWeekIndex: 1,
       strengths: genSeasonStrengths(),
       history: [],
+      postseason: null,
     };
     setSession(state);
   }
