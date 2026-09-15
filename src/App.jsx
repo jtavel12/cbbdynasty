@@ -29,12 +29,35 @@ const C = {
 };
 
 const POSITIONS = ["PG", "SG", "SF", "PF", "C"];
+
+// The granular attribute model. Every player carries a rating for each of
+// these; a position's overall is a weighted blend of them (POS_WEIGHTS below).
+// Because the blend differs by position, the SAME attribute set produces a
+// different overall at each slot — which is how playing out of position costs
+// value (a pass-first PG graded under center weights loses his strengths).
+const ATTR_KEYS = [
+  "scoring", "threePoint", "rebounding", "passing", "ballHandling",
+  "steals", "blocks", "perimeterDefense", "postDefense", "athleticism",
+];
+const ATTR_LABELS = {
+  scoring: "Scoring", threePoint: "3PT Shooting", rebounding: "Rebounding",
+  passing: "Passing", ballHandling: "Ball Handling", steals: "Steals",
+  blocks: "Blocks", perimeterDefense: "Perimeter D", postDefense: "Post D",
+  athleticism: "Athleticism",
+};
+// How guard-like each slot is (1 = pure point guard, 0 = pure center). Drives
+// which attributes a position leans on and biases attribute generation so
+// guards handle/shoot and bigs rebound/protect the rim.
+const POS_GUARDNESS = { PG: 1, SG: 0.72, SF: 0.5, PF: 0.28, C: 0 };
+
+// Per-position weights over the 10 attributes. Each row sums to 1.0 so overalls
+// stay on the same 40-99 band regardless of position.
 const POS_WEIGHTS = {
-  PG: { scoring: 0.30, rebounding: 0.05, playmaking: 0.42, defense: 0.23 },
-  SG: { scoring: 0.42, rebounding: 0.10, playmaking: 0.20, defense: 0.28 },
-  SF: { scoring: 0.35, rebounding: 0.20, playmaking: 0.18, defense: 0.27 },
-  PF: { scoring: 0.28, rebounding: 0.37, playmaking: 0.08, defense: 0.27 },
-  C:  { scoring: 0.24, rebounding: 0.42, playmaking: 0.05, defense: 0.29 },
+  PG: { scoring: 0.12, threePoint: 0.12, rebounding: 0.03, passing: 0.20, ballHandling: 0.20, steals: 0.08, blocks: 0.01, perimeterDefense: 0.13, postDefense: 0.04, athleticism: 0.07 },
+  SG: { scoring: 0.20, threePoint: 0.20, rebounding: 0.06, passing: 0.08, ballHandling: 0.12, steals: 0.07, blocks: 0.02, perimeterDefense: 0.13, postDefense: 0.04, athleticism: 0.08 },
+  SF: { scoring: 0.18, threePoint: 0.14, rebounding: 0.12, passing: 0.08, ballHandling: 0.09, steals: 0.06, blocks: 0.04, perimeterDefense: 0.12, postDefense: 0.07, athleticism: 0.10 },
+  PF: { scoring: 0.15, threePoint: 0.07, rebounding: 0.22, passing: 0.05, ballHandling: 0.04, steals: 0.04, blocks: 0.12, perimeterDefense: 0.06, postDefense: 0.15, athleticism: 0.10 },
+  C:  { scoring: 0.14, threePoint: 0.03, rebounding: 0.24, passing: 0.04, ballHandling: 0.02, steals: 0.03, blocks: 0.16, perimeterDefense: 0.04, postDefense: 0.21, athleticism: 0.09 },
 };
 const CLASS_ORDER = ["FR", "SO", "JR", "SR"];
 
@@ -547,7 +570,7 @@ function realPlayersFor(team, year) {
     _unmatchedLogged.add(team.name);
     console.warn(`[real data] no exact roster match for "${team.name}" (tried "${alias || team.name}") in ${year}.`);
   }
-  return matched.filter((r) => r.player);
+  return matched.filter(isPlausibleRosterRow);
 }
 
 /* -------------------------------------------------------------------------
@@ -630,17 +653,64 @@ function fullName() { return `${pick(FIRST_NAMES)} ${pick(LAST_NAMES)}`; }
 /* =========================================================================
    PLAYER / ATTRIBUTE GENERATION
    ========================================================================= */
+// A player's best full-ish season scoring average across their whole career,
+// ignoring strength of competition. Lets genuine outliers at small programs
+// (the Damian Lillard-at-Weber-State case) earn credit their single-season
+// line plus the competition penalty would otherwise bury.
+function careerScoringPeak(name) {
+  const c = name ? CAREER_INDEX[name] : null;
+  if (!c) return 0;
+  let peak = 0;
+  for (const r of c) {
+    if ((Number(r.gp) || 0) < 5) continue;
+    const pg = perGame(r.ppg, r.gp);
+    if (pg > peak) peak = pg;
+  }
+  return peak;
+}
+function careerOutlierBonus(name) {
+  const peak = careerScoringPeak(name);
+  if (peak >= 24) return 12;
+  if (peak >= 20) return 8;
+  if (peak >= 17) return 5;
+  if (peak >= 14) return 2;
+  return 0;
+}
+
+// Overall lives on a strict 40-99 scale (see genAttrs* — every attribute is
+// floored at 40), so the minutes-weighted team overalls and sim math all sit
+// on the same band.
 function computeOverall(pos, attrs) {
-  const w = POS_WEIGHTS[pos];
-  return Math.round(attrs.scoring * w.scoring + attrs.rebounding * w.rebounding +
-    attrs.playmaking * w.playmaking + attrs.defense * w.defense);
+  const w = POS_WEIGHTS[pos] || POS_WEIGHTS.SF;
+  let sum = 0;
+  for (const k of ATTR_KEYS) sum += (attrs[k] ?? 40) * (w[k] ?? 0);
+  return clamp(Math.round(sum), 40, 99);
+}
+
+// A player's effective overall if fielded at `pos` — identical to their listed
+// overall at their natural position, lower when slotted somewhere their skills
+// don't fit. This is the out-of-position penalty, applied wherever the depth
+// chart actually plays someone.
+function overallAtPos(player, pos) {
+  return computeOverall(pos, player.attrs);
+}
+
+// Re-apply persisted progression points on top of a freshly (re)derived
+// attribute set. Real players re-derive from their real stat line every year,
+// so their manually-earned development would vanish without this.
+function applyBoosts(attrs, boosts) {
+  if (!boosts) return attrs;
+  const out = { ...attrs };
+  for (const k of ATTR_KEYS) if (boosts[k]) out[k] = clamp((out[k] ?? 40) + boosts[k], 40, 99);
+  return out;
 }
 
 function ratingToStars(rating) {
   if (rating >= 0.985) return 5;
-  if (rating >= 0.890) return 4;
-  if (rating >= 0.790) return 3;
-  return 2;
+  if (rating >= 0.930) return 4;
+  if (rating >= 0.850) return 3;
+  if (rating >= 0.780) return 2;
+  return 1;
 }
 
 // A raw stat line means very different things depending on who you racked
@@ -653,18 +723,26 @@ function competitionMultiplier(tier) {
   return 0.65 + tier * 0.8; // tier 0 (weakest programs) -> 0.65x, tier 1 (blue bloods) -> 1.45x
 }
 
-function genAttrsFromTier(tier) {
-  // tier ~ 0..1, higher = more talented incoming baseline.
-  // tier 0 (weakest programs) -> base 38, tier 1 (blue bloods) -> base 99,
-  // so top-tier talent can genuinely reach a 99 overall.
-  const base = 38 + tier * 61;
-  const spread = 10;
+function genAttrsFromTier(tier, pos = "SF") {
+  // tier ~ 0..1, higher = more talented incoming baseline. Mapped onto the
+  // 40-99 scale: a bottom-tier program's baseline lands near 40, a blue-blood's
+  // near 86. Attributes are biased by position so a generated PG handles/shoots
+  // and a generated C rebounds/protects the rim.
+  const base = 40 + tier * 46;
+  const g = POS_GUARDNESS[pos] ?? 0.5, big = 1 - g;
+  const a = (bias = 0) => clamp(Math.round(rand(base - 9, base + 9) + bias), 40, 99);
   return {
-    scoring: clamp(Math.round(rand(base - spread, base + spread)), 25, 99),
-    rebounding: clamp(Math.round(rand(base - spread, base + spread)), 25, 99),
-    playmaking: clamp(Math.round(rand(base - spread, base + spread)), 25, 99),
-    defense: clamp(Math.round(rand(base - spread, base + spread)), 25, 99),
-    potential: clamp(Math.round(rand(base - 5, base + 25)), 30, 99),
+    scoring: a(),
+    threePoint: a(g * 6 - 3),
+    rebounding: a(big * 8 - 4),
+    passing: a(g * 6 - 3),
+    ballHandling: a(g * 8 - 4),
+    steals: a(g * 4 - 2),
+    blocks: a(big * 8 - 4),
+    perimeterDefense: a(g * 4 - 2),
+    postDefense: a(big * 8 - 4),
+    athleticism: a(),
+    potential: clamp(Math.round(rand(base, base + 24)), 40, 99),
   };
 }
 
@@ -673,7 +751,7 @@ function genAttrsFromTier(tier) {
 // rate as a good player instead of a random dice roll. `tier` should be the
 // strength of competition they actually earned these stats against (the
 // team they played for), NOT necessarily the team signing them.
-function genAttrsFromRealStats(real, tier) {
+function genAttrsFromRealStats(real, tier, careerBonus = 0, pos = "SF") {
   const mult = competitionMultiplier(tier);
   // Convert season totals -> per game, then scale by competition and damp
   // tiny samples so a 3-game fluke can't out-rate a full-season contributor.
@@ -681,58 +759,129 @@ function genAttrsFromRealStats(real, tier) {
   const ppg = perGame(real.ppg, real.gp) * mult * rel;
   const rpg = perGame(real.rpg, real.gp) * mult * rel;
   const apg = perGame(real.apg, real.gp) * mult * rel;
-  const scoring = clamp(Math.round(32 + ppg * 2.6), 25, 99);
-  const rebounding = clamp(Math.round(30 + rpg * 5.0), 25, 99);
-  const playmaking = clamp(Math.round(30 + apg * 6.5), 25, 99);
-  // No reliable real defensive stat wired in yet — blend toward team tier
-  // rather than pure random, so it isn't wildly inconsistent with the rest.
-  const tierBase = 38 + tier * 40;
-  const defense = clamp(Math.round(rand(tierBase - 8, tierBase + 8)), 25, 99);
-  const peak = Math.max(scoring, rebounding, playmaking);
-  const potential = clamp(Math.round(rand(peak - 3, Math.min(99, peak + 12))), 30, 99);
-  return { scoring, rebounding, playmaking, defense, potential };
+  const prod = ppg + rpg + apg;
+  const g = POS_GUARDNESS[pos] ?? 0.5, big = 1 - g;
+  const cb = careerBonus; // 0-12, credit for proven outliers regardless of level
+  const R = (v) => clamp(Math.round(v), 40, 99);
+  // Only ppg/rpg/apg are available, so each attribute is derived from the box
+  // stat that best correlates with it, then shaded by position tendency:
+  // scoring/passing/rebounding come straight off production; shooting and ball
+  // handling lean guard; blocks and post defense lean big; steals/perimeter D
+  // lean guard. Career + competition credit lifts genuine talents.
+  const scoring = R(42 + ppg * 2.3 + cb);
+  const threePoint = R(42 + ppg * 1.3 * (0.5 + g) + g * 8 + cb * 0.6);
+  const rebounding = R(40 + rpg * 4.6 + big * 4 + cb * 0.5);
+  const passing = R(40 + apg * 6.0 + cb * 0.5);
+  const ballHandling = R(42 + apg * 3.5 + g * 14 + cb * 0.4);
+  const steals = R(42 + apg * 1.6 + g * 8 + Math.min(prod, 20) * 0.2 + cb * 0.3);
+  const blocks = R(40 + rpg * 2.2 + big * 12 + cb * 0.3);
+  const perimeterDefense = R(44 + g * 10 + Math.min(prod, 22) * 0.3 + tier * 10 + cb * 0.3);
+  const postDefense = R(42 + rpg * 2.6 + big * 12 + tier * 8 + cb * 0.3);
+  const athleticism = R(46 + Math.min(prod, 24) * 0.6 + tier * 8 + cb * 0.4);
+  const peak = Math.max(scoring, rebounding, passing);
+  const potential = clamp(Math.round(rand(peak - 2, Math.min(99, peak + 10))), 40, 99);
+  return { scoring, threePoint, rebounding, passing, ballHandling, steals, blocks, perimeterDefense, postDefense, athleticism, potential };
 }
 
 // A real player who logged no games / no production barely played. Rate them
 // as a deep-bench walk-on regardless of program prestige — this is the fix
 // for no-stat guys (e.g. Steve Johnson at Duke) reading as 90+ overall
 // because they used to fall through to the blue-blood tier roll.
-function genAttrsBenchReal(tier) {
-  const base = 42 + tier * 8; // 42..50 — a touch better at stronger programs
-  const spread = 6;
-  const a = () => clamp(Math.round(rand(base - spread, base + spread)), 25, 99);
-  return {
-    scoring: a(), rebounding: a(), playmaking: a(), defense: a(),
-    potential: clamp(Math.round(rand(base, base + 22)), 30, 99),
-  };
+// Auto-generated walk-ons, and real players who never logged real minutes,
+// rate as deep-bench bodies: every overall lands in the 40-45 band by
+// construction (all four driving attributes are drawn from 40-45).
+function genAttrsWalkOn() {
+  const a = () => clamp(randInt(40, 45), 40, 45);
+  const out = {};
+  for (const k of ATTR_KEYS) out[k] = a();
+  out.potential = clamp(randInt(44, 60), 40, 99);
+  return out;
 }
 
-// Maps CBBD's free-text position strings onto our five roster slots.
+// Maps CBBD's free-text position strings onto our five roster slots. Returns
+// null for generic/unknown tags ("Guard", "Forward", "Athlete", "N/A") so a
+// stat-based inference can take over.
 function mapRealPosition(raw) {
   if (!raw) return null;
-  const s = String(raw).toLowerCase();
+  const s = String(raw).toLowerCase().trim();
   if (s.includes("point")) return "PG";
   if (s.includes("shooting")) return "SG";
   if (s.includes("center")) return "C";
   if (s.includes("power")) return "PF";
-  if (s.includes("forward")) return "SF";
-  if (s === "g" || s.includes("guard")) return "SG";
-  if (s === "f") return "SF";
-  if (s === "c") return "C";
+  if (s.includes("small")) return "SF";
   return null;
 }
 
-function makePlayer({ pos, classYear, prestige, starsAtSigning, real }) {
+// Data has no height, and position tags are frequently generic or flat-out
+// wrong (e.g. Antoine Jacks, a sub-6ft point guard, tagged Power Forward). We
+// infer a slot from the player's statistical profile instead: assist-heavy
+// guards, rebound-heavy bigs, everything else on the wing.
+function inferPositionFromStats(real) {
+  const gp = Number(real?.gp) || 0;
+  if (!gp) return null;
+  const ppg = perGame(real.ppg, gp);
+  const rpg = perGame(real.rpg, gp);
+  const apg = perGame(real.apg, gp);
+  if (apg >= 3.5 && apg >= rpg) return "PG";
+  if (rpg >= 7) return "C";
+  if (rpg >= 5.2) return "PF";
+  if (apg >= 2.2 && rpg < 4.2) return apg >= 3 ? "PG" : "SG";
+  if (rpg >= 3.8) return "SF";
+  return apg >= 1.6 ? "SG" : "SF";
+}
+
+// The final slot for a real player: trust a SPECIFIC tag (Point/Shooting/Small/
+// Power/Center) unless the stats make it clearly implausible — a "big" who
+// never rebounds and dishes like a guard gets reclassified. Generic/missing
+// tags fall straight through to the stat inference.
+function resolvePosition(real) {
+  const mapped = mapRealPosition(real?.position);
+  const inferred = inferPositionFromStats(real);
+  if (!mapped) return inferred || "SF";
+  const gp = Number(real?.gp) || 0;
+  if (gp > 0 && inferred) {
+    const listedBig = mapped === "C" || mapped === "PF";
+    const playsGuard = inferred === "PG" || inferred === "SG";
+    if (listedBig && playsGuard && perGame(real.rpg, gp) < 3.5 && perGame(real.apg, gp) >= 2.5) {
+      return inferred; // tagged as a big but statistically a guard
+    }
+    const listedGuard = mapped === "PG" || mapped === "SG";
+    const playsBig = inferred === "C" || inferred === "PF";
+    if (listedGuard && playsBig && perGame(real.rpg, gp) >= 7 && perGame(real.apg, gp) < 1.5) {
+      return inferred; // tagged as a guard but statistically a big
+    }
+  }
+  return mapped;
+}
+
+// Drop rows that don't look like real men's-D1 roster members — the source
+// mixes in stray/erroneous names (e.g. a women's-team player showing up on a
+// men's roster) that recorded no participation at all. We can't ADD players
+// the dataset is missing, but we can filter obvious non-participants.
+function isPlausibleRosterRow(r) {
+  if (!r || !r.player) return false;
+  const gp = Number(r.gp) || 0;
+  const anyStat = (Number(r.ppg) || 0) + (Number(r.rpg) || 0) + (Number(r.apg) || 0) > 0;
+  if (gp <= 0 && !anyStat) return false;
+  return true;
+}
+
+function makePlayer({ pos, classYear, prestige, starsAtSigning, real, walkOn }) {
   const tier = clamp((prestige - 1) / 4 + rand(-0.12, 0.12), 0, 1);
   const gp = Number(real?.gp) || 0;
-  const hasStats = !!real && gp > 0 && (real.ppg != null || real.rpg != null || real.apg != null);
-  // Real player, but no usable box score => barely played => deep bench.
-  const isRealBench = !!real && !hasStats;
+  // A real player only rates off their box score if they actually PRODUCED —
+  // a meaningful sample (5+ games) and non-trivial combined per-game output.
+  // Otherwise they're a deep-bench body / walk-on and rate in the 40-45 band,
+  // regardless of how prestigious their program is (fixes no-impact players at
+  // blue bloods reading like rotation pieces).
+  const combinedPg = perGame(real?.ppg, gp) + perGame(real?.rpg, gp) + perGame(real?.apg, gp);
+  const hasStats = !!real && gp >= 5 && combinedPg >= 3;
+  // Real contributor -> derive from real production (+ career-outlier credit).
+  // Everyone else — real no-stat benchwarmers AND purely generated filler /
+  // walk-ons — rates in the 40-45 band.
   const attrs = hasStats
-    ? genAttrsFromRealStats(real, tier)
-    : isRealBench
-      ? genAttrsBenchReal(tier)
-      : genAttrsFromTier(tier);
+    ? genAttrsFromRealStats(real, tier, careerOutlierBonus(real.player), pos)
+    : genAttrsWalkOn();
   const overall = computeOverall(pos, attrs);
   return {
     id: uid(),
@@ -741,6 +890,12 @@ function makePlayer({ pos, classYear, prestige, starsAtSigning, real }) {
     realKey: real?.player || null,
     originalTier: tier,
     realStats: hasStats,
+    // Purely generated roster filler (no real-data counterpart) are walk-ons and
+    // can never hold a scholarship. Real players are scholarship-eligible; the
+    // final scholarship/non-scholarship split is decided by assignScholarships.
+    generatedWalkOn: !real && !!walkOn,
+    scholarship: !!real,
+    boosts: {},
     pos,
     class: classYear,
     height: `${randInt(6, 6)}'${randInt(9, 11)}"`.replace("6'11\"", "6'11\""),
@@ -752,67 +907,49 @@ function makePlayer({ pos, classYear, prestige, starsAtSigning, real }) {
   };
 }
 
-const ROSTER_MIN = 10;
-const ROSTER_MAX = 13;
+const ROSTER_SIZE = 16;        // every team carries a full 16-man roster
+const SCHOLARSHIP_LIMIT = 13;  // at most 13 of them are on scholarship
 
-// Base 2-per-position (10 total, satisfying ROSTER_MIN by construction),
-// then randomly distribute up to 3 extra bench spots to reach ROSTER_MAX.
-function rosterSlotPlan() {
-  const base = { PG: 2, SG: 2, SF: 2, PF: 2, C: 2 };
-  const extras = randInt(0, ROSTER_MAX - ROSTER_MIN);
-  for (let i = 0; i < extras; i++) {
-    const pos = pick(POSITIONS);
-    if (base[pos] < 4) base[pos] += 1;
-  }
-  return POSITIONS.map((p) => [p, base[p]]);
+// Decide who holds a scholarship: generated walk-ons never do; among the real
+// players, the top 13 by overall are on scholarship and any beyond that (a team
+// carrying more than 13 real players) drop to non-scholarship — i.e. the
+// statistically weakest real players lose the scholarship, per the roster rules.
+function assignScholarships(roster) {
+  const realOnes = roster.filter((p) => !p.generatedWalkOn);
+  const ranked = [...realOnes].sort((a, b) => b.overall - a.overall);
+  const scho = new Set(ranked.slice(0, SCHOLARSHIP_LIMIT).map((p) => p.id));
+  return roster.map((p) => ({ ...p, scholarship: !p.generatedWalkOn && scho.has(p.id) }));
 }
 
 function buildInitialRoster(team, year) {
-  const slots = rosterSlotPlan();
   const classesForSlot = ["SR", "JR", "SO", "FR"];
-  const realPlayers = shuffled(realPlayersFor(team, year));
-  const byPos = { PG: [], SG: [], SF: [], PF: [], C: [], UNK: [] };
-  realPlayers.forEach((r) => {
-    const p = mapRealPosition(r.position) || "UNK";
-    byPos[p].push(r);
-  });
-
   // Use the player's TRUE career start (earliest season anywhere in the data),
   // not the data's per-team startSeason — otherwise every transfer reads FR.
-  function realClassFor(real) {
-    return realClassForName(real?.player, year, real?.startSeason);
+  const realClassFor = (real) => realClassForName(real?.player, year, real?.startSeason);
+
+  // Every real player on the team makes the roster — no position-slot cap can
+  // drop a genuine contributor (the bug that hid Tulane's Rowan Brumbaugh).
+  let roster = shuffled(realPlayersFor(team, year)).map((r, i) => {
+    const pos = resolvePosition(r) || "SF";
+    return makePlayer({ pos, classYear: realClassFor(r) || classesForSlot[i % classesForSlot.length], prestige: team.prestige, real: r });
+  });
+
+  // If a team somehow lists more than 16 real players, keep the best 16 so the
+  // stars are never the ones cut.
+  if (roster.length > ROSTER_SIZE) {
+    roster = [...roster].sort((a, b) => b.overall - a.overall).slice(0, ROSTER_SIZE);
   }
 
-  // Pass 1: fill each slot preferentially with a real player at that exact
-  // position. Slots that can't be filled this way stay null for now
-  // rather than immediately going generated — a team can easily have more
-  // real players at one position than we have slots for, and those extras
-  // shouldn't be thrown away while another position goes fully synthetic.
-  const roster = [];
-  const openSlots = [];
-  slots.forEach(([pos, count]) => {
-    for (let i = 0; i < count; i++) {
-      const real = byPos[pos].shift();
-      if (real) {
-        roster.push(makePlayer({ pos, classYear: realClassFor(real) || classesForSlot[i % classesForSlot.length], prestige: team.prestige, real }));
-      } else {
-        openSlots.push({ pos, i });
-      }
-    }
-  });
+  // Fill any remaining spots to a full 16 with generated walk-ons at whatever
+  // position is currently thinnest.
+  while (roster.length < ROSTER_SIZE) {
+    const counts = Object.fromEntries(POSITIONS.map((p) => [p, 0]));
+    roster.forEach((p) => { counts[p.pos] = (counts[p.pos] || 0) + 1; });
+    const thinnest = POSITIONS.reduce((a, b) => (counts[a] <= counts[b] ? a : b));
+    roster.push(makePlayer({ pos: thinnest, classYear: pick(["FR", "SO", "JR"]), prestige: team.prestige, walkOn: true }));
+  }
 
-  // Pass 2: backfill remaining open slots with ANY leftover real player
-  // (surplus at an over-represented position, or unmapped/UNK position) —
-  // labeled as playing the slot's position in-game, since a coarse
-  // position tag matters far less than actually being a real person.
-  const leftoverReal = [...POSITIONS.flatMap((p) => byPos[p]), ...byPos.UNK];
-  openSlots.forEach(({ pos, i }) => {
-    const real = leftoverReal.shift();
-    const classYear = realClassFor(real) || classesForSlot[i % classesForSlot.length];
-    roster.push(makePlayer({ pos, classYear, prestige: team.prestige, real }));
-  });
-
-  return roster;
+  return assignScholarships(roster);
 }
 
 function defaultDepthChart(roster) {
@@ -848,136 +985,198 @@ function findOurTeamByRealName(realTeamName) {
   return TEAMS.find((t) => normalizeTeamKey(TORVIK_TEAM_ALIASES[t.name] || t.name) === key) || null;
 }
 
-function realRecruitsFor(year) {
+// Every prospect carries a 1-5 star rating now (no more "unranked"). Stars are
+// driven by a composite production value adjusted for level of competition.
+function starsFromValue(v) {
+  if (v >= 17) return 5;
+  if (v >= 12) return 4;
+  if (v >= 7) return 3;
+  if (v >= 3) return 2;
+  return 1;
+}
+
+// Fresh, per-cycle recruiting-trail bookkeeping shared by every recruit object.
+function freshTrailState() {
+  return {
+    committedTo: null,
+    interest: 0,               // 0-100 warmth toward YOUR program
+    rivalPressure: randInt(15, 45),
+    offerExtended: false,
+    callsUsed: 0,
+    callsThisWeek: 0,
+    visitsUsed: 0,             // official visits (1 max)
+    homeVisitsUsed: 0,         // home visits (2 max/season, not same week)
+    homeVisitWeek: 0,
+    signWeek: null,
+  };
+}
+
+// Build one board entry from a real newcomer row for `year`.
+function buildRealNewcomer(r, year) {
+  const ourTeam = findOurTeamByRealName(r.team);
+  const originalPrestige = ourTeam?.prestige ?? 2;
+  const tier = clamp((originalPrestige - 1) / 4, 0, 1);
+  const transfer = isTransferName(r.player, year);
+  const classYear = transfer ? (realClassForName(r.player, year, r.startSeason) || "SO") : "FR";
+  // Grade off the debut season so scouts rate a prospect the way they would
+  // coming out of high school, regardless of how the career later develops.
+  const firstRow = transfer ? (realStatRowForName(r.player, careerStartYear(r.player, r.startSeason)) || r) : r;
+  const frGp = Number(firstRow.gp) || 0;
+  const frPpg = perGame(firstRow.ppg, firstRow.gp);
+  const frRpg = perGame(firstRow.rpg, firstRow.gp);
+  const frApg = perGame(firstRow.apg, firstRow.gp);
+  // Composite production (points + boards + assists), scaled by strength of
+  // competition, then nudged by a career-arc credit so proven talents from
+  // small schools still grade like the stars they became.
+  const rawValue = frPpg + frRpg * 0.7 + frApg * 0.9;
+  const adjustedValue = rawValue * competitionMultiplier(tier) * sampleReliability(frGp) + careerOutlierBonus(r.player) * 0.4;
+  const stars = starsFromValue(adjustedValue);
+  const rating = clamp(0.55 + (adjustedValue / 26) * 0.44, 0.55, 1.0);
+  return {
+    id: uid(),
+    name: r.player,
+    pos: resolvePosition(r) || pick(POSITIONS),
+    state: parseStateFromHometown(r.hometown) || "\u2014",
+    classYear,
+    isTransfer: transfer,
+    stars,
+    rating: Math.round(rating * 10000) / 10000,
+    real: true,
+    realStats: { ppg: firstRow.ppg, rpg: firstRow.rpg, apg: firstRow.apg, gp: firstRow.gp },
+    originalTeam: r.team,
+    originalPrestige,
+    signedPrestige: originalPrestige, // caliber of program they actually chose
+    adjustedValue,
+    hsStatline: { ppg: frPpg.toFixed(1), rpg: frRpg.toFixed(1) },
+    ...freshTrailState(),
+  };
+}
+
+// Real newcomers for `year`, optionally filtered to true freshmen or transfers.
+// De-duped by name (the source can list a player under multiple team rows).
+function realNewcomersFor(year, kind = "all") {
   const rows = torvikPlayers[String(year)];
   if (!rows || !rows.length) return [];
-  const newcomers = rows.filter((r) => r.player && r.startSeason === year && findOurTeamByRealName(r.team));
+  const seen = new Set();
+  const newcomers = rows.filter((r) => {
+    if (!(r.player && r.startSeason === year && isPlausibleRosterRow(r) && findOurTeamByRealName(r.team))) return false;
+    if (seen.has(r.player)) return false;
+    seen.add(r.player);
+    return true;
+  });
   return newcomers
-    .map((r) => {
-      const originalPrestige = findOurTeamByRealName(r.team)?.prestige ?? 2;
-      const tier = clamp((originalPrestige - 1) / 4, 0, 1);
-      // A newcomer who already played in a prior season is a transfer, not a
-      // true freshman — label their class from their real career start.
-      const transfer = isTransferName(r.player, year);
-      const classYear = transfer ? (realClassForName(r.player, year, r.startSeason) || "SO") : "FR";
-      // Star rating reflects the player's FRESHMAN season, so the board grades
-      // them the same way scouts would coming out of high school — regardless
-      // of how their career later develops once signed. For a true freshman
-      // that's this row; for a transfer we reach back to their debut season.
-      const firstRow = transfer ? (realStatRowForName(r.player, careerStartYear(r.player, r.startSeason)) || r) : r;
-      const frGp = Number(firstRow.gp) || 0;
-      const frPpg = perGame(firstRow.ppg, firstRow.gp);
-      const frRpg = perGame(firstRow.rpg, firstRow.gp);
-      // Value used for star rating / sort order is freshman-year per-game
-      // production ADJUSTED for strength of competition — "20 ppg at a small
-      // program shouldn't outrank 10 ppg at a high-major." Raw stats are kept
-      // (and shown) separately so the board stays honest.
-      const adjustedPpg = frPpg * competitionMultiplier(tier) * sampleReliability(frGp);
-      const stars = adjustedPpg >= 16 ? 5 : adjustedPpg >= 11 ? 4 : adjustedPpg >= 6 ? 3 : null;
-      const rating = stars ? clamp(0.70 + (adjustedPpg / 30) * 0.30, 0.70, 1.0) : null;
-      return {
-        id: uid(),
-        name: r.player,
-        pos: mapRealPosition(r.position) || pick(POSITIONS),
-        state: parseStateFromHometown(r.hometown) || "—",
-        classYear,
-        isTransfer: transfer,
-        stars,
-        rating: rating ? Math.round(rating * 10000) / 10000 : null,
-        real: true,
-        // Freshman-season line drives the signed player's STARTING attributes;
-        // year-over-year progression then tracks their real career from there.
-        realStats: { ppg: firstRow.ppg, rpg: firstRow.rpg, apg: firstRow.apg, gp: firstRow.gp },
-        originalTeam: r.team,
-        originalPrestige,
-        adjustedValue: adjustedPpg,
-        hsStatline: { ppg: frPpg.toFixed(1), rpg: frRpg.toFixed(1) },
-        committedTo: null,
-        interest: 0,
-        rivalPressure: randInt(15, 45),
-        offerExtended: false,
-        callsUsed: 0,
-        visitsUsed: 0,
-        homeVisitsUsed: 0,
-      };
-    })
+    .map((r) => buildRealNewcomer(r, year))
+    .filter((rec) => kind === "all" ? true : kind === "transfer" ? rec.isTransfer : !rec.isTransfer)
     .sort((a, b) => b.adjustedValue - a.adjustedValue);
 }
 
-function genRecruitPool(year) {
-  const real = realRecruitsFor(year);
-  if (real.length > 0) return real;
-
+// Synthetic fallback for cycles/portals with no real data.
+function genSyntheticPool(kind) {
   const pool = [];
-  const n = 90;
+  const n = kind === "transfer" ? 45 : 90;
   for (let i = 0; i < n; i++) {
-    const roll = Math.random();
-    let stars, rating;
-    if (roll > 0.985) { stars = 5; rating = rand(0.985, 1.0); }
-    else if (roll > 0.90) { stars = 4; rating = rand(0.890, 0.9849); }
-    else if (roll > 0.55) { stars = 3; rating = rand(0.790, 0.8899); }
-    else { stars = null; rating = null; } // unranked — resolved at signing
-
+    const productionScore = randInt(35, 99);
+    const adjustedValue = (productionScore / 99) * 22;
+    const stars = starsFromValue(adjustedValue);
+    const rating = clamp(0.55 + (adjustedValue / 26) * 0.44, 0.55, 1.0);
     const pos = pick(POSITIONS);
-    const productionScore = randInt(35, 99); // HS per-game production proxy (0-99)
     pool.push({
       id: uid(),
       name: fullName(),
       pos,
       state: pick(STATES),
-      classYear: "FR",
+      classYear: kind === "transfer" ? pick(["SO", "JR", "SR"]) : "FR",
+      isTransfer: kind === "transfer",
       stars,
-      rating: rating ? Math.round(rating * 10000) / 10000 : null,
+      rating: Math.round(rating * 10000) / 10000,
       productionScore,
+      adjustedValue,
+      signedPrestige: clamp(Math.round(stars), 1, 5),
       hsStatline: {
-        ppg: (productionScore / 99 * 22 + rand(2, 6)).toFixed(1),
-        rpg: (pos === "C" || pos === "PF" ? productionScore / 99 * 10 + rand(1, 3) : productionScore / 99 * 5 + rand(1, 2)).toFixed(1),
+        ppg: ((productionScore / 99) * 22 + rand(2, 6)).toFixed(1),
+        rpg: ((pos === "C" || pos === "PF") ? (productionScore / 99) * 10 + rand(1, 3) : (productionScore / 99) * 5 + rand(1, 2)).toFixed(1),
       },
-      committedTo: null,
-      // --- recruiting-trail state ---
-      interest: 0,          // 0-100, how warm this recruit is on YOUR program
-      rivalPressure: randInt(15, 45), // how hard other schools are working them
-      offerExtended: false,
-      callsUsed: 0,
-      visitsUsed: 0,
-      homeVisitsUsed: 0,
+      ...freshTrailState(),
     });
   }
-  return pool.sort((a, b) => (b.rating ?? 0) - (a.rating ?? 0));
+  return pool;
+}
+
+// Assign a national rank (1 = best) across the whole board by prospect value.
+function rankBoard(board) {
+  const sorted = [...board].sort((a, b) => (b.adjustedValue ?? (b.rating ?? 0) * 20) - (a.adjustedValue ?? (a.rating ?? 0) * 20));
+  sorted.forEach((r, i) => { r.nationalRank = i + 1; });
+  return sorted;
+}
+
+// In-season high-school class (true freshmen only; transfers wait for the
+// off-season portal below).
+function genRecruitPool(year) {
+  const real = realNewcomersFor(year, "fr");
+  return rankBoard(real.length > 0 ? real : genSyntheticPool("fr"));
+}
+
+// Off-season transfer portal.
+function genTransferBoard(year) {
+  const real = realNewcomersFor(year, "transfer");
+  return rankBoard(real.length > 0 ? real : genSyntheticPool("transfer"));
+}
+
+// Seed each recruit's STARTING interest relative to the coach's program: a
+// recruit who (in real life) chose this exact program starts warm (50-75%),
+// one who chose a similar-caliber program starts warmer than one who chose a
+// very different level. A blue-chip who signed with a powerhouse has ~no
+// interest in a low-major — the Anthony-Davis-won't-look-at-you effect.
+function seedInterest(board, team) {
+  return board.map((r) => {
+    const here = r.real && findOurTeamByRealName(r.originalTeam)?.id === team.id;
+    if (here) return { ...r, interest: randInt(50, 75) };
+    const signedPr = r.signedPrestige ?? r.originalPrestige ?? 3;
+    const gap = Math.abs(team.prestige - signedPr);
+    const interest = clamp(Math.round(58 - gap * 20 + rand(-6, 6)), 1, 55);
+    return { ...r, interest };
+  });
 }
 
 /* --- Skill-based recruiting actions ------------------------------------ */
+// Per spec: offer once (5), phone calls (5, up to twice a week), official
+// visit (25, once per recruit), home visit (20, twice a season but not in the
+// same week). Interest gained scales with the effort — a visit lands far more
+// than a call.
 const RECRUIT_ACTIONS = {
-  CALL: { key: "CALL", label: "Phone Call", cost: 5, gain: [3, 7], maxUses: 8 },
-  VISIT: { key: "VISIT", label: "Campus Visit", cost: 18, gain: [9, 15], maxUses: 2 },
-  OFFER: { key: "OFFER", label: "Scholarship Offer", cost: 14, gain: [6, 10], maxUses: 1, oneTime: true },
-  HOME: { key: "HOME", label: "Home Visit", cost: 26, gain: [13, 20], maxUses: 1, minInterest: 25 },
+  CALL:  { key: "CALL",  label: "Phone Call",        cost: 5,  gain: [4, 8],   perWeek: 2 },
+  OFFER: { key: "OFFER", label: "Scholarship Offer", cost: 5,  gain: [6, 10],  oneTime: true },
+  VISIT: { key: "VISIT", label: "Official Visit",    cost: 25, gain: [16, 26], maxUses: 1 },
+  HOME:  { key: "HOME",  label: "Home Visit",        cost: 20, gain: [11, 18], maxSeason: 2 },
 };
 
+// Weekly recruiting points by program tier: high-majors 100, mid-majors 75,
+// low-majors 50.
 function weeklyRecruitingBudget(team) {
-  return 80 + team.prestige * 12; // stronger staffs cover more ground each week
+  if (team.prestige >= 4) return 100;
+  if (team.prestige === 3) return 75;
+  return 50;
 }
 
-function usesFieldFor(actionKey) {
-  return actionKey === "CALL" ? "callsUsed" : actionKey === "VISIT" ? "visitsUsed" : actionKey === "HOME" ? "homeVisitsUsed" : null;
-}
-
-function canTakeAction(recruit, actionKey, pointsLeft) {
+function canTakeAction(recruit, actionKey, pointsLeft, weekIndex = 0) {
   const action = RECRUIT_ACTIONS[actionKey];
+  if (recruit.committedTo) return false;
   if (pointsLeft < action.cost) return false;
   if (actionKey === "OFFER") return !recruit.offerExtended;
-  if (actionKey === "HOME") return recruit.offerExtended && recruit.interest >= action.minInterest && recruit.homeVisitsUsed < action.maxUses;
-  const field = usesFieldFor(actionKey);
-  return recruit[field] < action.maxUses;
+  if (actionKey === "CALL") return (recruit.callsThisWeek || 0) < action.perWeek;
+  if (actionKey === "VISIT") return (recruit.visitsUsed || 0) < action.maxUses;
+  if (actionKey === "HOME") return (recruit.homeVisitsUsed || 0) < action.maxSeason && recruit.homeVisitWeek !== weekIndex;
+  return false;
 }
 
-function applyRecruitAction(recruit, actionKey) {
+function applyRecruitAction(recruit, actionKey, weekIndex = 0) {
   const action = RECRUIT_ACTIONS[actionKey];
   const gain = rand(action.gain[0], action.gain[1]);
   const next = { ...recruit, interest: clamp(recruit.interest + gain, 0, 100) };
   if (actionKey === "OFFER") next.offerExtended = true;
-  const field = usesFieldFor(actionKey);
-  if (field) next[field] = next[field] + 1;
+  if (actionKey === "CALL") { next.callsUsed = (next.callsUsed || 0) + 1; next.callsThisWeek = (next.callsThisWeek || 0) + 1; }
+  if (actionKey === "VISIT") next.visitsUsed = (next.visitsUsed || 0) + 1;
+  if (actionKey === "HOME") { next.homeVisitsUsed = (next.homeVisitsUsed || 0) + 1; next.homeVisitWeek = weekIndex; }
   return next;
 }
 
@@ -987,23 +1186,29 @@ function signChance(recruit) {
   return total <= 0 ? 0.5 : clamp(recruit.interest / total, 0.03, 0.97);
 }
 
-function advanceRecruitingWeeks(board, weeksElapsed) {
+function advanceRecruitingWeeks(board, fromWeek, weeksElapsed, totalWeeks) {
   let b = board;
-  for (let i = 0; i < weeksElapsed; i++) b = tickRecruitingWeek(b);
+  for (let i = 0; i < weeksElapsed; i++) b = tickRecruitingWeek(b, fromWeek + i + 1, totalWeeks);
   return b;
 }
 
-// Called once per recruiting week: rival schools keep working the board too.
-function tickRecruitingWeek(board) {
+// Called once per recruiting week: rivals keep working the board, recruits
+// commit as the cycle progresses, and by the final week everyone still
+// uncommitted signs somewhere. Resets each recruit's weekly call allotment.
+function tickRecruitingWeek(board, weekIndex = 1, totalWeeks = 30) {
+  const late = clamp(weekIndex / totalWeeks, 0, 1); // 0..1 progress through cycle
   return board.map((r) => {
-    if (r.committedTo) return r;
+    if (r.committedTo) return { ...r, callsThisWeek: 0 };
     const rivalPressure = clamp(r.rivalPressure + rand(-2, 6), 5, 95);
     let committedTo = null;
-    // recruits you haven't engaged can slip away to another program over time
-    if (r.interest < rivalPressure * 0.6 && Math.random() < 0.05 + (rivalPressure - r.interest) / 400) {
+    const forced = weekIndex >= totalWeeks;
+    const rivalPull = rivalPressure * (0.5 + late * 0.9);
+    if (forced) {
+      committedTo = "rival"; // signing day — anyone you didn't land is gone
+    } else if (r.interest < rivalPull && Math.random() < 0.03 + late * 0.28 + (rivalPressure - r.interest) / 320) {
       committedTo = "rival";
     }
-    return { ...r, rivalPressure, committedTo };
+    return { ...r, rivalPressure, committedTo, callsThisWeek: 0, signWeek: committedTo ? weekIndex : r.signWeek };
   });
 }
 
@@ -1022,7 +1227,7 @@ function recruitToPlayer(recruit, team) {
     // signing team's — a recruit's proven talent shouldn't change just
     // because they land somewhere different than where they played.
     const originalTier = clamp(((recruit.originalPrestige ?? team.prestige) - 1) / 4, 0, 1);
-    const attrs = genAttrsFromRealStats(recruit.realStats, originalTier);
+    const attrs = genAttrsFromRealStats(recruit.realStats, originalTier, careerOutlierBonus(recruit.name), recruit.pos);
     const overall = computeOverall(recruit.pos, attrs);
     return {
       id: uid(),
@@ -1031,6 +1236,9 @@ function recruitToPlayer(recruit, team) {
       realKey: recruit.name,
       originalTier,
       realStats: true,
+      generatedWalkOn: false,
+      scholarship: true,
+      boosts: {},
       pos: recruit.pos,
       class: recruit.classYear || "FR",
       height: `6'${randInt(0, 11)}"`,
@@ -1050,11 +1258,14 @@ function recruitToPlayer(recruit, team) {
     stars = ratingToStars(rating);
   }
   const tier = clamp((rating - 0.70) / 0.30, 0, 1);
-  const attrs = genAttrsFromTier(tier);
+  const attrs = genAttrsFromTier(tier, recruit.pos);
   const overall = computeOverall(recruit.pos, attrs);
   return {
     id: uid(),
     name: recruit.name,
+    generatedWalkOn: false,
+    scholarship: true,
+    boosts: {},
     pos: recruit.pos,
     class: "FR",
     height: `6'${randInt(0, 11)}"`,
@@ -1072,6 +1283,14 @@ function recruitToPlayer(recruit, team) {
    ========================================================================= */
 const NONCONF_GAMES = 11;
 const CONF_GAMES = 19;
+// One recruiting "week" ticks per game played, so the recruiting cycle runs
+// exactly the length of the regular season.
+const TOTAL_SEASON_WEEKS = NONCONF_GAMES + CONF_GAMES;
+const OFFSEASON_WEEKS = 4;
+// Offseason player development: a fixed pool of points to distribute across the
+// whole roster, capped so no single attribute on a player gains more than this.
+const DEV_POINTS_PER_OFFSEASON = 50;
+const DEV_MAX_PER_ATTR = 5;
 
 // Conference games are the real, "correct" slate — every conference mate,
 // home-and-away when that stays within a sane game count, otherwise once
@@ -1112,7 +1331,7 @@ const LEAGUE_AVG_POWER = 50; // a league-average team; the .500 pivot
 function teamPowerRating(team, strengthMap, year, { noise = true } = {}) {
   // Standings must be stable across re-renders, so callers that want a
   // deterministic value pass noise:false. Game sims keep the jitter.
-  const jitter = noise ? rand(-4, 4) : 0;
+  const jitter = noise ? rand(-3, 3) : 0;
   if (year != null) {
     const real = realSeasonFor(team, year);
     if (real && real.barthag != null && !Number.isNaN(real.barthag)) {
@@ -1145,7 +1364,11 @@ function genSeasonStrengths() {
 // than the national curve so the spread between the best and worst team in a
 // conference genuinely shows up game to game.
 function gameWinProb(power, oppPower) {
-  return clamp(0.5 + (power - oppPower) / 42, 0.02, 0.98);
+  // Steep enough that a clear talent edge is a strong favorite (not a coin
+  // flip): a 10-point overall gap is ~a 79% winner, a 20-point gap ~92%. This
+  // is what makes better-rated rosters actually win, and lets the best teams
+  // reliably reach — and win — the postseason.
+  return clamp(0.5 + (power - oppPower) / 34, 0.03, 0.97);
 }
 
 // Projected W-L from STRENGTH OF SCHEDULE, not raw prestige: a team is
@@ -1391,7 +1614,9 @@ function userTeamOverall(roster, depthChart) {
     order.forEach((id, i) => {
       const pl = roster.find((p) => p.id === id);
       if (!pl || !mins[i]) return;
-      sum += pl.overall * mins[i];
+      // Grade each player at the slot they're actually playing, so fielding
+      // someone out of position costs the team real strength.
+      sum += overallAtPos(pl, pos) * mins[i];
       totalW += mins[i];
     });
   });
@@ -1401,7 +1626,9 @@ function userTeamOverall(roster, depthChart) {
 function simulateGame(roster, depthChart, oppPower, momentum = 0) {
   const myPower = userTeamOverall(roster, depthChart) + momentum;
   const diff = myPower - oppPower;
-  const margin = diff * 0.55 + rand(-11, 11);
+  // Talent drives the margin; the random term is small enough that upsets
+  // happen but the better team wins the large majority of the time.
+  const margin = diff * 0.75 + rand(-8, 8);
   const base = 66 + myPower / 6;
   const win = margin >= 0;
   let myScore = Math.max(Math.round(base + margin / 2 + rand(-4, 4)), 38);
@@ -1422,7 +1649,7 @@ function simulateGame(roster, depthChart, oppPower, momentum = 0) {
       const pl = roster.find((p) => p.id === id);
       const pts = Math.max(0, Math.round((m / 30) * (pl.attrs.scoring / 99) * 24 * rand(0.7, 1.3)));
       const reb = Math.max(0, Math.round((m / 30) * (pl.attrs.rebounding / 99) * 11 * rand(0.6, 1.4)));
-      const ast = Math.max(0, Math.round((m / 30) * (pl.attrs.playmaking / 99) * 7 * rand(0.5, 1.5)));
+      const ast = Math.max(0, Math.round((m / 30) * (pl.attrs.passing / 99) * 7 * rand(0.5, 1.5)));
       boxByPlayer[id] = { pts, reb, ast, min: m };
     });
   });
@@ -1467,7 +1694,9 @@ function progressRosterForNewYear(roster, incoming, team, newYear) {
         if (row && gp > 0 && (row.ppg != null || row.rpg != null || row.apg != null)) {
           const ourTeam = findOurTeamByRealName(row.team);
           const tier = ourTeam ? clamp((ourTeam.prestige - 1) / 4, 0, 1) : (p.originalTier ?? 0.5);
-          const attrs = genAttrsFromRealStats(row, tier);
+          // Re-derive from the real stat line, then re-apply any progression
+          // points spent on this player so development persists year to year.
+          const attrs = applyBoosts(genAttrsFromRealStats(row, tier, careerOutlierBonus(p.realKey), p.pos), p.boosts);
           return {
             ...p, class: nextClass, attrs, overall: computeOverall(p.pos, attrs),
             career: rolledCareer, season: { gp: 0, pts: 0, reb: 0, ast: 0 },
@@ -1476,16 +1705,12 @@ function progressRosterForNewYear(roster, incoming, team, newYear) {
       }
 
       // Generated players (and real players past their real career) develop
-      // synthetically toward their potential.
+      // synthetically toward their potential. Attributes already carry any past
+      // progression, so growth compounds on top of it.
       const growth = Math.round((p.attrs.potential - p.overall) * rand(0.05, 0.22));
       const bump = clamp(growth, -2, 9);
-      const attrs = {
-        scoring: clamp(p.attrs.scoring + Math.round(bump * rand(0.6, 1.2)), 25, 99),
-        rebounding: clamp(p.attrs.rebounding + Math.round(bump * rand(0.6, 1.2)), 25, 99),
-        playmaking: clamp(p.attrs.playmaking + Math.round(bump * rand(0.6, 1.2)), 25, 99),
-        defense: clamp(p.attrs.defense + Math.round(bump * rand(0.6, 1.2)), 25, 99),
-        potential: p.attrs.potential,
-      };
+      const attrs = { potential: p.attrs.potential };
+      for (const k of ATTR_KEYS) attrs[k] = clamp((p.attrs[k] ?? 40) + Math.round(bump * rand(0.6, 1.2)), 40, 99);
       return {
         ...p,
         class: nextClass,
@@ -1497,24 +1722,22 @@ function progressRosterForNewYear(roster, incoming, team, newYear) {
     });
   let combined = [...survivors, ...incoming];
 
-  // enforce the scholarship ceiling: trim weakest non-freshmen first
-  if (combined.length > ROSTER_MAX) {
+  // Cap at a full 16-man roster: if incoming recruits overfill it, the weakest
+  // non-freshmen are the ones squeezed out.
+  if (combined.length > ROSTER_SIZE) {
     combined.sort((a, b) => (a.class === "FR" ? 1 : 0) - (b.class === "FR" ? 1 : 0) || a.overall - b.overall);
-    combined.splice(0, combined.length - ROSTER_MAX);
+    combined.splice(0, combined.length - ROSTER_SIZE);
   }
 
-  // enforce the floor: a team that lost too many seniors and didn't
-  // recruit enough shouldn't drop below a real minimum roster size —
-  // fill remaining spots with walk-on-tier freshmen at whatever
-  // position is currently thinnest.
-  while (combined.length < ROSTER_MIN) {
+  // Fill up to a full 16 with walk-on freshmen at whatever position is thinnest.
+  while (combined.length < ROSTER_SIZE) {
     const counts = Object.fromEntries(POSITIONS.map((p) => [p, 0]));
     combined.forEach((p) => { counts[p.pos] = (counts[p.pos] || 0) + 1; });
     const thinnest = POSITIONS.reduce((a, b) => (counts[a] <= counts[b] ? a : b));
-    combined.push(makePlayer({ pos: thinnest, classYear: "FR", prestige: team?.prestige ?? 2 }));
+    combined.push(makePlayer({ pos: thinnest, classYear: "FR", prestige: team?.prestige ?? 2, walkOn: true }));
   }
 
-  return combined;
+  return assignScholarships(combined);
 }
 
 /* =========================================================================
@@ -1937,6 +2160,7 @@ const TABS = [
   { id: "standings", label: "Standings", icon: Trophy },
   { id: "rankings", label: "Rankings", icon: Award },
   { id: "postseason", label: "Postseason", icon: Crown },
+  { id: "offseason", label: "Offseason", icon: GraduationCap },
   { id: "program", label: "Program", icon: Landmark },
 ];
 
@@ -1984,6 +2208,16 @@ function DynastyApp({ initial, onExit }) {
   const needs = useMemo(() => positionNeeds(state.roster), [state.roster]);
   const bracketology = projectedSeed(rankById[state.teamId]);
 
+  // Scholarship accounting drives recruiting: 13 total, minus scholarship
+  // players returning next season (non-seniors) and anyone already committed
+  // this cycle. When this hits zero the coach must cut a player to sign more.
+  const scholarshipInfo = useMemo(() => {
+    const returning = state.roster.filter((p) => p.scholarship && p.class !== "SR").length;
+    const committed = state.incomingCommits.length + (state.offseason?.committedTransfers?.length || 0);
+    const used = returning + committed;
+    return { returning, committed, used, open: Math.max(0, SCHOLARSHIP_LIMIT - used) };
+  }, [state.roster, state.incomingCommits, state.offseason]);
+
   function simOneGame() {
     if (!nextGame) return;
     const opp = TEAM_MAP[nextGame.oppId];
@@ -2008,7 +2242,7 @@ function DynastyApp({ initial, onExit }) {
       : g);
     const newWeekIndex = schedule.filter((g) => g.played).length + 1;
     const weeksElapsed = Math.max(0, newWeekIndex - state.recruitingWeekIndex);
-    const recruitingBoard = weeksElapsed > 0 ? advanceRecruitingWeeks(state.recruitingBoard, weeksElapsed) : state.recruitingBoard;
+    const recruitingBoard = weeksElapsed > 0 ? advanceRecruitingWeeks(state.recruitingBoard, state.recruitingWeekIndex, weeksElapsed, TOTAL_SEASON_WEEKS) : state.recruitingBoard;
     const recruitingPoints = weeksElapsed > 0 ? weeklyRecruitingBudget(team) : state.recruitingPoints;
 
     setState((s) => ({ ...s, roster, schedule, recruitingBoard, recruitingPoints, recruitingWeekIndex: newWeekIndex }));
@@ -2049,11 +2283,141 @@ function DynastyApp({ initial, onExit }) {
     setState((s) => {
       const newWeekIndex = games.filter((g) => g.played).length + 1;
       const weeksElapsed = Math.max(0, newWeekIndex - s.recruitingWeekIndex);
-      const recruitingBoard = weeksElapsed > 0 ? advanceRecruitingWeeks(s.recruitingBoard, weeksElapsed) : s.recruitingBoard;
+      const recruitingBoard = weeksElapsed > 0 ? advanceRecruitingWeeks(s.recruitingBoard, s.recruitingWeekIndex, weeksElapsed, TOTAL_SEASON_WEEKS) : s.recruitingBoard;
       const recruitingPoints = weeksElapsed > 0 ? weeklyRecruitingBudget(team) : s.recruitingPoints;
       return { ...s, roster, schedule: games, recruitingBoard, recruitingPoints, recruitingWeekIndex: newWeekIndex };
     });
     flash(`Simulated the rest of the season.${sigWins ? ` ${sigWins} signature win${sigWins > 1 ? "s" : ""}.` : ""}`);
+  }
+
+  // Sim only the remaining NON-conference games, stopping when conference play
+  // begins. Lets a coach blow through the soft early slate and pick games back
+  // up once the league schedule matters.
+  function simThroughGames(filterFn, label) {
+    let roster = state.roster.map((p) => ({ ...p }));
+    const games = state.schedule.map((g) => ({ ...g }));
+    let played = 0;
+    for (let idx = 0; idx < games.length; idx++) {
+      const g = games[idx];
+      if (g.played || !filterFn(g)) continue;
+      const opp = TEAM_MAP[g.oppId];
+      const oppPower = teamPowerRating(opp, state.strengths, state.year);
+      const mom = momentumMod(currentStreak(games.filter((x) => x.played)));
+      const hdc = healthyDepthChart(state.depthChart, roster);
+      const result = simulateGame(roster, hdc, oppPower, mom);
+      const oppRank = rankById[g.oppId] || null;
+      roster = roster.map((p) => {
+        const bx = result.boxByPlayer[p.id];
+        if (!bx) return p;
+        return { ...p, season: { gp: p.season.gp + 1, pts: p.season.pts + bx.pts, reb: p.season.reb + bx.reb, ast: p.season.ast + bx.ast } };
+      });
+      roster = tickInjuries(roster);
+      roster = maybeInjure(roster, rotationIdsOf(state.depthChart, roster)).roster;
+      const box = boxArray(result.boxByPlayer, roster);
+      g.played = true;
+      g.result = { win: result.win, myScore: result.myScore, oppScore: result.oppScore, oppRank, box };
+      played += 1;
+    }
+    setState((s) => {
+      const newWeekIndex = games.filter((g) => g.played).length + 1;
+      const weeksElapsed = Math.max(0, newWeekIndex - s.recruitingWeekIndex);
+      const recruitingBoard = weeksElapsed > 0 ? advanceRecruitingWeeks(s.recruitingBoard, s.recruitingWeekIndex, weeksElapsed, TOTAL_SEASON_WEEKS) : s.recruitingBoard;
+      const recruitingPoints = weeksElapsed > 0 ? weeklyRecruitingBudget(team) : s.recruitingPoints;
+      return { ...s, roster, schedule: games, recruitingBoard, recruitingPoints, recruitingWeekIndex: newWeekIndex };
+    });
+    flash(played ? label : "No games left to sim in that window.");
+  }
+
+  function simToConferencePlay() {
+    simThroughGames((g) => !g.conf, "Simulated through non-conference play.");
+  }
+
+  function enterOffseason() {
+    if (!state.postseason || state.postseason.phase !== "done" || state.offseason) return;
+    const nextYear = state.year + 1;
+    const transferBoard = seedInterest(genTransferBoard(nextYear), team);
+    setState((s) => ({
+      ...s,
+      offseason: {
+        week: 1,
+        transferBoard,
+        committedTransfers: [],
+        points: weeklyRecruitingBudget(team),
+        scheduleDraft: genSchedule(team, nextYear),
+        done: false,
+        devPoints: DEV_POINTS_PER_OFFSEASON,
+        devSpent: {},
+      },
+    }));
+    setTab("offseason");
+    flash("Offseason underway — work the transfer portal, set your schedule, or take a new job.");
+  }
+
+  function doTransferAction(recruit, actionKey) {
+    const os = state.offseason;
+    if (!os) return;
+    if (!canTakeAction(recruit, actionKey, os.points, os.week)) return;
+    const action = RECRUIT_ACTIONS[actionKey];
+    const updated = applyRecruitAction(recruit, actionKey, os.week);
+    setState((s) => ({
+      ...s,
+      offseason: {
+        ...s.offseason,
+        points: s.offseason.points - action.cost,
+        transferBoard: s.offseason.transferBoard.map((r) => (r.id === recruit.id ? updated : r)),
+      },
+    }));
+  }
+
+  function attemptSignTransfer(recruit) {
+    const os = state.offseason;
+    if (!os) return;
+    if (scholarshipInfo.open <= 0) { flash("No scholarships available — cut a player to open a spot."); return; }
+    if (!recruit.offerExtended) { flash("Extend a scholarship offer before you can sign a transfer."); return; }
+    const chance = signChance(recruit);
+    if (Math.random() < chance) {
+      setState((s) => ({
+        ...s,
+        offseason: {
+          ...s.offseason,
+          transferBoard: s.offseason.transferBoard.map((r) => (r.id === recruit.id ? { ...r, committedTo: s.teamId } : r)),
+          committedTransfers: [...s.offseason.committedTransfers, recruit.id],
+        },
+      }));
+      flash(`${recruit.name} is transferring in! (won at ${Math.round(chance * 100)}% odds)`);
+    } else {
+      setState((s) => ({
+        ...s,
+        offseason: {
+          ...s.offseason,
+          transferBoard: s.offseason.transferBoard.map((r) => (r.id === recruit.id ? { ...r, rivalPressure: clamp(r.rivalPressure + 10, 0, 95) } : r)),
+        },
+      }));
+      flash(`${recruit.name} isn't ready to commit yet. (${Math.round(chance * 100)}% odds)`);
+    }
+  }
+
+  function advanceOffseasonWeek() {
+    const os = state.offseason;
+    if (!os || os.done) return;
+    const nextWeek = os.week + 1;
+    const closing = nextWeek > OFFSEASON_WEEKS;
+    const board = tickRecruitingWeek(os.transferBoard, nextWeek, OFFSEASON_WEEKS + 1);
+    setState((s) => ({
+      ...s,
+      offseason: { ...s.offseason, week: nextWeek, transferBoard: board, points: weeklyRecruitingBudget(team), done: closing },
+    }));
+    flash(closing ? "The transfer portal has closed — begin the next season." : `Offseason week ${nextWeek} of ${OFFSEASON_WEEKS}.`);
+  }
+
+  function editDraftGame(gameId, changes) {
+    setState((s) => ({
+      ...s,
+      offseason: {
+        ...s.offseason,
+        scheduleDraft: s.offseason.scheduleDraft.map((g) => (g.id === gameId && !g.conf && !g.played ? { ...g, ...changes } : g)),
+      },
+    }));
   }
 
   function startPostseason() {
@@ -2159,9 +2523,10 @@ function DynastyApp({ initial, onExit }) {
   }
 
   function doRecruitAction(recruit, actionKey) {
-    if (!canTakeAction(recruit, actionKey, state.recruitingPoints)) return;
+    const week = state.recruitingWeekIndex;
+    if (!canTakeAction(recruit, actionKey, state.recruitingPoints, week)) return;
     const action = RECRUIT_ACTIONS[actionKey];
-    const updated = applyRecruitAction(recruit, actionKey);
+    const updated = applyRecruitAction(recruit, actionKey, week);
     setState((s) => ({
       ...s,
       recruitingPoints: s.recruitingPoints - action.cost,
@@ -2169,8 +2534,16 @@ function DynastyApp({ initial, onExit }) {
     }));
   }
 
+  function toggleTarget(recruitId) {
+    setState((s) => {
+      const cur = s.recruitTargets || [];
+      const has = cur.includes(recruitId);
+      return { ...s, recruitTargets: has ? cur.filter((id) => id !== recruitId) : [...cur, recruitId] };
+    });
+  }
+
   function attemptSign(recruit) {
-    if (state.incomingCommits.length >= 5) { flash("Class is full (5 max) for this cycle."); return; }
+    if (scholarshipInfo.open <= 0) { flash("No scholarships available — cut a player in the offseason to open a spot."); return; }
     if (!recruit.offerExtended) { flash("Extend a scholarship offer before you can sign them."); return; }
     const chance = signChance(recruit);
     const success = Math.random() < chance;
@@ -2200,6 +2573,76 @@ function DynastyApp({ initial, onExit }) {
     });
   }
 
+  // Slot a player into any position group (removing them from wherever they
+  // were), so a point guard can be listed at the two, the three, and so on.
+  function assignPosition(playerId, toPos) {
+    setState((s) => {
+      const dc = {};
+      POSITIONS.forEach((p) => { dc[p] = s.depthChart[p].filter((id) => id !== playerId); });
+      dc[toPos] = [...dc[toPos], playerId];
+      return { ...s, depthChart: dc };
+    });
+  }
+
+  function removeFromDepth(playerId) {
+    setState((s) => {
+      const dc = {};
+      POSITIONS.forEach((p) => { dc[p] = s.depthChart[p].filter((id) => id !== playerId); });
+      return { ...s, depthChart: dc };
+    });
+  }
+
+  // Offseason roster cut: drop a player entirely, pull them from the depth
+  // chart, refund any development points spent on them this offseason, and
+  // recompute the scholarship split (opening a spot for recruiting).
+  function cutPlayer(playerId) {
+    setState((s) => {
+      const player = s.roster.find((p) => p.id === playerId);
+      if (!player) return s;
+      const roster = assignScholarships(s.roster.filter((p) => p.id !== playerId));
+      const dc = {};
+      POSITIONS.forEach((p) => { dc[p] = (s.depthChart[p] || []).filter((id) => id !== playerId); });
+      let offseason = s.offseason;
+      if (offseason && offseason.devSpent && offseason.devSpent[playerId]) {
+        const refunded = Object.values(offseason.devSpent[playerId]).reduce((a, b) => a + b, 0);
+        const devSpent = { ...offseason.devSpent };
+        delete devSpent[playerId];
+        offseason = { ...offseason, devPoints: (offseason.devPoints || 0) + refunded, devSpent };
+      }
+      return { ...s, roster, depthChart: dc, offseason };
+    });
+    flash("Player cut — a scholarship has opened up.");
+  }
+
+  // Spend (or refund) a development point on one attribute. Enforces the shared
+  // pool, the per-attribute cap, and the 40-99 attribute range. Boosts are
+  // recorded on the player so real players keep the gain after next year's
+  // stat-based re-derivation.
+  function adjustPlayerAttr(playerId, attr, delta) {
+    setState((s) => {
+      const os = s.offseason;
+      if (!os) return s;
+      const player = s.roster.find((p) => p.id === playerId);
+      if (!player) return s;
+      const spentMap = os.devSpent || {};
+      const playerSpent = spentMap[playerId] || {};
+      const already = playerSpent[attr] || 0;
+      const cur = player.attrs[attr] ?? 40;
+      if (delta > 0) {
+        if ((os.devPoints || 0) <= 0 || already >= DEV_MAX_PER_ATTR || cur >= 99) return s;
+      } else {
+        if (already <= 0) return s;
+      }
+      const newAttrs = { ...player.attrs, [attr]: clamp(cur + delta, 40, 99) };
+      const roster = s.roster.map((p) => p.id === playerId
+        ? { ...p, attrs: newAttrs, overall: computeOverall(p.pos, newAttrs), boosts: { ...(p.boosts || {}), [attr]: ((p.boosts || {})[attr] || 0) + delta } }
+        : p);
+      const nextPlayerSpent = { ...playerSpent, [attr]: already + delta };
+      const devSpent = { ...spentMap, [playerId]: nextPlayerSpent };
+      return { ...s, roster, offseason: { ...os, devPoints: (os.devPoints || 0) - delta, devSpent } };
+    });
+  }
+
   function advanceYear() {
     const powerById = powerTableFor(state.strengths, state.year);
     const awards = computeAwards(state, rankById, ranked, powerById);
@@ -2209,10 +2652,18 @@ function DynastyApp({ initial, onExit }) {
     const coach = finalizeCoachSeason(state.coach, record, state.postseason, state.teamId);
     const earlyIds = new Set(early.map((p) => p.id));
 
-    const incomingRecruits = state.incomingCommits
+    const os = state.offseason;
+    const incomingFreshmen = state.incomingCommits
       .map((id) => state.recruitingBoard.find((r) => r.id === id))
       .filter(Boolean)
       .map((r) => recruitToPlayer(r, team));
+    const incomingTransfers = os
+      ? (os.committedTransfers || [])
+          .map((id) => os.transferBoard.find((r) => r.id === id))
+          .filter(Boolean)
+          .map((r) => recruitToPlayer(r, team))
+      : [];
+    const incomingRecruits = [...incomingFreshmen, ...incomingTransfers];
 
     const newYear = state.year + 1;
     const surviving = state.roster.filter((p) => !earlyIds.has(p.id));
@@ -2234,13 +2685,15 @@ function DynastyApp({ initial, onExit }) {
       year: newYear,
       roster: newRoster,
       depthChart: defaultDepthChart(newRoster),
-      schedule: genSchedule(team, newYear),
-      recruitingBoard: genRecruitPool(newYear),
+      schedule: (os && os.scheduleDraft) ? os.scheduleDraft : genSchedule(team, newYear),
+      recruitingBoard: seedInterest(genRecruitPool(newYear + 1), team),
       incomingCommits: [],
+      recruitTargets: [],
       recruitingPoints: weeklyRecruitingBudget(team),
       recruitingWeekIndex: 1,
       strengths: newStrengths,
       postseason: null,
+      offseason: null,
       coach,
       awardsHistory: [
         ...(state.awardsHistory || []),
@@ -2268,12 +2721,14 @@ function DynastyApp({ initial, onExit }) {
       roster,
       depthChart: defaultDepthChart(roster),
       schedule: genSchedule(newTeam, newYear),
-      recruitingBoard: genRecruitPool(newYear + 1),
+      recruitingBoard: seedInterest(genRecruitPool(newYear + 1), newTeam),
       incomingCommits: [],
+      recruitTargets: [],
       recruitingPoints: weeklyRecruitingBudget(newTeam),
       recruitingWeekIndex: 1,
       strengths: genSeasonStrengths(),
       postseason: null,
+      offseason: null,
       coach,
       awardsHistory: [
         ...(state.awardsHistory || []),
@@ -2298,6 +2753,19 @@ function DynastyApp({ initial, onExit }) {
   }
 
   const seasonOver = state.schedule.every((g) => g.played);
+  const psDone = !!(state.postseason && state.postseason.phase === "done");
+  // The single source of truth for where in the annual cycle the coach is.
+  const stage = !seasonOver
+    ? "regular"
+    : !state.postseason
+      ? "prePostseason"
+      : !psDone
+        ? "postseason"
+        : !state.offseason
+          ? "preOffseason"
+          : state.offseason.done
+            ? "offseasonDone"
+            : "offseason";
 
   return (
     <div className="cbb-root" style={{ display: "flex", minHeight: "100vh", background: C.bg, color: C.cream }}>
@@ -2364,22 +2832,52 @@ function DynastyApp({ initial, onExit }) {
         <div className="cbb-scroll" style={{ flex: 1, overflowY: "auto", padding: 28 }}>
           {tab === "dashboard" && (
             <DashboardTab state={state} team={team} record={record} nextGame={nextGame}
-              onSim={simOneGame} onSimSeason={simToEndOfSeason} seasonOver={seasonOver} onAdvanceYear={advanceYear}
-              onChangeJob={() => setJobPickerOpen(true)} reputation={reputation} bracketology={bracketology}
+              stage={stage}
+              onSim={simOneGame} onSimToConf={simToConferencePlay} onSimSeason={simToEndOfSeason}
+              onEnterPostseason={startPostseason} onEnterOffseason={enterOffseason}
+              onGoTab={setTab} onAdvanceYear={advanceYear}
+              reputation={reputation} bracketology={bracketology}
               onViewPlayer={setPlayerViewId} />
           )}
           {tab === "roster" && <RosterTab roster={state.roster} onViewPlayer={setPlayerViewId} />}
-          {tab === "depth" && <DepthChartTab roster={state.roster} depthChart={state.depthChart} onMove={moveInDepthChart} />}
+          {tab === "depth" && <DepthChartTab roster={state.roster} depthChart={state.depthChart} onMove={moveInDepthChart} onAssign={assignPosition} onRemove={removeFromDepth} />}
           {tab === "recruiting" && (
             <RecruitingTab
               board={state.recruitingBoard}
               committedIds={state.incomingCommits}
+              targets={state.recruitTargets || []}
+              onToggleTarget={toggleTarget}
               points={state.recruitingPoints}
               budget={weeklyRecruitingBudget(team)}
+              weekIndex={state.recruitingWeekIndex}
+              totalWeeks={TOTAL_SEASON_WEEKS}
               onAction={doRecruitAction}
               onSign={attemptSign}
               team={team}
               needs={needs}
+              scholarshipInfo={scholarshipInfo}
+            />
+          )}
+          {tab === "offseason" && (
+            <OffseasonTab
+              stage={stage}
+              offseason={state.offseason}
+              team={team}
+              roster={state.roster}
+              nextYear={state.year + 1}
+              committedFreshmen={state.incomingCommits.length}
+              scholarshipInfo={scholarshipInfo}
+              rankById={rankById}
+              onAction={doTransferAction}
+              onSign={attemptSignTransfer}
+              onAdvanceWeek={advanceOffseasonWeek}
+              onEditGame={editDraftGame}
+              onChangeJob={() => setJobPickerOpen(true)}
+              onAdvanceYear={advanceYear}
+              onViewTeam={setViewTeamId}
+              onViewPlayer={setPlayerViewId}
+              onCut={cutPlayer}
+              onDev={adjustPlayerAttr}
             />
           )}
           {tab === "schedule" && <ScheduleTab schedule={state.schedule} teamConf={team.conf} rankById={rankById} rivalIds={rivalIds} onViewTeam={setViewTeamId} onEditGame={editGame} onViewBox={setBoxViewId} />}
@@ -2433,11 +2931,12 @@ function DynastyApp({ initial, onExit }) {
 }
 
 /* ---------- Dashboard ---------- */
-function DashboardTab({ state, team, record, nextGame, onSim, onSimSeason, seasonOver, onAdvanceYear, onChangeJob, reputation, bracketology, onViewPlayer }) {
+function DashboardTab({ state, team, record, nextGame, stage, onSim, onSimToConf, onSimSeason, onEnterPostseason, onEnterOffseason, onGoTab, onAdvanceYear, reputation, bracketology, onViewPlayer }) {
   const overall = Math.round(userTeamOverall(state.roster, state.depthChart));
   const topPlayer = [...state.roster].sort((a, b) => b.overall - a.overall)[0];
   const injured = state.roster.filter(isHurt);
   const streak = currentStreak(state.schedule);
+  const hasUnplayedNonConf = state.schedule.some((g) => !g.conf && !g.played);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20, maxWidth: 900 }}>
@@ -2469,27 +2968,56 @@ function DashboardTab({ state, team, record, nextGame, onSim, onSimSeason, seaso
       </div>
 
       <Panel style={{ padding: 20 }}>
-        <div style={{ fontSize: 11, color: C.dim, letterSpacing: "0.08em", marginBottom: 10 }}>NEXT GAME</div>
-        {nextGame ? (
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-            <div>
-              <div className="cbb-num" style={{ fontSize: 19, fontWeight: 600 }}>
-                {nextGame.home ? "vs" : "at"} {TEAM_MAP[nextGame.oppId].name}
+        {stage === "regular" && nextGame && (
+          <>
+            <div style={{ fontSize: 11, color: C.dim, letterSpacing: "0.08em", marginBottom: 10 }}>NEXT GAME</div>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 14, flexWrap: "wrap" }}>
+              <div>
+                <div className="cbb-num" style={{ fontSize: 19, fontWeight: 600 }}>
+                  {nextGame.home ? "vs" : "at"} {TEAM_MAP[nextGame.oppId].name}
+                </div>
+                <div style={{ fontSize: 12, color: C.dim, marginTop: 4 }}>
+                  Week {nextGame.week} · {TEAM_MAP[nextGame.oppId].conf} · {nextGame.conf ? "Conference" : "Non-conference"}
+                </div>
               </div>
-              <div style={{ fontSize: 12, color: C.dim, marginTop: 4 }}>Week {nextGame.week} · {TEAM_MAP[nextGame.oppId].conf}</div>
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                <button onClick={onSim} className="cbb-btn" style={btnStyle(C.wood)}><Play size={13} /> Sim Game</button>
+                {hasUnplayedNonConf && (
+                  <button onClick={onSimToConf} className="cbb-btn" style={btnStyle(C.panelAlt, C.cream)}><FastForward size={13} /> Sim to Conference Play</button>
+                )}
+                <button onClick={onSimSeason} className="cbb-btn" style={btnStyle(C.panelAlt, C.cream)}><FastForward size={13} /> Sim Rest of Season</button>
+              </div>
             </div>
-            <div style={{ display: "flex", gap: 10 }}>
-              <button onClick={onSim} className="cbb-btn" style={btnStyle(C.wood)}><Play size={13} /> Sim Game</button>
-              <button onClick={onSimSeason} className="cbb-btn" style={btnStyle(C.panelAlt, C.cream)}><FastForward size={13} /> Sim to End of Season</button>
-            </div>
-          </div>
-        ) : (
+          </>
+        )}
+        {stage === "prePostseason" && (
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 14, flexWrap: "wrap" }}>
-            <div style={{ color: C.dim, fontSize: 14, flex: 1, minWidth: 220 }}>Season complete — {record.w}-{record.l}. Head to Recruiting to finish your class, then advance the year — or take a new job elsewhere.</div>
-            <div style={{ display: "flex", gap: 10 }}>
-              <button onClick={onChangeJob} className="cbb-btn" style={btnStyle(C.panelAlt, C.cream)}><Users size={13} /> Take Another Job</button>
-              <button onClick={onAdvanceYear} className="cbb-btn" style={btnStyle(C.gold, "#221a00")}><TrendingUp size={13} /> Advance to {seasonLabel(state.year + 1)}</button>
-            </div>
+            <div style={{ color: C.dim, fontSize: 14, flex: 1, minWidth: 220 }}>Regular season complete — {record.w}-{record.l}. Time for the conference tournaments and March Madness.</div>
+            <button onClick={onEnterPostseason} className="cbb-btn" style={btnStyle(C.wood)}><Crown size={13} /> Enter Postseason</button>
+          </div>
+        )}
+        {stage === "postseason" && (
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 14, flexWrap: "wrap" }}>
+            <div style={{ color: C.dim, fontSize: 14, flex: 1, minWidth: 220 }}>The postseason is underway. Head to the Postseason tab to play out the brackets.</div>
+            <button onClick={() => onGoTab("postseason")} className="cbb-btn" style={btnStyle(C.wood)}><Crown size={13} /> Go to Postseason</button>
+          </div>
+        )}
+        {stage === "preOffseason" && (
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 14, flexWrap: "wrap" }}>
+            <div style={{ color: C.dim, fontSize: 14, flex: 1, minWidth: 220 }}>The national champion has been crowned. Enter the offseason to hit the transfer portal, set your schedule, and consider new jobs.</div>
+            <button onClick={onEnterOffseason} className="cbb-btn" style={btnStyle(C.gold, "#221a00")}><GraduationCap size={13} /> Enter Offseason</button>
+          </div>
+        )}
+        {stage === "offseason" && (
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 14, flexWrap: "wrap" }}>
+            <div style={{ color: C.dim, fontSize: 14, flex: 1, minWidth: 220 }}>Offseason week {state.offseason.week} of {OFFSEASON_WEEKS}. Manage transfers, your schedule, and coaching offers.</div>
+            <button onClick={() => onGoTab("offseason")} className="cbb-btn" style={btnStyle(C.wood)}><GraduationCap size={13} /> Go to Offseason</button>
+          </div>
+        )}
+        {stage === "offseasonDone" && (
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 14, flexWrap: "wrap" }}>
+            <div style={{ color: C.dim, fontSize: 14, flex: 1, minWidth: 220 }}>The offseason is complete. Begin the {seasonLabel(state.year + 1)} season.</div>
+            <button onClick={onAdvanceYear} className="cbb-btn" style={btnStyle(C.gold, "#221a00")}><TrendingUp size={13} /> Begin {seasonLabel(state.year + 1)} Season</button>
           </div>
         )}
       </Panel>
@@ -2618,33 +3146,76 @@ const th = { padding: "10px 14px" };
 const td = { padding: "10px 14px" };
 
 /* ---------- Depth Chart ---------- */
-function DepthChartTab({ roster, depthChart, onMove }) {
+function DepthChartTab({ roster, depthChart, onMove, onAssign, onRemove }) {
+  const assignedIds = new Set(POSITIONS.flatMap((p) => depthChart[p]));
+  const bench = roster.filter((p) => !assignedIds.has(p.id));
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 14 }}>
-      {POSITIONS.map((pos) => (
-        <Panel key={pos} style={{ padding: 14 }}>
-          <div className="cbb-num" style={{ fontWeight: 700, fontSize: 15, marginBottom: 10, color: C.wood }}>{pos}</div>
-          {depthChart[pos].map((id, i) => {
-            const p = roster.find((pl) => pl.id === id);
-            if (!p) return null;
-            return (
-              <div key={id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "7px 0", borderBottom: i < depthChart[pos].length - 1 ? `1px solid ${C.line}` : "none" }}>
-                <div>
-                  <div style={{ fontSize: 13, fontWeight: i === 0 ? 700 : 500, color: isHurt(p) ? C.dimmer : C.cream }}>
-                    {i === 0 ? "★ " : ""}{p.name}
-                    {isHurt(p) && <span style={{ fontSize: 9, color: C.red, marginLeft: 5 }}>OUT</span>}
+    <div>
+      <div style={{ fontSize: 11.5, color: C.dimmer, marginBottom: 12, maxWidth: 720 }}>
+        Slot any player at any position — a point guard can back up at the two, three, even the four or five. Playing someone out of position lowers their effective rating (shown in red), since their skills don&apos;t fit that role. Arrows set the rotation order (the top name plays the most minutes), the dropdown moves a player to another spot, and Bench pulls them out of the rotation.
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(230px, 1fr))", gap: 14 }}>
+        {POSITIONS.map((pos) => (
+          <Panel key={pos} style={{ padding: 14 }}>
+            <div className="cbb-num" style={{ fontWeight: 700, fontSize: 15, marginBottom: 10, color: C.wood }}>{pos}</div>
+            {depthChart[pos].length === 0 && <div style={{ fontSize: 12, color: C.dimmer, paddingBottom: 6 }}>No one slotted here.</div>}
+            {depthChart[pos].map((id, i) => {
+              const p = roster.find((pl) => pl.id === id);
+              if (!p) return null;
+              const outOfPos = p.pos !== pos;
+              const eff = computeOverall(pos, p.attrs);
+              const last = i === depthChart[pos].length - 1;
+              return (
+                <div key={id} style={{ padding: "7px 0", borderBottom: last ? "none" : `1px solid ${C.line}` }}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontSize: 13, fontWeight: i === 0 ? 700 : 500, color: isHurt(p) ? C.dimmer : C.cream }}>
+                        {i === 0 ? "★ " : ""}{p.name}
+                        {isHurt(p) && <span style={{ fontSize: 9, color: C.red, marginLeft: 5 }}>OUT</span>}
+                      </div>
+                      <div style={{ fontSize: 11, color: outOfPos ? C.red : C.dim }}>
+                        {p.class} · OVR {eff}{outOfPos ? ` · natural ${p.pos} ${p.overall}` : ""}
+                      </div>
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column" }}>
+                      <button onClick={() => onMove(pos, i, -1)} disabled={i === 0} className="cbb-btn" style={{ background: "none", border: "none", color: i === 0 ? C.dimmer : C.dim, cursor: i === 0 ? "default" : "pointer" }}><ChevronUp size={14} /></button>
+                      <button onClick={() => onMove(pos, i, 1)} disabled={last} className="cbb-btn" style={{ background: "none", border: "none", color: last ? C.dimmer : C.dim, cursor: last ? "default" : "pointer" }}><ChevronDown size={14} /></button>
+                    </div>
                   </div>
-                  <div style={{ fontSize: 11, color: C.dim }}>{p.class} · OVR {p.overall}</div>
+                  <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
+                    <select value={pos} onChange={(e) => onAssign(id, e.target.value)}
+                      style={{ background: C.panel, border: `1px solid ${C.line}`, color: C.cream, fontSize: 11, padding: "2px 4px" }}>
+                      {POSITIONS.map((pp) => <option key={pp} value={pp}>{pp === pos ? `At ${pp}` : `Move to ${pp}`}</option>)}
+                    </select>
+                    <button onClick={() => onRemove(id)} className="cbb-btn" style={{ background: "none", border: `1px solid ${C.line}`, color: C.dim, fontSize: 11, padding: "2px 8px", cursor: "pointer" }}>Bench</button>
+                  </div>
                 </div>
-                <div style={{ display: "flex", flexDirection: "column" }}>
-                  <button onClick={() => onMove(pos, i, -1)} disabled={i === 0} className="cbb-btn" style={{ background: "none", border: "none", color: i === 0 ? C.dimmer : C.dim, cursor: i === 0 ? "default" : "pointer" }}><ChevronUp size={14} /></button>
-                  <button onClick={() => onMove(pos, i, 1)} disabled={i === depthChart[pos].length - 1} className="cbb-btn" style={{ background: "none", border: "none", color: i === depthChart[pos].length - 1 ? C.dimmer : C.dim, cursor: "pointer" }}><ChevronDown size={14} /></button>
+              );
+            })}
+          </Panel>
+        ))}
+      </div>
+
+      {bench.length > 0 && (
+        <Panel style={{ padding: 14, marginTop: 14 }}>
+          <div className="cbb-num" style={{ fontWeight: 700, fontSize: 14, marginBottom: 10, color: C.dim }}>BENCH — NOT IN ROTATION</div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+            {bench.map((p) => (
+              <div key={p.id} style={{ border: `1px solid ${C.line}`, padding: "6px 10px", display: "flex", alignItems: "center", gap: 8 }}>
+                <div>
+                  <div style={{ fontSize: 12.5, fontWeight: 600, color: isHurt(p) ? C.dimmer : C.cream }}>{p.name}</div>
+                  <div style={{ fontSize: 10.5, color: C.dim }}>{p.pos} · {p.class} · OVR {p.overall}</div>
                 </div>
+                <select value="" onChange={(e) => { if (e.target.value) onAssign(p.id, e.target.value); }}
+                  style={{ background: C.panel, border: `1px solid ${C.line}`, color: C.cream, fontSize: 11, padding: "3px 4px" }}>
+                  <option value="">Slot at…</option>
+                  {POSITIONS.map((pp) => <option key={pp} value={pp}>{pp}</option>)}
+                </select>
               </div>
-            );
-          })}
+            ))}
+          </div>
         </Panel>
-      ))}
+      )}
     </div>
   );
 }
@@ -2658,34 +3229,80 @@ function InterestBar({ value, colorHigh }) {
   );
 }
 
-function RecruitingTab({ board, committedIds, points, budget, onAction, onSign, team, needs = [] }) {
+// Shared recruit-board list used by both in-season recruiting and the
+// off-season transfer portal. `weekIndex`/`totalWeeks` drive per-week action
+// limits (calls, home visits) and the signing-progress readout.
+function RecruitBoard({ board, committedIds, targets, onToggleTarget, points, weekIndex, totalWeeks, onAction, onSign, needs, maxSign, emptyLabel }) {
+  const [view, setView] = useState("all"); // all | targets | committed
   const [posFilter, setPosFilter] = useState("ALL");
+  const [starFilter, setStarFilter] = useState(0);
+  const [sortBy, setSortBy] = useState("interest"); // interest | stars | rank
+  const [query, setQuery] = useState("");
   const [openId, setOpenId] = useState(null);
-  const needSet = new Set(needs);
-  const list = board
-    .filter((r) => posFilter === "ALL" || r.pos === posFilter)
-    .filter((r) => !r.committedTo || committedIds.includes(r.id))
-    .sort((a, b) => (b.interest - b.rivalPressure) - (a.interest - a.rivalPressure));
+  const needSet = new Set(needs || []);
+  const targetSet = new Set(targets || []);
+  const q = query.trim().toLowerCase();
+
+  let list = board.filter((r) => {
+    const mine = committedIds.includes(r.id);
+    if (r.committedTo && !mine) return false; // signed elsewhere — off the board
+    if (view === "targets" && !targetSet.has(r.id)) return false;
+    if (view === "committed" && !mine) return false;
+    if (posFilter !== "ALL" && r.pos !== posFilter) return false;
+    if (starFilter && (r.stars || 0) < starFilter) return false;
+    if (q && !`${r.name} ${r.state} ${r.pos}`.toLowerCase().includes(q)) return false;
+    return true;
+  });
+  const sortFns = {
+    interest: (a, b) => (b.interest - a.interest) || ((a.nationalRank || 999) - (b.nationalRank || 999)),
+    stars: (a, b) => ((b.stars || 0) - (a.stars || 0)) || ((a.nationalRank || 999) - (b.nationalRank || 999)),
+    rank: (a, b) => (a.nationalRank || 999) - (b.nationalRank || 999),
+  };
+  list = list.sort((a, b) =>
+    (Number(committedIds.includes(b.id)) - Number(committedIds.includes(a.id))) ||
+    (sortFns[sortBy] || sortFns.interest)(a, b)
+  );
+  const shown = list.slice(0, 80);
+  const canTarget = typeof onToggleTarget === "function";
+
+  const chip = (label, active, onClick) => (
+    <button onClick={onClick} className="cbb-btn"
+      style={{ fontSize: 12, padding: "6px 12px", border: `1px solid ${active ? C.wood : C.line}`, background: active ? C.panelAlt : "transparent", color: active ? C.cream : C.dim, cursor: "pointer" }}>
+      {label}
+    </button>
+  );
 
   return (
     <div>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
-        <div style={{ display: "flex", gap: 18 }}>
-          <div style={{ fontSize: 13, color: C.dim }}>
-            Class: <strong style={{ color: C.cream }}>{committedIds.length}/5</strong> committed
-          </div>
-          <div style={{ fontSize: 13, color: C.dim }}>
-            Recruiting points this week: <strong style={{ color: C.gold }}>{points}</strong> / {budget}
-          </div>
-        </div>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12, alignItems: "center" }}>
+        {chip("All", view === "all", () => setView("all"))}
+        {canTarget && chip(`Targets (${targetSet.size})`, view === "targets", () => setView("targets"))}
+        {chip(`Committed (${committedIds.length})`, view === "committed", () => setView("committed"))}
+        <input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search name, state, position…"
+          style={{ flex: 1, minWidth: 180, background: C.panel, border: `1px solid ${C.line}`, color: C.cream, padding: "7px 10px", fontSize: 13 }}
+        />
         <select value={posFilter} onChange={(e) => setPosFilter(e.target.value)}
           style={{ background: C.panel, border: `1px solid ${C.line}`, color: C.cream, padding: "6px 10px", fontSize: 13 }}>
           <option value="ALL">All positions</option>
           {POSITIONS.map((p) => <option key={p} value={p}>{p}</option>)}
         </select>
+        <select value={starFilter} onChange={(e) => setStarFilter(Number(e.target.value))}
+          style={{ background: C.panel, border: `1px solid ${C.line}`, color: C.cream, padding: "6px 10px", fontSize: 13 }}>
+          <option value={0}>Any stars</option>
+          {[5, 4, 3, 2].map((s) => <option key={s} value={s}>{s}★ and up</option>)}
+        </select>
+        <select value={sortBy} onChange={(e) => setSortBy(e.target.value)}
+          style={{ background: C.panel, border: `1px solid ${C.line}`, color: C.cream, padding: "6px 10px", fontSize: 13 }}>
+          <option value="interest">Sort: Interest</option>
+          <option value="stars">Sort: Stars</option>
+          <option value="rank">Sort: National rank</option>
+        </select>
       </div>
 
-      {needs.length > 0 && (
+      {needs && needs.length > 0 && (
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14, padding: "8px 12px", border: `1px solid ${C.wood}`, background: C.panel, fontSize: 12.5 }}>
           <span style={{ color: C.wood, letterSpacing: "0.06em", fontWeight: 600 }}>TEAM NEEDS</span>
           <span style={{ color: C.dim }}>Thin next season at</span>
@@ -2696,38 +3313,47 @@ function RecruitingTab({ board, committedIds, points, budget, onAction, onSign, 
       )}
 
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        {list.map((r) => {
+        {shown.length === 0 && (
+          <div style={{ color: C.dimmer, fontSize: 13, padding: "18px 4px" }}>{emptyLabel || "No prospects match those filters."}</div>
+        )}
+        {shown.map((r) => {
           const mine = committedIds.includes(r.id);
           const open = openId === r.id;
           const chance = signChance(r);
+          const isTarget = targetSet.has(r.id);
           return (
             <Panel key={r.id} style={{ padding: 0 }}>
-              <div
-                className="cbb-row"
+              <div className="cbb-row"
                 onClick={() => setOpenId(open ? null : r.id)}
-                style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 16px", cursor: mine ? "default" : "pointer" }}
-              >
+                style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 16px", cursor: mine ? "default" : "pointer" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 14, flex: 1, minWidth: 0 }}>
+                  {canTarget && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); onToggleTarget(r.id); }}
+                      className="cbb-btn"
+                      title={isTarget ? "Remove target" : "Add target"}
+                      style={{ background: "none", border: "none", cursor: "pointer", color: isTarget ? C.gold : C.dimmer, padding: 0 }}
+                    >
+                      <Star size={16} fill={isTarget ? C.gold : "none"} />
+                    </button>
+                  )}
+                  <span className="cbb-num" style={{ width: 34, color: C.dimmer, fontSize: 11 }}>#{r.nationalRank ?? "—"}</span>
                   <div style={{ minWidth: 150 }}>
                     <div style={{ fontWeight: 600, fontSize: 13.5 }}>
                       {r.name}
                       {needSet.has(r.pos) && (
-                        <span style={{ fontSize: 9.5, color: C.gold, marginLeft: 6, letterSpacing: "0.06em", border: `1px solid ${C.wood}`, padding: "1px 4px", verticalAlign: "middle" }}>
-                          FILLS NEED
-                        </span>
+                        <span style={{ fontSize: 9.5, color: C.gold, marginLeft: 6, letterSpacing: "0.06em", border: `1px solid ${C.wood}`, padding: "1px 4px", verticalAlign: "middle" }}>FILLS NEED</span>
                       )}
                       {r.isTransfer && (
-                        <span style={{ fontSize: 9.5, color: C.wood, marginLeft: 6, letterSpacing: "0.06em", border: `1px solid ${C.line}`, padding: "1px 4px", verticalAlign: "middle" }}>
-                          {r.classYear} TRANSFER
-                        </span>
+                        <span style={{ fontSize: 9.5, color: C.wood, marginLeft: 6, letterSpacing: "0.06em", border: `1px solid ${C.line}`, padding: "1px 4px", verticalAlign: "middle" }}>{r.classYear} TRANSFER</span>
                       )}
                     </div>
                     <div style={{ fontSize: 11, color: C.dim }}>
-                      {r.pos} · {r.state} · {r.hsStatline.ppg} fr. ppg{r.originalTeam ? ` · ${r.originalTeam}` : ""}
+                      {r.pos} · {r.state} · {r.hsStatline.ppg} ppg{r.originalTeam ? ` · ${r.originalTeam}` : ""}
                     </div>
                   </div>
                   <StarRow stars={r.stars} />
-                  <span style={{ color: C.dimmer, fontSize: 11, width: 56 }}>{r.rating ? r.rating.toFixed(3) : "TBD"}</span>
+                  <span style={{ color: C.dimmer, fontSize: 11, width: 48 }}>{r.rating ? r.rating.toFixed(3) : "—"}</span>
                   <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                     <span style={{ fontSize: 10, color: C.dim }}>Interest</span>
                     <InterestBar value={r.interest} colorHigh={r.interest >= r.rivalPressure} />
@@ -2743,29 +3369,25 @@ function RecruitingTab({ board, committedIds, points, budget, onAction, onSign, 
               {open && !mine && (
                 <div style={{ padding: "0 16px 14px", borderTop: `1px solid ${C.line}`, display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
                   {Object.values(RECRUIT_ACTIONS).map((action) => {
-                    const usable = canTakeAction(r, action.key, points);
+                    const usable = canTakeAction(r, action.key, points, weekIndex);
+                    let sub = "";
+                    if (action.key === "CALL") sub = ` (${r.callsThisWeek || 0}/${action.perWeek} this wk)`;
+                    else if (action.key === "HOME") sub = ` (${r.homeVisitsUsed || 0}/${action.maxSeason})`;
+                    else if (action.key === "VISIT") sub = ` (${r.visitsUsed || 0}/${action.maxUses})`;
+                    else if (action.key === "OFFER" && r.offerExtended) sub = " ✓";
                     return (
-                      <button
-                        key={action.key}
-                        disabled={!usable}
-                        onClick={() => onAction(r, action.key)}
-                        className="cbb-btn"
+                      <button key={action.key} disabled={!usable} onClick={() => onAction(r, action.key)} className="cbb-btn"
                         style={{
                           fontSize: 12, padding: "7px 11px", border: `1px solid ${C.line}`,
                           background: action.key === "OFFER" && r.offerExtended ? C.panelAlt : "transparent",
                           color: usable ? C.cream : C.dimmer, cursor: usable ? "pointer" : "not-allowed",
-                        }}
-                      >
-                        {action.label} · {action.cost}pt
+                        }}>
+                        {action.label} · {action.cost}pt{sub}
                       </button>
                     );
                   })}
-                  <button
-                    onClick={() => onSign(r)}
-                    disabled={!r.offerExtended}
-                    className="cbb-btn"
-                    style={{ ...btnStyle(r.offerExtended ? C.wood : C.line), fontSize: 12, padding: "7px 12px", cursor: r.offerExtended ? "pointer" : "not-allowed" }}
-                  >
+                  <button onClick={() => onSign(r)} disabled={!r.offerExtended} className="cbb-btn"
+                    style={{ ...btnStyle(r.offerExtended ? C.wood : C.line), fontSize: 12, padding: "7px 12px", cursor: r.offerExtended ? "pointer" : "not-allowed" }}>
                     Attempt to Sign ({Math.round(chance * 100)}%)
                   </button>
                 </div>
@@ -2773,16 +3395,237 @@ function RecruitingTab({ board, committedIds, points, budget, onAction, onSign, 
             </Panel>
           );
         })}
+        {list.length > shown.length && (
+          <div style={{ color: C.dimmer, fontSize: 11.5, padding: "6px 4px" }}>Showing top {shown.length} of {list.length} — refine with search or filters to see more.</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function RecruitingTab({ board, committedIds, targets, onToggleTarget, points, budget, weekIndex, totalWeeks, onAction, onSign, team, needs = [], scholarshipInfo }) {
+  const pct = Math.round(clamp((weekIndex - 1) / totalWeeks, 0, 1) * 100);
+  const open = scholarshipInfo?.open ?? 0;
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
+        <div style={{ display: "flex", gap: 18, flexWrap: "wrap" }}>
+          <div style={{ fontSize: 13, color: C.dim }}>Open scholarships: <strong style={{ color: open > 0 ? C.gold : C.red }}>{open}</strong> / {SCHOLARSHIP_LIMIT}</div>
+          <div style={{ fontSize: 13, color: C.dim }}>Committed: <strong style={{ color: C.cream }}>{committedIds.length}</strong></div>
+          <div style={{ fontSize: 13, color: C.dim }}>Points this week: <strong style={{ color: C.gold }}>{points}</strong> / {budget}</div>
+          <div style={{ fontSize: 13, color: C.dim }}>Signing period: <strong style={{ color: C.cream }}>{pct}%</strong> elapsed</div>
+        </div>
+      </div>
+      {open <= 0 && (
+        <div style={{ fontSize: 12, color: C.red, border: `1px solid ${C.red}`, padding: "8px 12px", marginBottom: 12 }}>
+          All 13 scholarships are committed. Cut a player in the offseason to open a spot before signing anyone new.
+        </div>
+      )}
+      <RecruitBoard
+        board={board} committedIds={committedIds} targets={targets} onToggleTarget={onToggleTarget}
+        points={points} weekIndex={weekIndex} totalWeeks={totalWeeks}
+        onAction={onAction} onSign={onSign} needs={needs} maxSign={5}
+        emptyLabel="No high-school prospects match those filters."
+      />
+      <div style={{ fontSize: 11.5, color: C.dimmer, marginTop: 14, maxWidth: 700 }}>
+        Every prospect carries a 1-5 star rating from their production, adjusted for level of competition. Star a recruit to add them to your Targets list. Extend an <strong>offer</strong> (5 pts) to make a recruit sign-eligible; work them with <strong>phone calls</strong> (5 pts, twice a week), an <strong>official visit</strong> (25 pts, once), and <strong>home visits</strong> (20 pts, twice a season).         Recruits commit throughout the season, and by signing day everyone still uncommitted lands somewhere. Transfers only open up in the off-season portal.
+      </div>
+    </div>
+  );
+}
+
+/* ---------- Offseason: player development ---------- */
+function DevStepper({ label, value, spent, canAdd, canSub, onAdd, onSub }) {
+  const step = { width: 22, height: 22, display: "flex", alignItems: "center", justifyContent: "center", border: `1px solid ${C.line}`, background: "transparent", cursor: "pointer", fontSize: 14, lineHeight: 1 };
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 5 }}>
+      <div style={{ width: 96, fontSize: 11.5, color: C.dim }}>{label}</div>
+      <div style={{ flex: 1, height: 7, background: C.line, position: "relative" }}>
+        <div style={{ position: "absolute", inset: 0, width: `${clamp(value, 0, 99)}%`, background: value >= 80 ? C.gold : value >= 65 ? C.wood : C.dim }} />
+      </div>
+      <div className="cbb-num" style={{ width: 24, textAlign: "right", fontSize: 12.5, fontWeight: 700 }}>{value}</div>
+      {spent > 0 && <span className="cbb-num" style={{ fontSize: 10, color: C.green, width: 22 }}>+{spent}</span>}
+      {spent === 0 && <span style={{ width: 22 }} />}
+      <button className="cbb-btn" onClick={onSub} disabled={!canSub} style={{ ...step, color: canSub ? C.cream : C.dimmer, cursor: canSub ? "pointer" : "not-allowed" }}>−</button>
+      <button className="cbb-btn" onClick={onAdd} disabled={!canAdd} style={{ ...step, color: canAdd ? C.cream : C.dimmer, cursor: canAdd ? "pointer" : "not-allowed" }}>+</button>
+    </div>
+  );
+}
+
+function ProgressionPanel({ roster, devPoints, devSpent, onDev, onViewPlayer }) {
+  const [openId, setOpenId] = useState(null);
+  const sorted = [...roster].sort((a, b) => b.overall - a.overall);
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 10, flexWrap: "wrap" }}>
+        <span style={{ fontSize: 13, color: C.dim }}>Development points left: <strong style={{ color: devPoints > 0 ? C.gold : C.dimmer }}>{devPoints}</strong></span>
+        <span style={{ fontSize: 11.5, color: C.dimmer }}>Spend up to {DEV_MAX_PER_ATTR} on any single attribute per player.</span>
+      </div>
+      <Panel style={{ padding: 0 }}>
+        {sorted.map((p, idx) => {
+          const open = openId === p.id;
+          const pSpent = (devSpent && devSpent[p.id]) || {};
+          const totalSpent = Object.values(pSpent).reduce((a, b) => a + b, 0);
+          return (
+            <div key={p.id} style={{ borderBottom: idx === sorted.length - 1 ? "none" : `1px solid ${C.line}` }}>
+              <div className="cbb-row" onClick={() => setOpenId(open ? null : p.id)}
+                style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 14px", cursor: "pointer" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
+                  <span className="cbb-num" style={{ width: 30, fontWeight: 700, fontSize: 14, color: C.wood }}>{p.pos}</span>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontSize: 13, fontWeight: 600 }}>{p.realName ? "• " : ""}{p.name}{!p.scholarship && <span style={{ fontSize: 9, color: C.dimmer, marginLeft: 6, border: `1px solid ${C.line}`, padding: "1px 4px" }}>WALK-ON</span>}</div>
+                    <div style={{ fontSize: 11, color: C.dim }}>{p.class} · OVR {p.overall}{totalSpent > 0 ? ` · +${totalSpent} spent` : ""}</div>
+                  </div>
+                </div>
+                <span style={{ fontSize: 11, color: C.dim }}>{open ? "Hide" : "Develop"}</span>
+              </div>
+              {open && (
+                <div style={{ padding: "4px 14px 14px" }}>
+                  {ATTR_KEYS.map((k) => {
+                    const spent = pSpent[k] || 0;
+                    const val = p.attrs[k] ?? 40;
+                    return (
+                      <DevStepper key={k} label={ATTR_LABELS[k]} value={val} spent={spent}
+                        canAdd={devPoints > 0 && spent < DEV_MAX_PER_ATTR && val < 99}
+                        canSub={spent > 0}
+                        onAdd={() => onDev(p.id, k, 1)} onSub={() => onDev(p.id, k, -1)} />
+                    );
+                  })}
+                  {onViewPlayer && (
+                    <button className="cbb-btn" onClick={() => onViewPlayer(p.id)}
+                      style={{ marginTop: 6, fontSize: 11.5, background: "transparent", border: `1px solid ${C.line}`, color: C.dim, padding: "4px 10px", cursor: "pointer" }}>
+                      View full profile
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </Panel>
+    </div>
+  );
+}
+
+function CutsPanel({ roster, scholarshipInfo, onCut, onViewPlayer }) {
+  const sorted = [...roster].sort((a, b) => b.overall - a.overall);
+  return (
+    <div>
+      <div style={{ fontSize: 11.5, color: C.dimmer, marginBottom: 10, maxWidth: 720 }}>
+        You can carry 16 players but only {SCHOLARSHIP_LIMIT} scholarships. Cutting a scholarship player frees a spot to sign a recruit or transfer. Walk-ons don&apos;t use a scholarship.
+      </div>
+      <Panel style={{ overflow: "hidden" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13.5 }}>
+          <thead>
+            <tr style={{ borderBottom: `1px solid ${C.line}`, color: C.dim, fontSize: 11, textAlign: "left" }}>
+              <th style={th}>Player</th><th style={th}>Pos</th><th style={th}>Class</th><th style={th}>OVR</th><th style={th}>Status</th><th style={th}></th>
+            </tr>
+          </thead>
+          <tbody>
+            {sorted.map((p) => (
+              <tr key={p.id} className="cbb-row" style={{ borderBottom: `1px solid ${C.line}` }}>
+                <td style={{ ...td, cursor: onViewPlayer ? "pointer" : "default", fontWeight: 600 }} onClick={() => onViewPlayer && onViewPlayer(p.id)}>{p.realName ? "• " : ""}{p.name}</td>
+                <td style={td}>{p.pos}</td>
+                <td style={td}>{p.class}</td>
+                <td style={{ ...td, fontWeight: 700 }} className="cbb-num">{p.overall}</td>
+                <td style={td}>
+                  {p.scholarship
+                    ? <span style={{ fontSize: 10.5, color: C.gold, border: `1px solid ${C.wood}`, padding: "1px 6px" }}>SCHOLARSHIP</span>
+                    : <span style={{ fontSize: 10.5, color: C.dimmer, border: `1px solid ${C.line}`, padding: "1px 6px" }}>WALK-ON</span>}
+                </td>
+                <td style={td}>
+                  <button className="cbb-btn" onClick={() => onCut(p.id)}
+                    style={{ fontSize: 11.5, background: "transparent", border: `1px solid ${C.red}`, color: C.red, padding: "3px 12px", cursor: "pointer" }}>
+                    Cut
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </Panel>
+    </div>
+  );
+}
+
+/* ---------- Offseason ---------- */
+function OffseasonTab({ stage, offseason, team, roster, nextYear, committedFreshmen, scholarshipInfo, rankById, onAction, onSign, onAdvanceWeek, onEditGame, onChangeJob, onAdvanceYear, onViewTeam, onViewPlayer, onCut, onDev }) {
+  if (!offseason) {
+    return (
+      <div>
+        <SectionIntro>The offseason opens once a national champion is crowned. It runs {OFFSEASON_WEEKS} weeks: work the transfer portal, set next season&apos;s non-conference schedule, and weigh coaching offers. All transfers commit by the end of the four weeks.</SectionIntro>
+        <Panel style={{ padding: 28, textAlign: "center", maxWidth: 460 }}>
+          <GraduationCap size={26} color={C.wood} />
+          <div style={{ color: C.dim, fontSize: 13, marginTop: 10 }}>Finish the postseason, then enter the offseason from the Dashboard.</div>
+        </Panel>
+      </div>
+    );
+  }
+
+  const draftNonConf = (offseason.scheduleDraft || []).filter((g) => !g.conf);
+  const committed = offseason.committedTransfers || [];
+
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12, marginBottom: 16 }}>
+        <div>
+          <div style={{ fontSize: 11, color: C.wood, letterSpacing: "0.08em", fontWeight: 600 }}>OFFSEASON</div>
+          <h2 className="cbb-num" style={{ fontSize: 24, fontWeight: 700, margin: "2px 0" }}>
+            {offseason.done ? "Portal closed" : `Week ${offseason.week} of ${OFFSEASON_WEEKS}`}
+          </h2>
+        </div>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <button onClick={onChangeJob} className="cbb-btn" style={btnStyle(C.panelAlt, C.cream)}><Users size={13} /> Coaching Offers</button>
+          {!offseason.done && (
+            <button onClick={onAdvanceWeek} className="cbb-btn" style={btnStyle(C.wood)}><FastForward size={13} /> Advance Week</button>
+          )}
+          <button onClick={onAdvanceYear} className="cbb-btn" style={btnStyle(C.gold, "#221a00")}><TrendingUp size={13} /> Begin {seasonLabel(nextYear)} Season</button>
+        </div>
       </div>
 
-      <div style={{ fontSize: 11.5, color: C.dimmer, marginTop: 14, maxWidth: 680 }}>
-        {board[0]?.real
-          ? `This class is sourced from real players whose real careers began this year — true freshmen and transfers, not generated prospects. Stats shown are their actual production, but star ratings are adjusted for the strength of the program they played for — a modest scorer at a high-major is rated above a big scorer at a weak program. `
-          : `This class is generated (no real data available for this recruiting year). `}
-        Build interest with Phone Calls and Campus Visits, extend a Scholarship Offer to make them sign-eligible,
-        then a Home Visit for a late push. Rival programs are working every recruit too — wait too long and they
-        can commit elsewhere. {!board[0]?.real && `Recruits marked "TBD" are unranked; their composite rating is set from ${team.name}'s prestige and their production once they sign.`}
+      <div style={{ display: "flex", gap: 18, flexWrap: "wrap", marginBottom: 14, fontSize: 13, color: C.dim }}>
+        <div>Open scholarships: <strong style={{ color: (scholarshipInfo?.open ?? 0) > 0 ? C.gold : C.red }}>{scholarshipInfo?.open ?? 0}</strong> / {SCHOLARSHIP_LIMIT}</div>
+        <div>Portal points this week: <strong style={{ color: C.gold }}>{offseason.points}</strong></div>
+        <div>Transfers committed: <strong style={{ color: C.cream }}>{committed.length}</strong></div>
+        <div>HS signees this cycle: <strong style={{ color: C.cream }}>{committedFreshmen}</strong></div>
       </div>
+
+      <div style={{ fontSize: 12, color: C.wood, fontWeight: 600, letterSpacing: "0.06em", marginBottom: 8 }}>PLAYER DEVELOPMENT</div>
+      <div style={{ fontSize: 11.5, color: C.dimmer, marginBottom: 10, maxWidth: 720 }}>Spend {DEV_POINTS_PER_OFFSEASON} development points improving your roster&apos;s attributes for next season. Real players keep these gains permanently on top of their production.</div>
+      <ProgressionPanel roster={roster} devPoints={offseason.devPoints ?? 0} devSpent={offseason.devSpent} onDev={onDev} onViewPlayer={onViewPlayer} />
+
+      <div style={{ fontSize: 12, color: C.wood, fontWeight: 600, letterSpacing: "0.06em", margin: "22px 0 8px" }}>ROSTER &amp; CUTS</div>
+      <CutsPanel roster={roster} scholarshipInfo={scholarshipInfo} onCut={onCut} onViewPlayer={onViewPlayer} />
+
+      <div style={{ fontSize: 12, color: C.wood, fontWeight: 600, letterSpacing: "0.06em", margin: "22px 0 8px" }}>TRANSFER PORTAL</div>
+      <RecruitBoard
+        board={offseason.transferBoard}
+        committedIds={committed}
+        points={offseason.points}
+        weekIndex={offseason.week}
+        totalWeeks={OFFSEASON_WEEKS}
+        onAction={onAction}
+        onSign={onSign}
+        emptyLabel="No transfers match those filters."
+      />
+
+      <div style={{ fontSize: 12, color: C.wood, fontWeight: 600, letterSpacing: "0.06em", margin: "22px 0 8px" }}>SCHEDULE SETUP — {seasonLabel(nextYear)} NON-CONFERENCE</div>
+      <div style={{ fontSize: 11.5, color: C.dimmer, marginBottom: 10 }}>Set next season&apos;s non-conference slate now. Use Change to pick an opponent or flip home/away; your conference games are assigned automatically.</div>
+      <Panel style={{ overflow: "hidden" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13.5 }}>
+          <thead>
+            <tr style={{ borderBottom: `1px solid ${C.line}`, color: C.dim, fontSize: 11, textAlign: "left" }}>
+              <th style={{ padding: "10px 14px" }}>Wk</th><th style={{ padding: "10px 14px" }}>Opponent</th><th style={{ padding: "10px 14px" }}>Site</th><th style={{ padding: "10px 14px" }}>Result</th><th style={{ padding: "10px 14px" }}></th>
+            </tr>
+          </thead>
+          <tbody>
+            {draftNonConf.map((g) => (
+              <ScheduleRow key={g.id} g={g} teamConf={team.conf} rankById={rankById} isRival={false}
+                onViewTeam={onViewTeam} onEditGame={onEditGame} onViewBox={null} />
+            ))}
+          </tbody>
+        </table>
+      </Panel>
     </div>
   );
 }
@@ -3020,10 +3863,7 @@ function PlayerModal({ player, onClose }) {
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
         <div>
           <div style={{ fontSize: 11, color: C.dim, letterSpacing: "0.08em", marginBottom: 10 }}>ATTRIBUTES</div>
-          <AttrBar label="Scoring" value={p.attrs.scoring} />
-          <AttrBar label="Rebounding" value={p.attrs.rebounding} />
-          <AttrBar label="Playmaking" value={p.attrs.playmaking} />
-          <AttrBar label="Defense" value={p.attrs.defense} />
+          {ATTR_KEYS.map((k) => <AttrBar key={k} label={ATTR_LABELS[k]} value={p.attrs[k] ?? 40} />)}
           <AttrBar label="Potential" value={p.attrs.potential} />
         </div>
         <div>
@@ -3742,13 +4582,15 @@ export default function CBBDynasty() {
       roster,
       depthChart: defaultDepthChart(roster),
       schedule: genSchedule(team, year),
-      recruitingBoard: genRecruitPool(year + 1), // board is always for the NEXT season's incoming class
+      recruitingBoard: seedInterest(genRecruitPool(year + 1), team), // board is always for the NEXT season's incoming class
       incomingCommits: [],
+      recruitTargets: [],
       recruitingPoints: weeklyRecruitingBudget(team),
       recruitingWeekIndex: 1,
       strengths: genSeasonStrengths(),
       history: [],
       postseason: null,
+      offseason: null,
       coach: { ...EMPTY_COACH },
       awardsHistory: [],
       draftHistory: [],
