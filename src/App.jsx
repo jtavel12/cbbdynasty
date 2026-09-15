@@ -605,8 +605,10 @@ function competitionMultiplier(tier) {
 }
 
 function genAttrsFromTier(tier) {
-  // tier ~ 0..1, higher = more talented incoming baseline
-  const base = 38 + tier * 40;
+  // tier ~ 0..1, higher = more talented incoming baseline.
+  // tier 0 (weakest programs) -> base 38, tier 1 (blue bloods) -> base 99,
+  // so top-tier talent can genuinely reach a 99 overall.
+  const base = 38 + tier * 61;
   const spread = 10;
   return {
     scoring: clamp(Math.round(rand(base - spread, base + spread)), 25, 99),
