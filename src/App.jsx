@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import torvikSeasonsRaw from "./data/torvik-seasons.json";
 import torvikPlayersRaw from "./data/torvik-players.json";
+import teamLocationsRaw from "./data/team-locations.json";
 import {
   LayoutDashboard, Users, ListOrdered, Search, CalendarDays, Trophy,
   Save, RotateCcw, ChevronUp, ChevronDown, Play, FastForward, Star,
@@ -435,6 +436,10 @@ const TEAMS = [
 ];
 const TEAM_MAP = Object.fromEntries(TEAMS.map((t) => [t.id, t]));
 
+// Campus coordinates (city-level) for every program, keyed by team id. Used to
+// price recruiting visits by how far a prospect's hometown is from campus.
+const TEAM_LOCATIONS = teamLocationsRaw;
+
 /* =========================================================================
    REAL DATA (Bart Torvik) — wired in from scripts/import-torvik.mjs and
    scripts/import-torvik-players.mjs. Both files default to {} until you
@@ -654,6 +659,44 @@ const LAST_NAMES = ["Carter","Brooks","Hendrix","Washington","Coleman","Mercer",
   "Delgado","Pruett","Kessler","Vance","Whitaker","Odom","Barrow","Nash","Quinn","Reyes",
   "Sharp","Underwood","Vega","Wooten","Blackmon","Cravens","Doss","Ellington","Gantt","Hobbs"];
 const STATES = ["CA","TX","FL","NY","IL","GA","NC","OH","PA","MI","NJ","VA","IN","TN","MD","AZ","MO","WI","LA","AL"];
+
+// The 50 states + DC. A recruit whose hometown `state` is NOT in this set is
+// treated as international (the source stores a country/region name there).
+const US_STATES = new Set(["AL","AK","AZ","AR","CA","CO","CT","DE","FL","GA","HI","ID","IL","IN","IA","KS","KY","LA","ME","MD","MA","MI","MN","MS","MO","MT","NE","NV","NH","NJ","NM","NY","NC","ND","OH","OK","OR","PA","RI","SC","SD","TN","TX","UT","VT","VA","WA","WV","WI","WY","DC"]);
+
+// Rough geographic centroid of each state, used as a fallback when a domestic
+// recruit's row has no precise hometown coordinates.
+const STATE_CENTROIDS = {
+  AL: { lat: 32.8, lng: -86.8 }, AK: { lat: 64.2, lng: -149.5 }, AZ: { lat: 34.3, lng: -111.7 },
+  AR: { lat: 34.9, lng: -92.4 }, CA: { lat: 37.2, lng: -119.5 }, CO: { lat: 39.0, lng: -105.5 },
+  CT: { lat: 41.6, lng: -72.7 }, DE: { lat: 39.0, lng: -75.5 }, FL: { lat: 28.6, lng: -82.4 },
+  GA: { lat: 32.6, lng: -83.4 }, HI: { lat: 20.3, lng: -156.4 }, ID: { lat: 44.4, lng: -114.6 },
+  IL: { lat: 40.0, lng: -89.2 }, IN: { lat: 39.9, lng: -86.3 }, IA: { lat: 42.0, lng: -93.5 },
+  KS: { lat: 38.5, lng: -98.4 }, KY: { lat: 37.5, lng: -85.3 }, LA: { lat: 31.0, lng: -92.0 },
+  ME: { lat: 45.4, lng: -69.2 }, MD: { lat: 39.0, lng: -76.8 }, MA: { lat: 42.3, lng: -71.8 },
+  MI: { lat: 44.3, lng: -85.4 }, MN: { lat: 46.3, lng: -94.3 }, MS: { lat: 32.7, lng: -89.7 },
+  MO: { lat: 38.4, lng: -92.5 }, MT: { lat: 47.0, lng: -109.6 }, NE: { lat: 41.5, lng: -99.8 },
+  NV: { lat: 39.3, lng: -116.6 }, NH: { lat: 43.7, lng: -71.6 }, NJ: { lat: 40.1, lng: -74.7 },
+  NM: { lat: 34.4, lng: -106.1 }, NY: { lat: 42.9, lng: -75.5 }, NC: { lat: 35.6, lng: -79.4 },
+  ND: { lat: 47.5, lng: -100.5 }, OH: { lat: 40.3, lng: -82.8 }, OK: { lat: 35.6, lng: -97.5 },
+  OR: { lat: 44.0, lng: -120.5 }, PA: { lat: 40.9, lng: -77.8 }, RI: { lat: 41.7, lng: -71.6 },
+  SC: { lat: 33.9, lng: -80.9 }, SD: { lat: 44.4, lng: -100.2 }, TN: { lat: 35.9, lng: -86.4 },
+  TX: { lat: 31.5, lng: -99.3 }, UT: { lat: 39.3, lng: -111.7 }, VT: { lat: 44.1, lng: -72.7 },
+  VA: { lat: 37.5, lng: -78.9 }, WA: { lat: 47.4, lng: -120.5 }, WV: { lat: 38.6, lng: -80.6 },
+  WI: { lat: 44.6, lng: -89.9 }, WY: { lat: 43.0, lng: -107.5 }, DC: { lat: 38.9, lng: -77.0 },
+};
+
+// Great-circle distance in miles between two {lat,lng} points (Haversine).
+function haversineMiles(a, b) {
+  if (!a || !b || a.lat == null || b.lat == null || a.lng == null || b.lng == null) return null;
+  const toRad = (d) => (d * Math.PI) / 180;
+  const R = 3958.8;
+  const dLat = toRad(b.lat - a.lat);
+  const dLng = toRad(b.lng - a.lng);
+  const lat1 = toRad(a.lat), lat2 = toRad(b.lat);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
 
 function rand(min, max) { return Math.random() * (max - min) + min; }
 function randInt(min, max) { return Math.floor(rand(min, max + 1)); }
@@ -977,10 +1020,28 @@ function defaultDepthChart(roster) {
 /* =========================================================================
    RECRUITING
    ========================================================================= */
-function parseStateFromHometown(hometown) {
-  if (!hometown) return null;
-  const m = String(hometown).match(/,\s*([A-Za-z]{2})\b/);
-  return m ? m[1].toUpperCase() : null;
+// The torvik hometown field is an object { city, state, latitude, longitude }.
+// For US players `state` is a 2-letter code with real coordinates; for
+// internationals `state` holds a country/region name and coords are null.
+// Returns a normalized shape the recruiting UI and visit-cost model both use.
+function normalizeHometown(h) {
+  if (!h || typeof h !== "object") {
+    return { city: null, state: "\u2014", label: "\u2014", lat: null, lng: null, international: false };
+  }
+  const rawState = h.state ? String(h.state).trim() : "";
+  const code = rawState.toUpperCase();
+  const domestic = US_STATES.has(code);
+  if (domestic) {
+    let lat = typeof h.latitude === "number" ? h.latitude : null;
+    let lng = typeof h.longitude === "number" ? h.longitude : null;
+    if (lat == null && STATE_CENTROIDS[code]) { lat = STATE_CENTROIDS[code].lat; lng = STATE_CENTROIDS[code].lng; }
+    const label = h.city ? `${h.city}, ${code}` : code;
+    return { city: h.city || null, state: code, label, lat, lng, international: false };
+  }
+  // International — flatten to a single "International" bucket for filtering,
+  // but keep the country/city around for the tooltip.
+  const place = h.city && rawState ? `${h.city}, ${rawState}` : (rawState || h.city || "International");
+  return { city: h.city || null, state: "INTL", label: "International", place, lat: null, lng: null, international: true };
 }
 
 // Real players whose real career started THIS year, at any real team —
@@ -1044,11 +1105,17 @@ function buildRealNewcomer(r, year) {
   const adjustedValue = rawValue * competitionMultiplier(tier) * sampleReliability(frGp) + careerOutlierBonus(r.player) * 0.4;
   const stars = starsFromValue(adjustedValue);
   const rating = clamp(0.55 + (adjustedValue / 26) * 0.44, 0.55, 1.0);
+  const ht = normalizeHometown(r.hometown);
   return {
     id: uid(),
     name: r.player,
     pos: resolvePosition(r) || pick(POSITIONS),
-    state: parseStateFromHometown(r.hometown) || "\u2014",
+    state: ht.state,
+    hometown: ht.label,
+    hometownPlace: ht.place || ht.label,
+    hometownLat: ht.lat,
+    hometownLng: ht.lng,
+    international: ht.international,
     classYear,
     isTransfer: transfer,
     stars,
@@ -1092,11 +1159,18 @@ function genSyntheticPool(kind) {
     const stars = starsFromValue(adjustedValue);
     const rating = clamp(0.55 + (adjustedValue / 26) * 0.44, 0.55, 1.0);
     const pos = pick(POSITIONS);
+    const stCode = pick(STATES);
+    const centroid = STATE_CENTROIDS[stCode] || null;
     pool.push({
       id: uid(),
       name: fullName(),
       pos,
-      state: pick(STATES),
+      state: stCode,
+      hometown: stCode,
+      hometownPlace: stCode,
+      hometownLat: centroid ? centroid.lat : null,
+      hometownLng: centroid ? centroid.lng : null,
+      international: false,
       classYear: kind === "transfer" ? pick(["SO", "JR", "SR"]) : "FR",
       isTransfer: kind === "transfer",
       stars,
@@ -1158,9 +1232,44 @@ function seedInterest(board, team) {
 const RECRUIT_ACTIONS = {
   CALL:  { key: "CALL",  label: "Phone Call",        cost: 5,  gain: [4, 8],   perWeek: 2 },
   OFFER: { key: "OFFER", label: "Scholarship Offer", cost: 5,  gain: [6, 10],  oneTime: true },
-  VISIT: { key: "VISIT", label: "Official Visit",    cost: 25, gain: [16, 26], maxUses: 1 },
-  HOME:  { key: "HOME",  label: "Home Visit",        cost: 20, gain: [11, 18], maxSeason: 2 },
+  VISIT: { key: "VISIT", label: "Official Visit",    cost: 12, gain: [16, 26], maxUses: 1 },
+  HOME:  { key: "HOME",  label: "Home Visit",        cost: 9,  gain: [11, 18], maxSeason: 2 },
 };
+
+// Visit pricing scales with how far a recruit's hometown is from campus. Within
+// 100 miles it's the base; every additional 300 miles adds 25% of the base
+// (additive), capped. International recruits always pay the cap.
+const VISIT_COST = {
+  VISIT: { base: 12, cap: 40 },
+  HOME:  { base: 9,  cap: 35 },
+};
+
+// Miles from a recruit's hometown to the coach's campus, or null when unknown
+// (international, or a program we have no coordinates for).
+function recruitDistanceMiles(recruit, team) {
+  if (!recruit || recruit.international) return null;
+  const home = recruit.hometownLat != null ? { lat: recruit.hometownLat, lng: recruit.hometownLng } : null;
+  const campus = team ? TEAM_LOCATIONS[team.id] : null;
+  return haversineMiles(home, campus);
+}
+
+// Point cost of a distance-priced visit for this recruit.
+function visitCostFor(recruit, actionKey, team) {
+  const spec = VISIT_COST[actionKey];
+  if (!spec) return RECRUIT_ACTIONS[actionKey]?.cost ?? 0;
+  if (!recruit || recruit.international) return spec.cap;
+  const miles = recruitDistanceMiles(recruit, team);
+  if (miles == null) return spec.cap;
+  const increments = Math.floor(Math.max(0, miles - 100) / 300);
+  return Math.min(Math.round(spec.base * (1 + 0.25 * increments)), spec.cap);
+}
+
+// Point cost of any recruiting action: visits scale with distance, everything
+// else is the flat action cost.
+function actionCostFor(actionKey, recruit, team) {
+  if (actionKey === "VISIT" || actionKey === "HOME") return visitCostFor(recruit, actionKey, team);
+  return RECRUIT_ACTIONS[actionKey].cost;
+}
 
 // Weekly recruiting points by program tier: high-majors 100, mid-majors 75,
 // low-majors 50.
@@ -1170,10 +1279,10 @@ function weeklyRecruitingBudget(team) {
   return 50;
 }
 
-function canTakeAction(recruit, actionKey, pointsLeft, weekIndex = 0) {
+function canTakeAction(recruit, actionKey, pointsLeft, weekIndex = 0, team = null) {
   const action = RECRUIT_ACTIONS[actionKey];
   if (recruit.committedTo) return false;
-  if (pointsLeft < action.cost) return false;
+  if (pointsLeft < actionCostFor(actionKey, recruit, team)) return false;
   if (actionKey === "OFFER") return !recruit.offerExtended;
   if (actionKey === "CALL") return (recruit.callsThisWeek || 0) < action.perWeek;
   if (actionKey === "VISIT") return (recruit.visitsUsed || 0) < action.maxUses;
@@ -1926,16 +2035,40 @@ function computeAwards(state, rankById, ranked, powerById) {
 /* =========================================================================
    NBA DRAFT / EARLY DEPARTURES
    ========================================================================= */
-function decideDepartures(roster) {
-  const early = [];
+// Hard eligibility floor to declare early for the NBA draft, by class. A player
+// below the floor for their class cannot leave early at all.
+const EARLY_DEPARTURE_MIN = { FR: 75, SO: 80, JR: 83 };
+
+// The three pitches a coach can use to persuade a declared player to return.
+// Exactly one is correct for each player (assigned at random when they declare).
+const PERSUADE_PITCHES = [
+  "Develop more before you leave and we can get you drafted higher",
+  "You need to finish your degree.",
+  "Scouts have told us you won't be drafted",
+];
+
+// Decide which underclassmen declare for the draft this offseason. Only players
+// at/above their class's overall floor are eligible; among those, better players
+// are likelier to go. Each declaration carries a randomly-assigned correct pitch
+// and its persuasion state so the coach gets one attempt to talk them back.
+function decideEarlyDeclarations(roster) {
+  const out = [];
   roster.forEach((p) => {
-    if (p.class === "SR") return;
+    const min = EARLY_DEPARTURE_MIN[p.class];
+    if (min == null) return;              // seniors / others can't leave early
+    if ((p.overall || 0) < min) return;   // below the floor — ineligible
     const o = p.overall;
-    let chance = o >= 90 ? 0.9 : o >= 85 ? 0.6 : o >= 80 ? 0.38 : o >= 76 ? 0.18 : o >= 72 ? 0.07 : 0;
+    let chance = o >= 90 ? 0.9 : o >= 86 ? 0.65 : o >= 83 ? 0.45 : 0.3;
     if (p.class === "JR") chance += 0.08;
-    if (Math.random() < chance) early.push(p);
+    if (Math.random() < chance) {
+      out.push({
+        id: p.id, name: p.name, pos: p.pos, class: p.class, overall: o,
+        correctPitch: randInt(0, PERSUADE_PITCHES.length - 1),
+        attempted: false, kept: false, pitch: null,
+      });
+    }
   });
-  return early;
+  return out;
 }
 
 function draftBoard(early, seniors) {
@@ -2195,6 +2328,20 @@ function DynastyApp({ initial, onExit }) {
 
   const team = TEAM_MAP[state.teamId];
 
+  // The Transfer Portal only exists during the offseason, so it appears as its
+  // own tab (right after Recruiting) only while an offseason is active.
+  const navTabs = useMemo(() => {
+    if (!state.offseason) return TABS;
+    const base = [...TABS];
+    const idx = base.findIndex((t) => t.id === "recruiting");
+    base.splice(idx + 1, 0, { id: "transfer-portal", label: "Transfer Portal", icon: Swords });
+    return base;
+  }, [state.offseason]);
+
+  useEffect(() => {
+    if (tab === "transfer-portal" && !state.offseason) setTab("recruiting");
+  }, [tab, state.offseason]);
+
   function flash(msg) {
     setToast(msg);
     setTimeout(() => setToast(null), 2200);
@@ -2348,12 +2495,14 @@ function DynastyApp({ initial, onExit }) {
     if (!state.postseason || state.postseason.phase !== "done" || state.offseason) return;
     const nextYear = state.year + 1;
     const transferBoard = seedInterest(genTransferBoard(nextYear), team);
+    const draftDeclarations = decideEarlyDeclarations(state.roster);
     setState((s) => ({
       ...s,
       offseason: {
         week: 1,
         transferBoard,
         committedTransfers: [],
+        draftDeclarations,
         points: weeklyRecruitingBudget(team),
         scheduleDraft: genSchedule(team, nextYear),
         done: false,
@@ -2368,17 +2517,38 @@ function DynastyApp({ initial, onExit }) {
   function doTransferAction(recruit, actionKey) {
     const os = state.offseason;
     if (!os) return;
-    if (!canTakeAction(recruit, actionKey, os.points, os.week)) return;
-    const action = RECRUIT_ACTIONS[actionKey];
+    if (!canTakeAction(recruit, actionKey, os.points, os.week, team)) return;
+    const cost = actionCostFor(actionKey, recruit, team);
     const updated = applyRecruitAction(recruit, actionKey, os.week);
     setState((s) => ({
       ...s,
       offseason: {
         ...s.offseason,
-        points: s.offseason.points - action.cost,
+        points: s.offseason.points - cost,
         transferBoard: s.offseason.transferBoard.map((r) => (r.id === recruit.id ? updated : r)),
       },
     }));
+  }
+
+  // One persuasion attempt per declared player: pick a pitch, and if it's the
+  // (randomly assigned) correct one, the player withdraws and stays.
+  function persuadePlayer(playerId, pitchIndex) {
+    const os = state.offseason;
+    if (!os || !os.draftDeclarations) return;
+    const decl = os.draftDeclarations.find((d) => d.id === playerId);
+    if (!decl || decl.attempted) return;
+    const kept = pitchIndex === decl.correctPitch;
+    setState((s) => ({
+      ...s,
+      offseason: {
+        ...s.offseason,
+        draftDeclarations: s.offseason.draftDeclarations.map((d) =>
+          d.id === playerId ? { ...d, attempted: true, kept, pitch: pitchIndex } : d),
+      },
+    }));
+    flash(kept
+      ? `${decl.name} is withdrawing from the draft and returning!`
+      : `${decl.name} thanked you but is staying in the draft.`);
   }
 
   function attemptSignTransfer(recruit) {
@@ -2536,12 +2706,12 @@ function DynastyApp({ initial, onExit }) {
 
   function doRecruitAction(recruit, actionKey) {
     const week = state.recruitingWeekIndex;
-    if (!canTakeAction(recruit, actionKey, state.recruitingPoints, week)) return;
-    const action = RECRUIT_ACTIONS[actionKey];
+    if (!canTakeAction(recruit, actionKey, state.recruitingPoints, week, team)) return;
+    const cost = actionCostFor(actionKey, recruit, team);
     const updated = applyRecruitAction(recruit, actionKey, week);
     setState((s) => ({
       ...s,
-      recruitingPoints: s.recruitingPoints - action.cost,
+      recruitingPoints: s.recruitingPoints - cost,
       recruitingBoard: s.recruitingBoard.map((r) => (r.id === recruit.id ? updated : r)),
     }));
   }
@@ -2658,13 +2828,19 @@ function DynastyApp({ initial, onExit }) {
   function advanceYear() {
     const powerById = powerTableFor(state.strengths, state.year);
     const awards = computeAwards(state, rankById, ranked, powerById);
-    const early = decideDepartures(state.roster);
+    const os = state.offseason;
+    // Early departures resolve from the offseason declarations (after any
+    // persuasion). Players talked into staying are kept off the leaving list.
+    const declarations = os && os.draftDeclarations
+      ? os.draftDeclarations
+      : decideEarlyDeclarations(state.roster);
+    const leavingIds = new Set(declarations.filter((d) => !d.kept).map((d) => d.id));
+    const early = state.roster.filter((p) => leavingIds.has(p.id));
     const seniors = state.roster.filter((p) => p.class === "SR");
     const draft = draftBoard(early, seniors);
     const coach = finalizeCoachSeason(state.coach, record, state.postseason, state.teamId);
-    const earlyIds = new Set(early.map((p) => p.id));
+    const earlyIds = leavingIds;
 
-    const os = state.offseason;
     const incomingFreshmen = state.incomingCommits
       .map((id) => state.recruitingBoard.find((r) => r.id === id))
       .filter(Boolean)
@@ -2790,7 +2966,7 @@ function DynastyApp({ initial, onExit }) {
           <div style={{ fontSize: 11, color: C.dim, marginTop: 4 }}>{team.conf}</div>
         </div>
         <div style={{ flex: 1, padding: "10px 0" }}>
-          {TABS.map((t) => {
+          {navTabs.map((t) => {
             const Icon = t.icon;
             const active = tab === t.id;
             return (
@@ -2870,6 +3046,17 @@ function DynastyApp({ initial, onExit }) {
               scholarshipInfo={scholarshipInfo}
             />
           )}
+          {tab === "transfer-portal" && state.offseason && (
+            <TransferPortalTab
+              offseason={state.offseason}
+              team={team}
+              scholarshipInfo={scholarshipInfo}
+              committedFreshmen={state.incomingCommits.length}
+              onAction={doTransferAction}
+              onSign={attemptSignTransfer}
+              onAdvanceWeek={advanceOffseasonWeek}
+            />
+          )}
           {tab === "offseason" && (
             <OffseasonTab
               stage={stage}
@@ -2882,6 +3069,7 @@ function DynastyApp({ initial, onExit }) {
               rankById={rankById}
               onAction={doTransferAction}
               onSign={attemptSignTransfer}
+              onPersuade={persuadePlayer}
               onAdvanceWeek={advanceOffseasonWeek}
               onEditGame={editDraftGame}
               onChangeJob={() => setJobPickerOpen(true)}
@@ -3244,16 +3432,27 @@ function InterestBar({ value, colorHigh }) {
 // Shared recruit-board list used by both in-season recruiting and the
 // off-season transfer portal. `weekIndex`/`totalWeeks` drive per-week action
 // limits (calls, home visits) and the signing-progress readout.
-function RecruitBoard({ board, committedIds, targets, onToggleTarget, points, weekIndex, totalWeeks, onAction, onSign, needs, maxSign, emptyLabel }) {
+function RecruitBoard({ board, committedIds, targets, onToggleTarget, points, weekIndex, totalWeeks, onAction, onSign, needs, maxSign, emptyLabel, team }) {
   const [view, setView] = useState("all"); // all | targets | committed
   const [posFilter, setPosFilter] = useState("ALL");
   const [starFilter, setStarFilter] = useState(0);
+  const [stateFilter, setStateFilter] = useState("ALL");
   const [sortBy, setSortBy] = useState("interest"); // interest | stars | rank
   const [query, setQuery] = useState("");
   const [openId, setOpenId] = useState(null);
   const needSet = new Set(needs || []);
   const targetSet = new Set(targets || []);
   const q = query.trim().toLowerCase();
+
+  // Distinct hometown states present on the board (INTL grouped last).
+  const stateOptions = useMemo(() => {
+    const set = new Set();
+    board.forEach((r) => { if (r.state && r.state !== "\u2014") set.add(r.state); });
+    const arr = [...set];
+    const intl = arr.includes("INTL");
+    const domestic = arr.filter((s) => s !== "INTL").sort();
+    return intl ? [...domestic, "INTL"] : domestic;
+  }, [board]);
 
   let list = board.filter((r) => {
     const mine = committedIds.includes(r.id);
@@ -3262,7 +3461,8 @@ function RecruitBoard({ board, committedIds, targets, onToggleTarget, points, we
     if (view === "committed" && !mine) return false;
     if (posFilter !== "ALL" && r.pos !== posFilter) return false;
     if (starFilter && (r.stars || 0) < starFilter) return false;
-    if (q && !`${r.name} ${r.state} ${r.pos}`.toLowerCase().includes(q)) return false;
+    if (stateFilter !== "ALL" && r.state !== stateFilter) return false;
+    if (q && !`${r.name} ${r.state} ${r.hometown || ""} ${r.pos}`.toLowerCase().includes(q)) return false;
     return true;
   });
   const sortFns = {
@@ -3305,6 +3505,11 @@ function RecruitBoard({ board, committedIds, targets, onToggleTarget, points, we
           style={{ background: C.panel, border: `1px solid ${C.line}`, color: C.cream, padding: "6px 10px", fontSize: 13 }}>
           <option value={0}>Any stars</option>
           {[5, 4, 3, 2].map((s) => <option key={s} value={s}>{s}★ and up</option>)}
+        </select>
+        <select value={stateFilter} onChange={(e) => setStateFilter(e.target.value)}
+          style={{ background: C.panel, border: `1px solid ${C.line}`, color: C.cream, padding: "6px 10px", fontSize: 13 }}>
+          <option value="ALL">All states</option>
+          {stateOptions.map((s) => <option key={s} value={s}>{s === "INTL" ? "International" : s}</option>)}
         </select>
         <select value={sortBy} onChange={(e) => setSortBy(e.target.value)}
           style={{ background: C.panel, border: `1px solid ${C.line}`, color: C.cream, padding: "6px 10px", fontSize: 13 }}>
@@ -3360,8 +3565,8 @@ function RecruitBoard({ board, committedIds, targets, onToggleTarget, points, we
                         <span style={{ fontSize: 9.5, color: C.wood, marginLeft: 6, letterSpacing: "0.06em", border: `1px solid ${C.line}`, padding: "1px 4px", verticalAlign: "middle" }}>{r.classYear} TRANSFER</span>
                       )}
                     </div>
-                    <div style={{ fontSize: 11, color: C.dim }}>
-                      {r.pos} · {r.state} · {r.hsStatline.ppg} ppg{r.originalTeam ? ` · ${r.originalTeam}` : ""}
+                    <div style={{ fontSize: 11, color: C.dim }} title={r.international ? r.hometownPlace : undefined}>
+                      {r.pos} · <span title={r.international ? r.hometownPlace : undefined}>{r.hometown || r.state}</span> · {r.hsStatline.ppg} ppg
                     </div>
                   </div>
                   <StarRow stars={r.stars} />
@@ -3381,20 +3586,27 @@ function RecruitBoard({ board, committedIds, targets, onToggleTarget, points, we
               {open && !mine && (
                 <div style={{ padding: "0 16px 14px", borderTop: `1px solid ${C.line}`, display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
                   {Object.values(RECRUIT_ACTIONS).map((action) => {
-                    const usable = canTakeAction(r, action.key, points, weekIndex);
+                    const usable = canTakeAction(r, action.key, points, weekIndex, team);
+                    const cost = actionCostFor(action.key, r, team);
                     let sub = "";
                     if (action.key === "CALL") sub = ` (${r.callsThisWeek || 0}/${action.perWeek} this wk)`;
                     else if (action.key === "HOME") sub = ` (${r.homeVisitsUsed || 0}/${action.maxSeason})`;
                     else if (action.key === "VISIT") sub = ` (${r.visitsUsed || 0}/${action.maxUses})`;
                     else if (action.key === "OFFER" && r.offerExtended) sub = " ✓";
+                    const isVisit = action.key === "VISIT" || action.key === "HOME";
+                    const miles = isVisit ? recruitDistanceMiles(r, team) : null;
+                    const distTip = isVisit
+                      ? (r.international ? "International — capped cost" : miles != null ? `${Math.round(miles)} mi from campus` : "Distance unknown — capped cost")
+                      : undefined;
                     return (
                       <button key={action.key} disabled={!usable} onClick={() => onAction(r, action.key)} className="cbb-btn"
+                        title={distTip}
                         style={{
                           fontSize: 12, padding: "7px 11px", border: `1px solid ${C.line}`,
                           background: action.key === "OFFER" && r.offerExtended ? C.panelAlt : "transparent",
                           color: usable ? C.cream : C.dimmer, cursor: usable ? "pointer" : "not-allowed",
                         }}>
-                        {action.label} · {action.cost}pt{sub}
+                        {action.label} · {cost}pt{sub}
                       </button>
                     );
                   })}
@@ -3436,7 +3648,7 @@ function RecruitingTab({ board, committedIds, targets, onToggleTarget, points, b
       <RecruitBoard
         board={board} committedIds={committedIds} targets={targets} onToggleTarget={onToggleTarget}
         points={points} weekIndex={weekIndex} totalWeeks={totalWeeks}
-        onAction={onAction} onSign={onSign} needs={needs} maxSign={5}
+        onAction={onAction} onSign={onSign} needs={needs} maxSign={5} team={team}
         emptyLabel="No high-school prospects match those filters."
       />
       <div style={{ fontSize: 11.5, color: C.dimmer, marginTop: 14, maxWidth: 700 }}>
@@ -3561,7 +3773,112 @@ function CutsPanel({ roster, scholarshipInfo, onCut, onViewPlayer }) {
 }
 
 /* ---------- Offseason ---------- */
-function OffseasonTab({ stage, offseason, team, roster, nextYear, committedFreshmen, scholarshipInfo, rankById, onAction, onSign, onAdvanceWeek, onEditGame, onChangeJob, onAdvanceYear, onViewTeam, onViewPlayer, onCut, onDev }) {
+// Dedicated Transfer Portal tab — only mounted during the offseason. Works the
+// same portal board as the Offseason tab so either entry point stays in sync.
+function TransferPortalTab({ offseason, team, scholarshipInfo, committedFreshmen, onAction, onSign, onAdvanceWeek }) {
+  const committed = offseason.committedTransfers || [];
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12, marginBottom: 16 }}>
+        <div>
+          <div style={{ fontSize: 11, color: C.wood, letterSpacing: "0.08em", fontWeight: 600 }}>TRANSFER PORTAL</div>
+          <h2 className="cbb-num" style={{ fontSize: 24, fontWeight: 700, margin: "2px 0" }}>
+            {offseason.done ? "Portal closed" : `Week ${offseason.week} of ${OFFSEASON_WEEKS}`}
+          </h2>
+        </div>
+        {!offseason.done && (
+          <button onClick={onAdvanceWeek} className="cbb-btn" style={btnStyle(C.wood)}><FastForward size={13} /> Advance Week</button>
+        )}
+      </div>
+
+      <div style={{ display: "flex", gap: 18, flexWrap: "wrap", marginBottom: 14, fontSize: 13, color: C.dim }}>
+        <div>Open scholarships: <strong style={{ color: (scholarshipInfo?.open ?? 0) > 0 ? C.gold : C.red }}>{scholarshipInfo?.open ?? 0}</strong> / {SCHOLARSHIP_LIMIT}</div>
+        <div>Portal points this week: <strong style={{ color: C.gold }}>{offseason.points}</strong></div>
+        <div>Transfers committed: <strong style={{ color: C.cream }}>{committed.length}</strong></div>
+        <div>HS signees this cycle: <strong style={{ color: C.cream }}>{committedFreshmen}</strong></div>
+      </div>
+
+      <div style={{ fontSize: 11.5, color: C.dimmer, marginBottom: 12, maxWidth: 720 }}>
+        Incoming transfers are available only during the offseason. Work them exactly like high-school prospects — visit costs scale with how far their hometown is from your campus. All transfers commit somewhere by the end of the {OFFSEASON_WEEKS} weeks.
+      </div>
+
+      <RecruitBoard
+        board={offseason.transferBoard}
+        committedIds={committed}
+        points={offseason.points}
+        weekIndex={offseason.week}
+        totalWeeks={OFFSEASON_WEEKS}
+        onAction={onAction}
+        onSign={onSign}
+        team={team}
+        emptyLabel="No transfers match those filters."
+      />
+    </div>
+  );
+}
+
+// Off-season draft decisions: each declared underclassman gets one persuasion
+// attempt. Pick the pitch that lands and they withdraw and return next season.
+function DraftDecisionsPanel({ declarations, onPersuade }) {
+  const [pitchChoice, setPitchChoice] = useState({});
+  if (!declarations || declarations.length === 0) {
+    return (
+      <Panel style={{ padding: "14px 16px" }}>
+        <div style={{ color: C.dim, fontSize: 12.5 }}>No underclassmen declared early for the NBA Draft this offseason.</div>
+      </Panel>
+    );
+  }
+  const pending = declarations.filter((d) => !d.attempted).length;
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      <div style={{ fontSize: 11.5, color: C.dimmer, marginBottom: 2, maxWidth: 720 }}>
+        {pending > 0
+          ? "Each player will hear you out once. Choose the pitch you think will resonate — only one works, and you get a single attempt per player."
+          : "Every declared player has heard your pitch."}
+      </div>
+      {declarations.map((d) => {
+        const decided = d.attempted;
+        const sel = pitchChoice[d.id];
+        return (
+          <Panel key={d.id} style={{ padding: "12px 16px" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+              <div>
+                <span style={{ fontWeight: 600, fontSize: 13.5 }}>{d.name}</span>
+                <span className="cbb-num" style={{ fontSize: 11, color: C.dim, marginLeft: 8 }}>{d.pos} · {d.class} · {d.overall} OVR</span>
+              </div>
+              {decided ? (
+                <span style={{ fontSize: 12, color: d.kept ? C.green : C.red, display: "flex", alignItems: "center", gap: 4 }}>
+                  {d.kept ? <><Check size={13} /> Returning</> : "Staying in draft"}
+                </span>
+              ) : (
+                <span style={{ fontSize: 11, color: C.gold, letterSpacing: "0.05em" }}>DECLARED</span>
+              )}
+            </div>
+            {!decided && (
+              <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 6 }}>
+                {PERSUADE_PITCHES.map((pitch, i) => (
+                  <label key={i} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: C.cream, cursor: "pointer" }}>
+                    <input type="radio" name={`pitch-${d.id}`} checked={sel === i}
+                      onChange={() => setPitchChoice((p) => ({ ...p, [d.id]: i }))} />
+                    <span>&ldquo;{pitch}&rdquo;</span>
+                  </label>
+                ))}
+                <div>
+                  <button className="cbb-btn" disabled={sel == null} onClick={() => onPersuade(d.id, sel)}
+                    style={{ ...btnStyle(sel == null ? C.line : C.wood), fontSize: 12, padding: "6px 12px", marginTop: 4, cursor: sel == null ? "not-allowed" : "pointer" }}>
+                    Make Pitch
+                  </button>
+                </div>
+              </div>
+            )}
+          </Panel>
+        );
+      })}
+    </div>
+  );
+}
+
+function OffseasonTab({ stage, offseason, team, roster, nextYear, committedFreshmen, scholarshipInfo, rankById, onAction, onSign, onPersuade, onAdvanceWeek, onEditGame, onChangeJob, onAdvanceYear, onViewTeam, onViewPlayer, onCut, onDev }) {
   if (!offseason) {
     return (
       <div>
@@ -3609,6 +3926,9 @@ function OffseasonTab({ stage, offseason, team, roster, nextYear, committedFresh
       <div style={{ fontSize: 12, color: C.wood, fontWeight: 600, letterSpacing: "0.06em", margin: "22px 0 8px" }}>ROSTER &amp; CUTS</div>
       <CutsPanel roster={roster} scholarshipInfo={scholarshipInfo} onCut={onCut} onViewPlayer={onViewPlayer} />
 
+      <div style={{ fontSize: 12, color: C.wood, fontWeight: 600, letterSpacing: "0.06em", margin: "22px 0 8px" }}>NBA DRAFT DECISIONS</div>
+      <DraftDecisionsPanel declarations={offseason.draftDeclarations} onPersuade={onPersuade} />
+
       <div style={{ fontSize: 12, color: C.wood, fontWeight: 600, letterSpacing: "0.06em", margin: "22px 0 8px" }}>TRANSFER PORTAL</div>
       <RecruitBoard
         board={offseason.transferBoard}
@@ -3618,6 +3938,7 @@ function OffseasonTab({ stage, offseason, team, roster, nextYear, committedFresh
         totalWeeks={OFFSEASON_WEEKS}
         onAction={onAction}
         onSign={onSign}
+        team={team}
         emptyLabel="No transfers match those filters."
       />
 
