@@ -1757,7 +1757,7 @@ function recordTableFor(powerById, userTeamId, userRecord, year) {
   return rec;
 }
 
-function rankingScore(wins, losses, power, realRank) {
+function rankingScore(wins, losses, power, realRank, isUser = false) {
   const games = wins + losses;
   const shrunkWinPct = (wins + 3) / (games + 6); // Bayesian shrink toward .500
   const quality = clamp((power - 25) / (92 - 25), 0, 1);
@@ -1767,20 +1767,34 @@ function rankingScore(wins, losses, power, realRank) {
   // When a real committee rank exists, it is authoritative — it already encodes
   // strength of schedule and quality wins that our record+power blend can't see,
   // and it's what stops mid-majors with gaudy records from over-ranking. Let it
-  // dominate the score for ranked teams while the computed blend still slots the
-  // user's team and any unranked programs onto the same 0..1 scale.
+  // dominate the score for ranked CPU teams.
   if (realRank) {
     const rankScore = clamp(1 - (realRank - 1) / 120, 0, 1);
     score = 0.35 * score + 0.65 * rankScore;
+  } else if (isUser && games > 0) {
+    // The user's program has NO fixed committee rank — it EARNS its ranking from
+    // the season actually being played. We build a resume score on the same
+    // 0..1 scale a real team's committee rank sits on, driven by how much the
+    // coach is winning and how strong the roster they've assembled is. This is
+    // what lets you take a mid-major like Pepperdine, recruit an elite roster,
+    // and legitimately climb to #1, earn a top seed, and win a title the real
+    // program never did — a dominant season (undefeated + elite roster) tops out
+    // at ~#1-caliber, while a merely good year lands you in the back half of the
+    // poll rather than instantly at the top.
+    const winPct = wins / games;
+    const winScore = clamp((winPct - 0.5) / 0.45, 0, 1); // .500 -> 0, .950 -> 1
+    const rosterScore = clamp((power - 45) / (82 - 45), 0, 1); // roster 45 -> 0, 82 -> 1
+    const resumeRank = 0.6 * winScore + 0.4 * rosterScore;
+    score = 0.35 * score + 0.65 * resumeRank;
   }
   return score;
 }
 
 // Returns { ranked: [{team,wins,losses,power,score}], rankById } sorted best-first.
-function computeRankings(powerById, recordById) {
+function computeRankings(powerById, recordById, userTeamId) {
   const ranked = TEAMS.map((t) => {
     const r = recordById[t.id];
-    return { team: t, wins: r.wins, losses: r.losses, power: powerById[t.id], score: rankingScore(r.wins, r.losses, powerById[t.id], r.realRank) };
+    return { team: t, wins: r.wins, losses: r.losses, power: powerById[t.id], score: rankingScore(r.wins, r.losses, powerById[t.id], r.realRank, t.id === userTeamId) };
   }).sort((a, b) => b.score - a.score || b.wins - a.wins || a.losses - b.losses || b.power - a.power);
   const rankById = {};
   ranked.forEach((row, i) => { rankById[row.team.id] = i + 1; });
@@ -2695,9 +2709,13 @@ function DynastyApp({ initial, onExit }) {
   // tab, schedule/standings rank badges, and postseason seeding.
   const { rankById, ranked } = useMemo(() => {
     const powerById = powerTableFor(state.strengths, state.year);
+    // The user's power in the poll is the roster they've ACTUALLY built, not the
+    // school's historical strength — so recruiting a great team directly lifts
+    // their ranking and quality of poll standing.
+    powerById[state.teamId] = userTeamOverall(state.roster, state.depthChart);
     const recordById = recordTableFor(powerById, state.teamId, record, state.year);
-    return computeRankings(powerById, recordById);
-  }, [state.strengths, state.year, state.teamId, record]);
+    return computeRankings(powerById, recordById, state.teamId);
+  }, [state.strengths, state.year, state.teamId, record, state.roster, state.depthChart]);
 
   const reputation = reputationOf(state.coach);
   const leaders = useMemo(
