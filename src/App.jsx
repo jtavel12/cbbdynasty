@@ -1753,40 +1753,87 @@ function powerTableFor(strengths, year) {
   );
 }
 
-// The user's team plays a simulated season, so its record comes from the games
-// actually played. EVERY other program uses its REAL historical record and
-// committee rank for that year — that's what keeps the league honest. Real
-// seasons only ever have a handful of 1-2 loss teams (not 20-30), and the real
-// committee rank correctly keeps most low/mid-majors out of the Top 25. We only
-// fall back to a projection for the rare program with no data that season.
-function recordTableFor(powerById, userTeamId, userRecord, year) {
+// Deterministic per-team season RNG. A given (seasonSeed, team, year) always
+// yields the SAME emergent season within a save — so records are stable across
+// re-renders — while a fresh season (new seed) plays out differently. That seed
+// is what makes each playthrough vary instead of replaying fixed history.
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+function seasonRngFor(seasonSeed, teamId, year) {
+  let h = 2166136261 ^ (seasonSeed >>> 0);
+  const key = `${teamId}|${year}`;
+  for (let i = 0; i < key.length; i++) { h ^= key.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return mulberry32(h >>> 0);
+}
+
+// One CPU team's emergent season as a per-game win/loss sequence. Each game is a
+// Bernoulli trial at the team's real win rate (or a power projection when there's
+// no historical record), so the season AVERAGES near its real total but binomial
+// variance swings it a few games either way — the "loosely anchored" model. Wins
+// accrue game by game, so a record only fills in as its games are actually played
+// rather than showing the final result from the opening tip.
+function cpuSeasonSeq(team, year, powerById, seasonSeed) {
+  const real = teamRecordsRaw[team.id] && teamRecordsRaw[team.id][String(year)];
+  let G, p;
+  if (real && real.w + real.l > 0) {
+    G = real.w + real.l;
+    p = real.w / G;
+  } else {
+    const pr = projectedRecord(team, powerById);
+    G = pr.wins + pr.losses;
+    p = G ? pr.wins / G : 0.5;
+  }
+  const rng = seasonRngFor(seasonSeed, team.id, year);
+  const seq = new Array(G);
+  for (let i = 0; i < G; i++) seq[i] = rng() < p ? 1 : 0;
+  return { G, seq, realRank: real ? (real.rank || null) : null };
+}
+
+// Records THROUGH the games played so far. The user's row is their real played
+// record; every CPU team shows the wins from the first `gamesPlayed` games of its
+// emergent sequence (capped at its own schedule length). This is the single
+// source both the poll and the standings read, so they always agree — and nothing
+// posts a win before that game has actually been played.
+function accruedRecordTable(powerById, userTeamId, userRecord, year, seasonSeed, gamesPlayed) {
+  const seed = seasonSeed == null ? (Math.imul(year, 2654435761) >>> 0) : seasonSeed;
   const rec = {};
   for (const t of TEAMS) {
-    if (t.id === userTeamId) { rec[t.id] = { wins: userRecord.w, losses: userRecord.l, realRank: null }; continue; }
-    const real = teamRecordsRaw[t.id] && teamRecordsRaw[t.id][String(year)];
-    if (real && real.w + real.l > 0) {
-      rec[t.id] = { wins: real.w, losses: real.l, realRank: real.rank || null };
-    } else {
-      rec[t.id] = { ...projectedRecord(t, powerById), realRank: null };
+    if (t.id === userTeamId) {
+      rec[t.id] = { wins: userRecord.w, losses: userRecord.l, realRank: null };
+      continue;
     }
+    const { G, seq, realRank } = cpuSeasonSeq(t, year, powerById, seed);
+    const k = Math.min(Math.max(0, gamesPlayed), G);
+    let w = 0;
+    for (let i = 0; i < k; i++) w += seq[i];
+    rec[t.id] = { wins: w, losses: k - w, realRank };
   }
   return rec;
 }
 
-function rankingScore(wins, losses, power, realRank, isUser = false) {
+function rankingScore(wins, losses, power, realRank, isUser = false, gamesPlayed = 0) {
   const games = wins + losses;
   const shrunkWinPct = (wins + 3) / (games + 6); // Bayesian shrink toward .500
   const quality = clamp((power - 25) / (92 - 25), 0, 1);
   // Winning is weighted heavily so a dominant team rises, but quality keeps
   // blue bloods near the top of a crowded field.
   let score = shrunkWinPct * 0.72 + quality * 0.28;
-  // When a real committee rank exists, it is authoritative — it already encodes
-  // strength of schedule and quality wins that our record+power blend can't see,
-  // and it's what stops mid-majors with gaudy records from over-ranking. Let it
-  // dominate the score for ranked CPU teams.
-  if (realRank) {
-    const rankScore = clamp(1 - (realRank - 1) / 120, 0, 1);
-    score = 0.35 * score + 0.65 * rankScore;
+  // A real committee rank is used as a PRESEASON PRIOR, not a fixed verdict. It
+  // seeds the opening poll — so blue bloods start ranked and gaudy-record mid-
+  // majors don't flood the Top 25 in week 1 — then fades to nothing by midseason,
+  // handing the poll over to the season that's actually being played. Combined
+  // with the emergent (not fixed) records, this is what removes the
+  // "predetermined final standings" feel while keeping the early poll believable.
+  if (realRank && !isUser) {
+    const priorScore = clamp(1 - (realRank - 1) / 120, 0, 1);
+    const priorWeight = clamp(1 - gamesPlayed / 16, 0, 1) * 0.6; // 0.6 preseason -> 0 by game ~16
+    score = score * (1 - priorWeight) + priorScore * priorWeight;
   } else if (isUser && games > 0) {
     // The user's program has NO fixed committee rank — it EARNS its ranking from
     // the season actually being played. We build a resume score on the same
@@ -1807,10 +1854,10 @@ function rankingScore(wins, losses, power, realRank, isUser = false) {
 }
 
 // Returns { ranked: [{team,wins,losses,power,score}], rankById } sorted best-first.
-function computeRankings(powerById, recordById, userTeamId) {
+function computeRankings(powerById, recordById, userTeamId, gamesPlayed = 0) {
   const ranked = TEAMS.map((t) => {
     const r = recordById[t.id];
-    return { team: t, wins: r.wins, losses: r.losses, power: powerById[t.id], score: rankingScore(r.wins, r.losses, powerById[t.id], r.realRank, t.id === userTeamId) };
+    return { team: t, wins: r.wins, losses: r.losses, power: powerById[t.id], score: rankingScore(r.wins, r.losses, powerById[t.id], r.realRank, t.id === userTeamId, gamesPlayed) };
   }).sort((a, b) => b.score - a.score || b.wins - a.wins || a.losses - b.losses || b.power - a.power);
   const rankById = {};
   ranked.forEach((row, i) => { rankById[row.team.id] = i + 1; });
@@ -2753,9 +2800,10 @@ function DynastyApp({ initial, onExit }) {
     // roster ranks true to history and recruiting a great team lifts them from
     // there (rather than the raw OVR average, which over-ranked weak programs).
     powerById[state.teamId] = userGamePower(state.roster, state.depthChart, powerBaseline);
-    const recordById = recordTableFor(powerById, state.teamId, record, state.year);
-    return computeRankings(powerById, recordById, state.teamId);
-  }, [state.strengths, state.year, state.teamId, record, state.roster, state.depthChart, powerBaseline]);
+    const gamesPlayed = record.w + record.l;
+    const recordById = accruedRecordTable(powerById, state.teamId, record, state.year, state.seasonSeed, gamesPlayed);
+    return computeRankings(powerById, recordById, state.teamId, gamesPlayed);
+  }, [state.strengths, state.year, state.teamId, record, state.roster, state.depthChart, powerBaseline, state.seasonSeed]);
 
   const reputation = reputationOf(state.coach);
   const leaders = useMemo(
@@ -3434,6 +3482,7 @@ function DynastyApp({ initial, onExit }) {
     setState({
       ...state,
       year: newYear,
+      seasonSeed: (Math.random() * 0xffffffff) >>> 0,
       prestigeById: nextPrestige,
       roster: newRoster,
       depthChart: defaultDepthChart(newRoster),
@@ -3489,6 +3538,7 @@ function DynastyApp({ initial, onExit }) {
       ...state,
       teamId: newTeam.id,
       year: newYear,
+      seasonSeed: (Math.random() * 0xffffffff) >>> 0,
       prestigeById: nextPrestige,
       roster,
       depthChart: defaultDepthChart(roster),
@@ -5807,11 +5857,10 @@ function ScheduleTab({ schedule, teamConf, rankById, rivalIds, onViewTeam, onEdi
 
 /* ---------- Standings ---------- */
 function StandingsTab({ team, ranked, rankById, userRecord, onViewTeam }) {
-  // Standings reflect the season SO FAR: every team shows the same number of
-  // games the user has played (0-0 before week 1, one game after week 1, and so
-  // on). Each CPU team's games are split by its full-season win rate, so the
-  // table stays honest week to week and only reaches full records at season's
-  // end. The user's own row uses their actual played record.
+  // Standings read the SAME accrued records the poll uses: each CPU team's record
+  // is the running result of its emergent season through the games played so far
+  // (0-0 before week 1, filling in as games finish), and the user's row is their
+  // real played record. No proportional guessing — poll and standings always match.
   const gamesPlayed = Math.max(0, (userRecord.w || 0) + (userRecord.l || 0));
 
   // Conference filter: "All" shows the national table; picking a league narrows
@@ -5823,16 +5872,7 @@ function StandingsTab({ team, ranked, rankById, userRecord, onViewTeam }) {
   );
 
   const rows = ranked
-    .map((r) => {
-      if (r.team.id === team.id) {
-        return { ...r.team, wins: userRecord.w, losses: userRecord.l, isUser: true };
-      }
-      const fullG = r.wins + r.losses;
-      const capG = Math.min(gamesPlayed, fullG); // never exceed a team's real season length
-      const winPct = fullG > 0 ? r.wins / fullG : 0;
-      const wins = Math.round(winPct * capG);
-      return { ...r.team, wins, losses: capG - wins, isUser: false };
-    })
+    .map((r) => ({ ...r.team, wins: r.wins, losses: r.losses, isUser: r.team.id === team.id }))
     .filter((t) => confFilter === "All" || t.conf === confFilter)
     .sort((a, b) => b.wins - a.wins || a.losses - b.losses || b.prestige - a.prestige);
 
@@ -5841,8 +5881,8 @@ function StandingsTab({ team, ranked, rankById, userRecord, onViewTeam }) {
       <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
         <span style={{ fontSize: 11.5, color: C.dimmer, flex: "1 1 240px" }}>
           {confFilter === "All"
-            ? <>National standings as of the games played so far — every team shows the same {gamesPlayed} game{gamesPlayed === 1 ? "" : "s"} you&apos;ve played, with each team&apos;s wins split by its season-long strength. Click any team to preview their roster.</>
-            : <><strong>{confFilter}</strong> standings through {gamesPlayed} game{gamesPlayed === 1 ? "" : "s"} — records are each team&apos;s season pace across their full schedule. Click any team to preview their roster.</>}
+            ? <>National standings through the games played so far — every team shows the same {gamesPlayed} game{gamesPlayed === 1 ? "" : "s"} you&apos;ve played, and each season plays out fresh, so records and the poll shift week to week. Click any team to preview their roster.</>
+            : <><strong>{confFilter}</strong> standings through {gamesPlayed} game{gamesPlayed === 1 ? "" : "s"} — live results from each team&apos;s emergent season. Click any team to preview their roster.</>}
         </span>
         <select value={confFilter} onChange={(e) => setConfFilter(e.target.value)}
           style={{ background: C.panel, border: `1px solid ${C.line}`, color: C.cream, padding: "6px 10px", fontSize: 13 }}>
@@ -6290,6 +6330,7 @@ export default function CBBDynasty() {
       slot,
       teamId: team.id,
       year,
+      seasonSeed: (Math.random() * 0xffffffff) >>> 0,
       prestigeById,
       roster,
       depthChart: defaultDepthChart(roster),
