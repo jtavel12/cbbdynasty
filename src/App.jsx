@@ -2631,6 +2631,23 @@ function GlobalStyle() {
       .cbb-crown-pop { animation: cbbCrownPop .6s cubic-bezier(.2,.9,.3,1.4) both; }
       .cbb-toast-in { animation: cbbToastIn .25s cubic-bezier(.2,.8,.3,1) both; }
       .cbb-toast-out { animation: cbbToastOut .25s ease both; }
+
+      /* App shell: the left rail is a fixed 210px by default. Below 760px it
+         collapses to an icon-only strip (labels hidden, nav centered) so the
+         main content keeps enough room instead of overflowing; below 520px
+         the header and content padding tighten further for phone widths. */
+      .cbb-rail { width: 210px; flex-shrink: 0; transition: width .18s ease; }
+      @media (max-width: 760px) {
+        .cbb-rail { width: 60px; }
+        .cbb-rail-label { display: none; }
+        .cbb-nav-btn { justify-content: center !important; padding: 12px 0 !important; }
+        .cbb-scoreboard-header { padding: 10px 14px !important; }
+        .cbb-main-content { padding: 16px !important; }
+      }
+      @media (max-width: 520px) {
+        .cbb-scoreboard-header { gap: 12px !important; }
+        .cbb-main-content { padding: 12px !important; }
+      }
     `}</style>
   );
 }
@@ -2684,7 +2701,7 @@ function Toast({ message }) {
         display: "flex", alignItems: "center", gap: 8, fontSize: 13,
         background: C.panelAlt, borderLeft: `3px solid ${border}`,
         border: `1px solid ${C.line}`, borderLeftWidth: 3, borderLeftColor: border,
-        padding: "7px 14px", color: C.cream, maxWidth: 420,
+        padding: "7px 14px", color: C.cream, maxWidth: "min(420px, 100%)",
       }}
     >
       <Icon size={14} color={border} style={{ flexShrink: 0 }} />
@@ -3689,11 +3706,11 @@ function DynastyApp({ initial, onExit }) {
     <div className="cbb-root" style={{ display: "flex", minHeight: "100vh", background: C.bg, color: C.cream }}>
       <GlobalStyle />
       {/* LEFT RAIL */}
-      <div style={{ width: 210, background: C.bgRail, borderRight: `1px solid ${C.line}`, display: "flex", flexDirection: "column", flexShrink: 0 }}>
-        <div style={{ padding: "20px 18px", borderBottom: `1px solid ${C.line}` }}>
+      <div className="cbb-rail" style={{ background: C.bgRail, borderRight: `1px solid ${C.line}`, display: "flex", flexDirection: "column" }}>
+        <div title={`${team.name} · ${team.conf}`} style={{ padding: "20px 18px", borderBottom: `1px solid ${C.line}` }}>
           <div style={{ width: 10, height: 10, background: team.primary, display: "inline-block", marginRight: 8 }} />
-          <span className="cbb-num" style={{ fontWeight: 600, fontSize: 15 }}>{team.name}</span>
-          <div style={{ fontSize: 11, color: C.dim, marginTop: 4 }}>{team.conf}</div>
+          <span className="cbb-num cbb-rail-label" style={{ fontWeight: 600, fontSize: 15 }}>{team.name}</span>
+          <div className="cbb-rail-label" style={{ fontSize: 11, color: C.dim, marginTop: 4 }}>{team.conf}</div>
         </div>
         <div style={{ flex: 1, padding: "10px 0" }}>
           {navTabs.map((t) => {
@@ -3703,7 +3720,8 @@ function DynastyApp({ initial, onExit }) {
               <button
                 key={t.id}
                 onClick={() => setTab(t.id)}
-                className="cbb-btn"
+                title={t.label}
+                className="cbb-btn cbb-nav-btn"
                 style={{
                   width: "100%", display: "flex", alignItems: "center", gap: 10,
                   padding: "11px 18px", background: active ? C.panelAlt : "transparent",
@@ -3711,19 +3729,19 @@ function DynastyApp({ initial, onExit }) {
                   color: active ? C.cream : C.dim, cursor: "pointer", fontSize: 13.5, textAlign: "left",
                 }}
               >
-                <Icon size={15} /> {t.label}
+                <Icon size={15} /> <span className="cbb-rail-label">{t.label}</span>
               </button>
             );
           })}
         </div>
         <div style={{ padding: 14, borderTop: `1px solid ${C.line}`, display: "flex", flexDirection: "column", gap: 8 }}>
-          <button onClick={() => { saveDynasty(state); flash("Saved."); }} className="cbb-btn"
+          <button onClick={() => { saveDynasty(state); flash("Saved."); }} title="Save Dynasty" className="cbb-btn cbb-nav-btn"
             style={{ display: "flex", alignItems: "center", gap: 8, background: "transparent", border: `1px solid ${C.line}`, color: C.dim, padding: "8px 10px", cursor: "pointer", fontSize: 12.5 }}>
-            <Save size={13} /> Save Dynasty
+            <Save size={13} /> <span className="cbb-rail-label">Save Dynasty</span>
           </button>
-          <button onClick={onExit} className="cbb-btn"
+          <button onClick={onExit} title="New Dynasty" className="cbb-btn cbb-nav-btn"
             style={{ display: "flex", alignItems: "center", gap: 8, background: "transparent", border: `1px solid ${C.line}`, color: C.dim, padding: "8px 10px", cursor: "pointer", fontSize: 12.5 }}>
-            <RotateCcw size={13} /> New Dynasty
+            <RotateCcw size={13} /> <span className="cbb-rail-label">New Dynasty</span>
           </button>
         </div>
       </div>
@@ -3731,7 +3749,7 @@ function DynastyApp({ initial, onExit }) {
       {/* MAIN */}
       <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
         {/* SCOREBOARD HEADER */}
-        <div style={{ background: C.bgRail, borderBottom: `2px solid ${C.wood}`, padding: "14px 28px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <div className="cbb-scoreboard-header" style={{ background: C.bgRail, borderBottom: `2px solid ${C.wood}`, padding: "14px 28px", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
           <div style={{ display: "flex", alignItems: "baseline", gap: 22 }}>
             <div>
               <div style={{ fontSize: 10, color: C.dim, letterSpacing: "0.1em" }}>SEASON</div>
@@ -3745,7 +3763,7 @@ function DynastyApp({ initial, onExit }) {
           <Toast message={toast} />
         </div>
 
-        <div key={tab} className="cbb-scroll cbb-tab-fade" style={{ flex: 1, overflowY: "auto", padding: 28 }}>
+        <div key={tab} className="cbb-scroll cbb-tab-fade cbb-main-content" style={{ flex: 1, overflowY: "auto", padding: 28 }}>
           {tab === "dashboard" && (
             <DashboardTab state={state} team={team} record={record} nextGame={nextGame}
               stage={stage}
