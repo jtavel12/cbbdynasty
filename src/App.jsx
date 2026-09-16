@@ -1737,30 +1737,50 @@ function powerTableFor(strengths, year) {
   );
 }
 
-function recordTableFor(powerById, userTeamId, userRecord) {
+// The user's team plays a simulated season, so its record comes from the games
+// actually played. EVERY other program uses its REAL historical record and
+// committee rank for that year — that's what keeps the league honest. Real
+// seasons only ever have a handful of 1-2 loss teams (not 20-30), and the real
+// committee rank correctly keeps most low/mid-majors out of the Top 25. We only
+// fall back to a projection for the rare program with no data that season.
+function recordTableFor(powerById, userTeamId, userRecord, year) {
   const rec = {};
   for (const t of TEAMS) {
-    rec[t.id] = t.id === userTeamId
-      ? { wins: userRecord.w, losses: userRecord.l }
-      : projectedRecord(t, powerById);
+    if (t.id === userTeamId) { rec[t.id] = { wins: userRecord.w, losses: userRecord.l, realRank: null }; continue; }
+    const real = teamRecordsRaw[t.id] && teamRecordsRaw[t.id][String(year)];
+    if (real && real.w + real.l > 0) {
+      rec[t.id] = { wins: real.w, losses: real.l, realRank: real.rank || null };
+    } else {
+      rec[t.id] = { ...projectedRecord(t, powerById), realRank: null };
+    }
   }
   return rec;
 }
 
-function rankingScore(wins, losses, power) {
+function rankingScore(wins, losses, power, realRank) {
   const games = wins + losses;
   const shrunkWinPct = (wins + 3) / (games + 6); // Bayesian shrink toward .500
   const quality = clamp((power - 25) / (92 - 25), 0, 1);
-  // Winning is weighted heavily so a dominant lower-prestige team can crack the
-  // poll, but quality still keeps blue bloods near the top of a crowded field.
-  return shrunkWinPct * 0.78 + quality * 0.22;
+  // Winning is weighted heavily so a dominant team rises, but quality keeps
+  // blue bloods near the top of a crowded field.
+  let score = shrunkWinPct * 0.72 + quality * 0.28;
+  // When a real committee rank exists, it is authoritative — it already encodes
+  // strength of schedule and quality wins that our record+power blend can't see,
+  // and it's what stops mid-majors with gaudy records from over-ranking. Let it
+  // dominate the score for ranked teams while the computed blend still slots the
+  // user's team and any unranked programs onto the same 0..1 scale.
+  if (realRank) {
+    const rankScore = clamp(1 - (realRank - 1) / 120, 0, 1);
+    score = 0.35 * score + 0.65 * rankScore;
+  }
+  return score;
 }
 
 // Returns { ranked: [{team,wins,losses,power,score}], rankById } sorted best-first.
 function computeRankings(powerById, recordById) {
   const ranked = TEAMS.map((t) => {
     const r = recordById[t.id];
-    return { team: t, wins: r.wins, losses: r.losses, power: powerById[t.id], score: rankingScore(r.wins, r.losses, powerById[t.id]) };
+    return { team: t, wins: r.wins, losses: r.losses, power: powerById[t.id], score: rankingScore(r.wins, r.losses, powerById[t.id], r.realRank) };
   }).sort((a, b) => b.score - a.score || b.wins - a.wins || a.losses - b.losses || b.power - a.power);
   const rankById = {};
   ranked.forEach((row, i) => { rankById[row.team.id] = i + 1; });
@@ -1847,18 +1867,59 @@ function advanceBracketRound(bracket, ctx) {
   if (bracket.done || bracket.rounds.length === 0) return bracket;
   const rounds = bracket.rounds.map((r) => r.map((m) => ({ ...m })));
   const cur = rounds[rounds.length - 1];
-  const simmed = cur.map((m) => simMatchup(m, ctx));
+  // Capture the user's box score exactly once, from a game resolved right now
+  // in THIS round. A game the user already played live carries userBoxApplied,
+  // so we skip it here — its stats were credited when they finished the game.
+  let freshUserBox = null;
+  const simmed = cur.map((m) => {
+    const r = simMatchup(m, ctx);
+    if (r.userBox && !r.userBoxApplied) { freshUserBox = r.userBox; r.userBoxApplied = true; }
+    return r;
+  });
   rounds[rounds.length - 1] = simmed;
   const winners = simmed.map((m) => m.winner).filter(Boolean);
   if (winners.length <= 1) {
-    return { ...bracket, rounds, champion: winners[0] || null, done: true };
+    return { ...bracket, rounds, champion: winners[0] || null, done: true, _freshUserBox: freshUserBox };
   }
   const next = [];
   for (let i = 0; i < winners.length; i += 2) {
     next.push({ a: winners[i], b: winners[i + 1] ?? null, winner: null, scoreA: null, scoreB: null, bye: false });
   }
   rounds.push(next);
-  return { ...bracket, rounds, champion: null, done: false };
+  return { ...bracket, rounds, champion: null, done: false, _freshUserBox: freshUserBox };
+}
+
+// Locate the user's next PLAYABLE postseason game — an undecided matchup with
+// both teams present, in the current round of whichever bracket is live. Byes
+// (only one team) auto-resolve and aren't playable. Returns a locator the
+// commit handler uses to write the result back into the exact matchup.
+function findUserPendingMatchup(ps, userTeamId) {
+  if (!ps || ps.phase === "done") return null;
+  const scan = (bracket) => {
+    if (!bracket || bracket.done || !bracket.rounds.length) return null;
+    const ri = bracket.rounds.length - 1;
+    const cur = bracket.rounds[ri];
+    const mi = cur.findIndex((m) => !m.winner && m.a && m.b && (m.a === userTeamId || m.b === userTeamId));
+    return mi >= 0 ? { roundIndex: ri, matchIndex: mi, matchup: cur[mi] } : null;
+  };
+  if (ps.phase === "conf") {
+    for (const conf of CONF_LIST) {
+      const loc = scan(ps.confBrackets[conf]);
+      if (loc) return { where: "conf", conf, ...loc };
+    }
+  } else if (ps.phase === "madness" && ps.madness) {
+    const md = ps.madness;
+    if (md.finalFour && !md.finalFour.done) {
+      const loc = scan(md.finalFour);
+      if (loc) return { where: "finalFour", ...loc };
+    } else {
+      for (let ri = 0; ri < md.regions.length; ri++) {
+        const loc = scan(md.regions[ri].bracket);
+        if (loc) return { where: "region", regionIndex: ri, ...loc };
+      }
+    }
+  }
+  return null;
 }
 
 function bracketFullyPlayed(b) { return b.done; }
@@ -2634,7 +2695,7 @@ function DynastyApp({ initial, onExit }) {
   // tab, schedule/standings rank badges, and postseason seeding.
   const { rankById, ranked } = useMemo(() => {
     const powerById = powerTableFor(state.strengths, state.year);
-    const recordById = recordTableFor(powerById, state.teamId, record);
+    const recordById = recordTableFor(powerById, state.teamId, record, state.year);
     return computeRankings(powerById, recordById);
   }, [state.strengths, state.year, state.teamId, record]);
 
@@ -2947,8 +3008,7 @@ function DynastyApp({ initial, onExit }) {
     };
     let userBox = null;
     const captureBox = (bracket) => {
-      const last = bracket.rounds[bracket.rounds.length - 1];
-      if (last) for (const m of last) if (m.userBox) userBox = m.userBox;
+      if (bracket && bracket._freshUserBox) userBox = bracket._freshUserBox;
     };
 
     setState((s) => {
@@ -3013,6 +3073,63 @@ function DynastyApp({ initial, onExit }) {
       }
       return { ...s, roster, postseason: next };
     });
+  }
+
+  // Open Coach Mode for the user's own postseason game. The rest of the round
+  // still auto-resolves when they hit "Sim Rest of Round".
+  function playUserPostseasonGame() {
+    const loc = findUserPendingMatchup(state.postseason, state.teamId);
+    if (!loc) return;
+    const m = loc.matchup;
+    const oppId = m.a === state.teamId ? m.b : m.a;
+    const opp = TEAM_MAP[oppId];
+    const oppPower = teamPowerRating(opp, state.strengths, state.year);
+    const hdc = healthyDepthChart(state.depthChart, state.roster);
+    setLivePlay({
+      teamId: state.teamId, opp, oppId, oppPower,
+      oppRank: rankById[oppId] || null, home: true, momentum: 0,
+      roster: state.roster, dc: hdc,
+      isPostseason: true, loc,
+    });
+  }
+
+  // Write a live-played postseason result into its exact matchup and credit the
+  // box score to season stats immediately (flagged so the round-sim won't
+  // double-count it). Other games in the round resolve on "Sim Rest of Round".
+  function commitPostseasonUserGame(result, lp) {
+    const loc = lp.loc;
+    const userTeamId = state.teamId;
+    const applyToBracket = (bracket) => {
+      const rounds = bracket.rounds.map((r) => r.map((mm) => ({ ...mm })));
+      const m = rounds[loc.roundIndex][loc.matchIndex];
+      const winner = result.win ? userTeamId : lp.oppId;
+      rounds[loc.roundIndex][loc.matchIndex] = {
+        ...m, winner,
+        scoreA: m.a === userTeamId ? result.myScore : result.oppScore,
+        scoreB: m.b === userTeamId ? result.myScore : result.oppScore,
+        userBox: result.boxByPlayer, userBoxApplied: true,
+      };
+      return { ...bracket, rounds };
+    };
+    setState((s) => {
+      const ps = { ...s.postseason };
+      if (loc.where === "conf") {
+        ps.confBrackets = { ...ps.confBrackets, [loc.conf]: applyToBracket(ps.confBrackets[loc.conf]) };
+      } else if (loc.where === "region") {
+        ps.madness = { ...ps.madness, regions: ps.madness.regions.map((r, i) => i === loc.regionIndex ? { ...r, bracket: applyToBracket(r.bracket) } : r) };
+      } else if (loc.where === "finalFour") {
+        ps.madness = { ...ps.madness, finalFour: applyToBracket(ps.madness.finalFour) };
+      }
+      const roster = s.roster.map((p) => {
+        const box = result.boxByPlayer[p.id];
+        if (!box) return p;
+        return { ...p, season: { gp: p.season.gp + 1, pts: p.season.pts + box.pts, reb: p.season.reb + box.reb, ast: p.season.ast + box.ast } };
+      });
+      return { ...s, roster, postseason: ps };
+    });
+    flash(result.win
+      ? `Advanced past ${lp.opp.name} ${result.myScore}-${result.oppScore}!`
+      : `Eliminated by ${lp.opp.name} ${result.oppScore}-${result.myScore}.`);
   }
 
   function doRecruitAction(recruit, actionKey) {
@@ -3489,6 +3606,8 @@ function DynastyApp({ initial, onExit }) {
               rankById={rankById}
               onStart={startPostseason}
               onSimRound={simPostseasonRound}
+              onPlayGame={playUserPostseasonGame}
+              userPending={!!findUserPendingMatchup(state.postseason, state.teamId)}
               onViewTeam={setViewTeamId}
             />
           )}
@@ -3530,7 +3649,8 @@ function DynastyApp({ initial, onExit }) {
           onFinish={(result) => {
             const lp = livePlay;
             setLivePlay(null);
-            commitGameResult(result, lp.opp, lp.oppRank);
+            if (lp.isPostseason) commitPostseasonUserGame(result, lp);
+            else commitGameResult(result, lp.opp, lp.oppRank);
           }}
         />
       )}
@@ -5895,7 +6015,7 @@ function BracketView({ bracket, userTeamId, onViewTeam }) {
   );
 }
 
-function PostseasonTab({ postseason, userTeamId, seasonOver, rankById, onStart, onSimRound, onViewTeam }) {
+function PostseasonTab({ postseason, userTeamId, seasonOver, rankById, onStart, onSimRound, onPlayGame, userPending, onViewTeam }) {
   const userConf = TEAM_MAP[userTeamId].conf;
 
   if (!postseason) {
@@ -5932,9 +6052,16 @@ function PostseasonTab({ postseason, userTeamId, seasonOver, rankById, onStart, 
           <h2 className="cbb-num" style={{ fontSize: 24, fontWeight: 700, margin: "2px 0" }}>{phaseLabel}</h2>
         </div>
         {canSim && (
-          <button onClick={onSimRound} className="cbb-btn" style={btnStyle(C.wood)}>
-            <FastForward size={13} /> Sim Next Round
-          </button>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            {userPending && (
+              <button onClick={onPlayGame} className="cbb-btn" style={btnStyle(C.gold, "#221a00")}>
+                <Play size={13} /> Play My Game
+              </button>
+            )}
+            <button onClick={onSimRound} className="cbb-btn" style={userPending ? btnStyle(C.panelAlt, C.cream) : btnStyle(C.wood)}>
+              <FastForward size={13} /> {userPending ? "Sim My Game + Round" : "Sim Next Round"}
+            </button>
+          </div>
         )}
       </div>
 
