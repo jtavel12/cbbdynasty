@@ -794,6 +794,24 @@ function competitionMultiplier(tier) {
   return 0.65 + tier * 0.8; // tier 0 (weakest programs) -> 0.65x, tier 1 (blue bloods) -> 1.45x
 }
 
+// How far apart blue-blood and bottom-tier talent should sit for equal box
+// production. Recruiting, development, coaching, and daily competition all
+// compound at a top program, so a Duke wing should clearly out-rate a
+// same-numbers guard at a low-major. This is the peak-to-valley overall swing.
+const PRESTIGE_SPREAD = 13;
+
+// A tier-based additive shift applied to a real player's derived attributes.
+// Prestige 3 (tier 0.5) is the neutral pivot: high-majors get lifted, low-majors
+// get pushed down. Crucially, the downward push is softened for proven
+// statistical outliers (a big careerOutlierBonus) so a genuine star at a small
+// school — a Damian-Lillard-at-Weber-State type — keeps the rating he earned.
+function prestigeTalentShift(tier, careerBonus) {
+  const raw = (tier - 0.5) * PRESTIGE_SPREAD;
+  if (raw >= 0) return raw; // high-prestige always gets the full bump
+  const relief = clamp((careerBonus || 0) / 12, 0, 1); // 0..1, 1 = elite outlier
+  return raw * (1 - relief * 0.8); // outliers claw back up to 80% of the penalty
+}
+
 function genAttrsFromTier(tier, pos = "SF") {
   // tier ~ 0..1, higher = more talented incoming baseline. Mapped onto the
   // 40-99 scale: a bottom-tier program's baseline lands near 40, a blue-blood's
@@ -839,19 +857,24 @@ function genAttrsFromRealStats(real, tier, careerBonus = 0, pos = "SF") {
   // scoring/passing/rebounding come straight off production; shooting and ball
   // handling lean guard; blocks and post defense lean big; steals/perimeter D
   // lean guard. Career + competition credit lifts genuine talents.
-  const scoring = R(42 + ppg * 2.3 + cb);
-  const threePoint = R(42 + ppg * 1.3 * (0.5 + g) + g * 8 + cb * 0.6);
-  const rebounding = R(40 + rpg * 4.6 + big * 4 + cb * 0.5);
-  const passing = R(40 + apg * 6.0 + cb * 0.5);
-  const ballHandling = R(42 + apg * 3.5 + g * 14 + cb * 0.4);
-  const steals = R(42 + apg * 1.6 + g * 8 + Math.min(prod, 20) * 0.2 + cb * 0.3);
-  const blocks = R(40 + rpg * 2.2 + big * 12 + cb * 0.3);
-  const perimeterDefense = R(44 + g * 10 + Math.min(prod, 22) * 0.3 + tier * 10 + cb * 0.3);
-  const postDefense = R(42 + rpg * 2.6 + big * 12 + tier * 8 + cb * 0.3);
-  const athleticism = R(46 + Math.min(prod, 24) * 0.6 + tier * 8 + cb * 0.4);
-  const peak = Math.max(scoring, rebounding, passing);
+  const core = {
+    scoring: R(42 + ppg * 2.3 + cb),
+    threePoint: R(42 + ppg * 1.3 * (0.5 + g) + g * 8 + cb * 0.6),
+    rebounding: R(40 + rpg * 4.6 + big * 4 + cb * 0.5),
+    passing: R(40 + apg * 6.0 + cb * 0.5),
+    ballHandling: R(42 + apg * 3.5 + g * 14 + cb * 0.4),
+    steals: R(42 + apg * 1.6 + g * 8 + Math.min(prod, 20) * 0.2 + cb * 0.3),
+    blocks: R(40 + rpg * 2.2 + big * 12 + cb * 0.3),
+    perimeterDefense: R(44 + g * 10 + Math.min(prod, 22) * 0.3 + tier * 10 + cb * 0.3),
+    postDefense: R(42 + rpg * 2.6 + big * 12 + tier * 8 + cb * 0.3),
+    athleticism: R(46 + Math.min(prod, 24) * 0.6 + tier * 8 + cb * 0.4),
+  };
+  // Spread talent apart by program prestige (with the outlier carve-out).
+  const shift = prestigeTalentShift(tier, cb);
+  if (shift !== 0) for (const k of ATTR_KEYS) core[k] = clamp(Math.round(core[k] + shift), 40, 99);
+  const peak = Math.max(core.scoring, core.rebounding, core.passing);
   const potential = clamp(Math.round(rand(peak - 2, Math.min(99, peak + 10))), 40, 99);
-  return { scoring, threePoint, rebounding, passing, ballHandling, steals, blocks, perimeterDefense, postDefense, athleticism, potential };
+  return { ...core, potential };
 }
 
 // A real player who logged no games / no production barely played. Rate them
@@ -1421,6 +1444,52 @@ function recruitToPlayer(recruit, team) {
     season: { gp: 0, pts: 0, reb: 0, ast: 0 },
     career: { pts: 0, reb: 0, ast: 0, gp: 0 },
   };
+}
+
+/* =========================================================================
+   NATIONAL STAT LEADERBOARD
+   ========================================================================= */
+// A league-wide per-game leaderboard covering every real D1 program in the
+// game, not just the user's team. Every other program's line comes from that
+// season's real production data (these teams aren't individually simmed), while
+// the user's own team is overlaid with the stats their players ACTUALLY put up
+// in the dynasty being played — so the coach's guys compete on the same board
+// as the rest of the country.
+function buildLeaderboard(year, userTeamId, userRoster) {
+  const rows = torvikPlayers[String(year)] || [];
+  // O(1) torvik-team-name -> our team lookup (mirrors findOurTeamByRealName).
+  const teamByKey = new Map();
+  for (const t of TEAMS) teamByKey.set(normalizeTeamKey(TORVIK_TEAM_ALIASES[t.name] || t.name), t);
+
+  const out = [];
+  const seen = new Set();
+  for (const r of rows) {
+    const team = teamByKey.get(normalizeTeamKey(r.team));
+    if (!team || team.id === userTeamId) continue; // user's team handled below
+    const gp = Number(r.gp) || 0;
+    if (gp < 5) continue;
+    const key = `${r.player}|${team.id}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      id: key, name: r.player, teamId: team.id, teamName: team.name,
+      pos: resolvePosition(r) || "\u2014", gp,
+      ppg: perGame(r.ppg, gp), rpg: perGame(r.rpg, gp), apg: perGame(r.apg, gp),
+      isUser: false,
+    });
+  }
+  // Overlay the user's real simulated production (only players who've logged a game).
+  for (const p of userRoster || []) {
+    const gp = p.season?.gp || 0;
+    if (gp < 1) continue;
+    out.push({
+      id: `user|${p.id}`, name: p.name, teamId: userTeamId,
+      teamName: TEAM_MAP[userTeamId]?.name || "", pos: p.pos, gp,
+      ppg: perGame(p.season.pts, gp), rpg: perGame(p.season.reb, gp), apg: perGame(p.season.ast, gp),
+      isUser: true,
+    });
+  }
+  return out;
 }
 
 /* =========================================================================
@@ -2383,6 +2452,15 @@ function GlobalStyle() {
       .cbb-row:hover { background: ${C.panelAlt}; }
       .cbb-btn { transition: transform .08s ease, background .15s ease; }
       .cbb-btn:active { transform: scale(0.97); }
+      @keyframes cbbSlideIn { from { opacity: 0; transform: translateX(14px); } to { opacity: 1; transform: translateX(0); } }
+      @keyframes cbbFadeUp { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+      @keyframes cbbScorePop { 0% { transform: scale(1); } 35% { transform: scale(1.5); color: ${C.gold}; } 100% { transform: scale(1); } }
+      @keyframes cbbWinPulse { 0% { background: rgba(216,168,58,0.45); } 100% { background: transparent; } }
+      @keyframes cbbCrownPop { 0% { opacity: 0; transform: scale(0.6) rotate(-8deg); } 60% { transform: scale(1.15) rotate(3deg); } 100% { opacity: 1; transform: scale(1) rotate(0); } }
+      .cbb-slide-in { animation: cbbSlideIn .38s cubic-bezier(.2,.8,.3,1) both; }
+      .cbb-score-pop { display: inline-block; animation: cbbScorePop .6s ease both; }
+      .cbb-win-pulse { animation: cbbWinPulse 1.1s ease-out both; }
+      .cbb-crown-pop { animation: cbbCrownPop .6s cubic-bezier(.2,.9,.3,1.4) both; }
     `}</style>
   );
 }
@@ -2493,6 +2571,7 @@ const TABS = [
   { id: "schedule", label: "Schedule", icon: CalendarDays },
   { id: "standings", label: "Standings", icon: Trophy },
   { id: "rankings", label: "Rankings", icon: Award },
+  { id: "leaderboard", label: "Leaders", icon: Medal },
   { id: "postseason", label: "Postseason", icon: Crown },
   { id: "offseason", label: "Offseason", icon: GraduationCap },
   { id: "program", label: "Program", icon: Landmark },
@@ -2508,6 +2587,7 @@ function DynastyApp({ initial, onExit }) {
   const [boxViewId, setBoxViewId] = useState(null);
   const [recap, setRecap] = useState(null);
   const [livePlay, setLivePlay] = useState(null);
+  const [visit, setVisit] = useState(null); // { recruit, actionKey } for the interactive visit modal
   const saveTimer = useRef(null);
 
   useEffect(() => {
@@ -2559,6 +2639,10 @@ function DynastyApp({ initial, onExit }) {
   }, [state.strengths, state.year, state.teamId, record]);
 
   const reputation = reputationOf(state.coach);
+  const leaders = useMemo(
+    () => buildLeaderboard(state.year, state.teamId, state.roster),
+    [state.year, state.teamId, state.roster]
+  );
   const rivalIds = useMemo(() => rivalTeamIds(state.teamId), [state.teamId]);
   const needs = useMemo(() => positionNeeds(state.roster), [state.roster]);
   const bracketology = projectedSeed(rankById[state.teamId]);
@@ -2934,6 +3018,9 @@ function DynastyApp({ initial, onExit }) {
   function doRecruitAction(recruit, actionKey) {
     const week = state.recruitingWeekIndex;
     if (!canTakeAction(recruit, actionKey, state.recruitingPoints, week, team)) return;
+    // Visits aren't a one-click point spend anymore — they open an interactive
+    // trip where the coach's pitch choices decide how much interest is gained.
+    if (actionKey === "VISIT" || actionKey === "HOME") { setVisit({ recruit, actionKey }); return; }
     const cost = actionCostFor(actionKey, recruit, team);
     const updated = applyRecruitAction(recruit, actionKey, week);
     setState((s) => ({
@@ -2941,6 +3028,28 @@ function DynastyApp({ initial, onExit }) {
       recruitingPoints: s.recruitingPoints - cost,
       recruitingBoard: s.recruitingBoard.map((r) => (r.id === recruit.id ? updated : r)),
     }));
+  }
+
+  // Apply the outcome of an interactive visit: deduct its distance-priced cost,
+  // add the interest the coach's choices earned, and mark the visit used.
+  function finishVisit(totalGain) {
+    if (!visit) return;
+    const { recruit, actionKey } = visit;
+    const week = state.recruitingWeekIndex;
+    const cost = actionCostFor(actionKey, recruit, team);
+    setState((s) => {
+      const r0 = s.recruitingBoard.find((r) => r.id === recruit.id);
+      if (!r0 || r0.committedTo) return s;
+      const next = { ...r0, interest: clamp(r0.interest + totalGain, 0, 100) };
+      if (actionKey === "VISIT") next.visitsUsed = (next.visitsUsed || 0) + 1;
+      if (actionKey === "HOME") { next.homeVisitsUsed = (next.homeVisitsUsed || 0) + 1; next.homeVisitWeek = week; }
+      return {
+        ...s,
+        recruitingPoints: s.recruitingPoints - cost,
+        recruitingBoard: s.recruitingBoard.map((r) => (r.id === recruit.id ? next : r)),
+      };
+    });
+    setVisit(null);
   }
 
   function toggleTarget(recruitId) {
@@ -3370,6 +3479,7 @@ function DynastyApp({ initial, onExit }) {
           {tab === "schedule" && <ScheduleTab schedule={state.schedule} teamConf={team.conf} rankById={rankById} rivalIds={rivalIds} onViewTeam={setViewTeamId} onEditGame={editGame} onViewBox={setBoxViewId} />}
           {tab === "standings" && <StandingsTab team={team} ranked={ranked} rankById={rankById} userRecord={record} onViewTeam={setViewTeamId} />}
           {tab === "rankings" && <RankingsTab ranked={ranked} userTeamId={state.teamId} onViewTeam={setViewTeamId} />}
+          {tab === "leaderboard" && <LeaderboardTab leaders={leaders} userTeamId={state.teamId} year={state.year} onViewTeam={setViewTeamId} />}
           {tab === "program" && <ProgramTab state={state} team={team} record={record} reputation={reputation} rivalIds={rivalIds} rankById={rankById} />}
           {tab === "postseason" && (
             <PostseasonTab
@@ -3422,6 +3532,15 @@ function DynastyApp({ initial, onExit }) {
             setLivePlay(null);
             commitGameResult(result, lp.opp, lp.oppRank);
           }}
+        />
+      )}
+      {visit && (
+        <VisitExperience
+          recruit={visit.recruit}
+          actionKey={visit.actionKey}
+          team={team}
+          onClose={() => setVisit(null)}
+          onFinish={finishVisit}
         />
       )}
     </div>
@@ -4466,6 +4585,183 @@ function PlanButton({ active, onClick, children }) {
   );
 }
 
+// Content for the interactive recruiting trip. Each moment offers three pitch
+// approaches keyed by tone: "bold" swings for the fences (high variance),
+// "balanced" is a dependable middle, "safe" is steady but modest. The best
+// choice isn't fixed — a bold pitch can land huge or fall flat — so visits
+// reward reading the room rather than mashing one button.
+const VISIT_SCRIPTS = {
+  VISIT: {
+    label: "Official Visit",
+    Icon: Users,
+    intro: "You've got them on campus for the weekend. Every stop is a chance to sell the program.",
+    perMoment: [5, 9],
+    moments: [
+      { prompt: "First impression — how do you show off the program?", options: [
+        { label: "Walk him out to a packed practice-night arena", tone: "bold" },
+        { label: "Break down film of exactly how he'd fit", tone: "balanced" },
+        { label: "Quiet tour of the facilities and locker room", tone: "safe" },
+      ] },
+      { prompt: "Team dinner — set the tone with the players.", options: [
+        { label: "Big night out downtown with the whole roster", tone: "bold" },
+        { label: "Let the veterans sell the culture themselves", tone: "balanced" },
+        { label: "Low-key dinner with just his position group", tone: "safe" },
+      ] },
+      { prompt: "The closing pitch back in your office.", options: [
+        { label: "Promise him a featured role from day one", tone: "bold" },
+        { label: "Sell player development and the long game", tone: "balanced" },
+        { label: "Talk academics, the degree, life after ball", tone: "safe" },
+      ] },
+    ],
+  },
+  HOME: {
+    label: "Home Visit",
+    Icon: Landmark,
+    intro: "You're in his living room with the family. This one is personal.",
+    perMoment: [4, 6],
+    moments: [
+      { prompt: "You sit down with the family. How do you open?", options: [
+        { label: "Big, confident vision for his future", tone: "bold" },
+        { label: "Ask about the family and really listen", tone: "balanced" },
+        { label: "Hand them the facts: minutes, plan, fit", tone: "safe" },
+      ] },
+      { prompt: "Mom asks the hard question about playing time.", options: [
+        { label: "Guarantee he starts as a freshman", tone: "bold" },
+        { label: "Be honest — he'll earn it, and you'll develop him", tone: "balanced" },
+        { label: "Point to how past recruits at his spot panned out", tone: "safe" },
+      ] },
+      { prompt: "Before you leave, you make it personal.", options: [
+        { label: "Tell him he's your top priority, full stop", tone: "bold" },
+        { label: "Share why you'd trust him with the ball late", tone: "balanced" },
+        { label: "Leave a handwritten note and the academic plan", tone: "safe" },
+      ] },
+    ],
+  },
+};
+
+// Roll the interest earned from one pitch choice. Bold swings wide, safe is
+// tight, balanced sits between — all scaled off the per-moment base band.
+function rollVisitGain(tone, base) {
+  let mult;
+  if (tone === "bold") mult = rand(0.45, 1.75);
+  else if (tone === "safe") mult = rand(0.8, 1.05);
+  else mult = rand(0.9, 1.3);
+  return Math.max(1, Math.round(base * mult));
+}
+function visitOutcomeBlurb(tone, gain, expected) {
+  const ratio = gain / expected;
+  if (ratio >= 1.25) return tone === "bold" ? "It lands perfectly — he's fired up." : "Goes over great.";
+  if (ratio >= 0.9) return "Solid — he's nodding along.";
+  if (ratio >= 0.6) return "Politely received, nothing more.";
+  return tone === "bold" ? "Too much, too soon — it falls flat." : "Doesn't move the needle much.";
+}
+
+function VisitExperience({ recruit, actionKey, team, onClose, onFinish }) {
+  const script = VISIT_SCRIPTS[actionKey] || VISIT_SCRIPTS.VISIT;
+  const { Icon } = script;
+  const [step, setStep] = useState(0);          // which moment we're on
+  const [picked, setPicked] = useState(null);   // outcome of the current moment, pre-continue
+  const [log, setLog] = useState([]);           // [{ prompt, choice, gain, blurb }]
+  const cost = actionCostFor(actionKey, recruit, team);
+  const miles = recruitDistanceMiles(recruit, team);
+  const total = log.reduce((a, e) => a + e.gain, 0);
+  const done = step >= script.moments.length;
+  const moment = !done ? script.moments[step] : null;
+
+  function choose(opt) {
+    const base = rand(script.perMoment[0], script.perMoment[1]);
+    const expected = (script.perMoment[0] + script.perMoment[1]) / 2;
+    const gain = rollVisitGain(opt.tone, base);
+    setPicked({ choice: opt.label, gain, blurb: visitOutcomeBlurb(opt.tone, gain, expected) });
+  }
+  function next() {
+    if (!picked) return;
+    setLog((l) => [...l, { prompt: moment.prompt, ...picked }]);
+    setPicked(null);
+    setStep((s) => s + 1);
+  }
+
+  const projected = clamp(recruit.interest + total, 0, 100);
+
+  return (
+    <Modal title={script.label} subtitle={`${recruit.name} · ${recruit.pos}`} onClose={onClose} maxWidth={560}>
+      {/* Header strip */}
+      <div style={{ display: "flex", alignItems: "center", gap: 12, background: C.bg, border: `1px solid ${C.line}`, padding: "12px 16px", marginBottom: 16 }}>
+        <Icon size={20} color={C.wood} />
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: 12.5, color: C.cream }}>{recruit.hometown || recruit.state}</div>
+          <div style={{ fontSize: 11, color: C.dim }}>
+            {recruit.international ? "International" : miles != null ? `${Math.round(miles)} mi from campus` : "Distance unknown"} · costs {cost} pts
+          </div>
+        </div>
+        <div style={{ textAlign: "right" }}>
+          <div style={{ fontSize: 10, color: C.dim, letterSpacing: "0.06em" }}>INTEREST</div>
+          <div className="cbb-num" style={{ fontSize: 20, fontWeight: 700, color: C.gold }}>
+            {recruit.interest}{total > 0 ? <span style={{ fontSize: 13, color: C.green }}> +{total}</span> : null}
+          </div>
+        </div>
+      </div>
+
+      {!done ? (
+        <div>
+          <div style={{ fontSize: 10.5, color: C.dim, letterSpacing: "0.08em", marginBottom: 6 }}>
+            STOP {step + 1} OF {script.moments.length}
+          </div>
+          {step === 0 && log.length === 0 && !picked && (
+            <div style={{ fontSize: 12.5, color: C.dimmer, marginBottom: 12 }}>{script.intro}</div>
+          )}
+          <div style={{ fontSize: 15, fontWeight: 600, color: C.cream, marginBottom: 14 }}>{moment.prompt}</div>
+
+          {!picked ? (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {moment.options.map((opt, i) => (
+                <button key={i} onClick={() => choose(opt)} className="cbb-btn"
+                  style={{ textAlign: "left", padding: "12px 14px", border: `1px solid ${C.line}`, background: "transparent", color: C.cream, fontSize: 13.5, cursor: "pointer" }}>
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          ) : (
+            <div className="cbb-slide-in">
+              <div style={{ border: `1px solid ${C.line}`, background: C.panelAlt, padding: "12px 14px", marginBottom: 14 }}>
+                <div style={{ fontSize: 12.5, color: C.dim, marginBottom: 6 }}>&ldquo;{picked.choice}&rdquo;</div>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+                  <span style={{ fontSize: 13, color: C.cream }}>{picked.blurb}</span>
+                  <span className="cbb-num" style={{ fontSize: 16, fontWeight: 700, color: C.green }}>+{picked.gain}</span>
+                </div>
+              </div>
+              <button onClick={next} className="cbb-btn" style={{ ...btnStyle(C.wood), width: "100%", justifyContent: "center", fontSize: 14 }}>
+                {step + 1 < script.moments.length ? "Next stop" : "Wrap up the visit"}
+              </button>
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="cbb-slide-in">
+          <div style={{ textAlign: "center", marginBottom: 16 }}>
+            <div style={{ fontSize: 11, color: C.wood, letterSpacing: "0.1em" }}>VISIT COMPLETE</div>
+            <div className="cbb-num" style={{ fontSize: 34, fontWeight: 700, color: C.green, lineHeight: 1.1 }}>+{total} interest</div>
+            <div style={{ fontSize: 12.5, color: C.dim, marginTop: 4 }}>
+              {recruit.name}&apos;s interest climbs to <span style={{ color: C.gold }}>{projected}</span>.
+            </div>
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 16 }}>
+            {log.map((e, i) => (
+              <div key={i} style={{ display: "flex", justifyContent: "space-between", gap: 10, fontSize: 12, color: C.dimmer, borderBottom: `1px solid ${C.line}`, paddingBottom: 6 }}>
+                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{e.choice}</span>
+                <span className="cbb-num" style={{ color: C.green }}>+{e.gain}</span>
+              </div>
+            ))}
+          </div>
+          <button onClick={() => onFinish(total)} className="cbb-btn" style={{ ...btnStyle(C.gold, "#221a00"), width: "100%", justifyContent: "center", fontSize: 14 }}>
+            <Check size={14} /> Finish Visit ({cost} pts)
+          </button>
+        </div>
+      )}
+    </Modal>
+  );
+}
+
 function LiveGame({ ctxInit, onFinish, onClose }) {
   const T = TEMPO_POSS.balanced; // possessions per team are locked at tip from tempo
   const [ctx] = useState(() => {
@@ -5411,6 +5707,20 @@ function roundLabel(numMatchups) {
 }
 
 function MatchupBox({ m, seedOf, userTeamId, onViewTeam }) {
+  // Flag the transition from undecided -> decided so a freshly-simmed result
+  // pulses gold and pops its score, while long-settled games stay quiet.
+  const prevWinner = useRef(m.winner);
+  const [justDecided, setJustDecided] = useState(false);
+  useEffect(() => {
+    if (!prevWinner.current && m.winner) {
+      setJustDecided(true);
+      const t = setTimeout(() => setJustDecided(false), 1200);
+      prevWinner.current = m.winner;
+      return () => clearTimeout(t);
+    }
+    prevWinner.current = m.winner;
+  }, [m.winner]);
+
   const line = (id, score, top) => {
     if (!id) {
       return <div style={{ padding: "5px 8px", color: C.dimmer, fontSize: 12, borderBottom: top ? `1px solid ${C.line}` : "none" }}>—</div>;
@@ -5423,10 +5733,11 @@ function MatchupBox({ m, seedOf, userTeamId, onViewTeam }) {
     return (
       <div
         onClick={(e) => { e.stopPropagation(); onViewTeam && onViewTeam(id); }}
+        className={justDecided && isWinner ? "cbb-win-pulse" : undefined}
         style={{
           display: "flex", justifyContent: "space-between", alignItems: "center", gap: 6,
           padding: "5px 8px", cursor: onViewTeam ? "pointer" : "default",
-          background: isUser ? C.panelAlt : "transparent",
+          background: isUser && !(justDecided && isWinner) ? C.panelAlt : "transparent",
           borderBottom: top ? `1px solid ${C.line}` : "none",
           color: decided && !isWinner ? C.dimmer : C.cream,
           fontWeight: isWinner ? 700 : 400,
@@ -5436,7 +5747,7 @@ function MatchupBox({ m, seedOf, userTeamId, onViewTeam }) {
           {seed ? <span className="cbb-num" style={{ color: C.dim, marginRight: 5, fontSize: 10.5 }}>{seed}</span> : null}
           {t.name}
         </span>
-        <span className="cbb-num" style={{ fontSize: 12, color: isWinner ? C.wood : C.dimmer }}>{score ?? ""}</span>
+        <span className={`cbb-num${justDecided && isWinner ? " cbb-score-pop" : ""}`} style={{ fontSize: 12, color: isWinner ? C.wood : C.dimmer }}>{score ?? ""}</span>
       </div>
     );
   };
@@ -5444,6 +5755,99 @@ function MatchupBox({ m, seedOf, userTeamId, onViewTeam }) {
     <div style={{ border: `1px solid ${C.line}`, background: C.panel, minWidth: 158 }}>
       {line(m.a, m.scoreA, true)}
       {line(m.b, m.scoreB, false)}
+    </div>
+  );
+}
+
+const LEADER_CATS = [
+  { key: "ppg", label: "Points", unit: "PPG" },
+  { key: "rpg", label: "Rebounds", unit: "RPG" },
+  { key: "apg", label: "Assists", unit: "APG" },
+];
+
+function LeaderboardTab({ leaders, userTeamId, year, onViewTeam }) {
+  const [cat, setCat] = useState("ppg");
+  const active = LEADER_CATS.find((c) => c.key === cat) || LEADER_CATS[0];
+
+  const ranked = useMemo(() => {
+    return [...leaders].sort((a, b) => b[cat] - a[cat]).slice(0, 100);
+  }, [leaders, cat]);
+
+  const userBest = useMemo(() => {
+    const mine = leaders.filter((p) => p.isUser).sort((a, b) => b[cat] - a[cat]);
+    if (!mine.length) return null;
+    const full = [...leaders].sort((a, b) => b[cat] - a[cat]);
+    const top = mine[0];
+    return { player: top, rank: full.findIndex((p) => p.id === top.id) + 1 };
+  }, [leaders, cat]);
+
+  return (
+    <div>
+      <SectionIntro>
+        National per-game leaders across every Division I program for the {seasonLabel(year)} season. Rival programs post their real production; your own players carry the stats they&apos;ve actually put up in your dynasty so far — so your guys rise up the board as you play.
+      </SectionIntro>
+
+      <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
+        {LEADER_CATS.map((c) => {
+          const on = c.key === cat;
+          return (
+            <button key={c.key} onClick={() => setCat(c.key)} className="cbb-btn"
+              style={{
+                fontSize: 12.5, padding: "8px 14px", border: `1px solid ${on ? C.wood : C.line}`,
+                background: on ? C.wood : "transparent", color: on ? "#1a0f06" : C.dim,
+                fontWeight: on ? 700 : 500, letterSpacing: "0.03em", cursor: "pointer",
+              }}>
+              {c.label} <span className="cbb-num" style={{ opacity: 0.7 }}>({c.unit})</span>
+            </button>
+          );
+        })}
+      </div>
+
+      {userBest && (
+        <Panel style={{ padding: "12px 16px", marginBottom: 14, borderColor: C.gold, background: C.panelAlt, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+          <Medal size={18} color={C.gold} />
+          <div style={{ fontSize: 12.5, color: C.cream }}>
+            Your team leader in {active.label.toLowerCase()}: <strong style={{ color: C.gold }}>{userBest.player.name}</strong>
+            {" "}at <span className="cbb-num" style={{ color: C.gold }}>{userBest.player[cat].toFixed(1)}</span> {active.unit}
+            <span style={{ color: C.dim }}> — No. {userBest.rank} in the country</span>
+          </div>
+        </Panel>
+      )}
+
+      <Panel style={{ overflow: "hidden" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "48px 1fr 130px 44px 66px 66px 66px", padding: "8px 14px", borderBottom: `1px solid ${C.line}`, fontSize: 10.5, color: C.dim, letterSpacing: "0.06em" }}>
+          <span>RK</span><span>PLAYER</span><span>TEAM</span><span>POS</span>
+          {LEADER_CATS.map((c) => (
+            <span key={c.key} style={{ textAlign: "right", color: c.key === cat ? C.wood : C.dim, fontWeight: c.key === cat ? 700 : 400 }}>{c.unit}</span>
+          ))}
+        </div>
+        {ranked.map((p, i) => (
+          <div key={p.id}
+            onClick={() => onViewTeam && onViewTeam(p.teamId)}
+            className="cbb-row"
+            style={{
+              display: "grid", gridTemplateColumns: "48px 1fr 130px 44px 66px 66px 66px",
+              padding: "8px 14px", borderBottom: `1px solid ${C.line}`, alignItems: "center",
+              cursor: onViewTeam ? "pointer" : "default",
+              background: p.isUser ? "rgba(216,168,58,0.10)" : "transparent",
+            }}>
+            <span className="cbb-num" style={{ fontSize: 13, color: i < 3 ? C.gold : C.dimmer, fontWeight: i < 3 ? 700 : 400 }}>{i + 1}</span>
+            <span style={{ fontSize: 13, color: p.isUser ? C.gold : C.cream, fontWeight: p.isUser ? 700 : 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {p.name}{p.isUser && <span style={{ fontSize: 9, color: C.gold, marginLeft: 6, border: `1px solid ${C.wood}`, padding: "1px 4px", letterSpacing: "0.06em" }}>YOU</span>}
+            </span>
+            <span style={{ fontSize: 11.5, color: C.dim, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.teamName}</span>
+            <span style={{ fontSize: 11, color: C.dimmer }}>{p.pos}</span>
+            {LEADER_CATS.map((c) => (
+              <span key={c.key} className="cbb-num" style={{ textAlign: "right", fontSize: 13, color: c.key === cat ? (p.isUser ? C.gold : C.cream) : C.dimmer, fontWeight: c.key === cat ? 700 : 400 }}>
+                {p[c.key].toFixed(1)}
+              </span>
+            ))}
+          </div>
+        ))}
+        {ranked.length === 0 && (
+          <div style={{ padding: 20, textAlign: "center", color: C.dimmer, fontSize: 12.5 }}>No player data available for this season.</div>
+        )}
+      </Panel>
     </div>
   );
 }
@@ -5461,10 +5865,17 @@ function BracketView({ bracket, userTeamId, onViewTeam }) {
     const i = bracket.seeds.indexOf(id);
     return i >= 0 ? i + 1 : null;
   };
+  // The furthest-right round is the one that just appeared after a sim, so it
+  // slides in fresh; earlier rounds stay put (they already mounted).
+  const lastRoundIndex = bracket.rounds.length - 1;
   return (
     <div className="cbb-scroll" style={{ display: "flex", gap: 12, overflowX: "auto", paddingBottom: 6 }}>
       {bracket.rounds.map((round, ri) => (
-        <div key={ri} style={{ display: "flex", flexDirection: "column", justifyContent: "space-around", gap: 8, minWidth: 158 }}>
+        <div
+          key={ri}
+          className={ri === lastRoundIndex ? "cbb-slide-in" : undefined}
+          style={{ display: "flex", flexDirection: "column", justifyContent: "space-around", gap: 8, minWidth: 158 }}
+        >
           <div style={{ fontSize: 9.5, color: C.dim, letterSpacing: "0.1em" }}>{roundLabel(round.length)}</div>
           {round.map((m, mi) => (
             <MatchupBox key={mi} m={m} seedOf={seedOf} userTeamId={userTeamId} onViewTeam={onViewTeam} />
@@ -5472,10 +5883,10 @@ function BracketView({ bracket, userTeamId, onViewTeam }) {
         </div>
       ))}
       {bracket.done && bracket.champion && (
-        <div style={{ display: "flex", flexDirection: "column", justifyContent: "center", minWidth: 150 }}>
+        <div className="cbb-slide-in" style={{ display: "flex", flexDirection: "column", justifyContent: "center", minWidth: 150 }}>
           <div style={{ fontSize: 9.5, color: C.gold, letterSpacing: "0.1em", marginBottom: 6 }}>CHAMPION</div>
           <div style={{ border: `1px solid ${C.gold}`, background: C.panelAlt, padding: "8px 10px", display: "flex", alignItems: "center", gap: 8 }}>
-            <Crown size={15} color={C.gold} />
+            <span className="cbb-crown-pop" style={{ display: "inline-flex" }}><Crown size={15} color={C.gold} /></span>
             <span style={{ fontWeight: 700, fontSize: 13, color: bracket.champion === userTeamId ? C.gold : C.cream }}>{TEAM_MAP[bracket.champion].name}</span>
           </div>
         </div>
