@@ -15,20 +15,20 @@ import {
    COLOR / TYPE TOKENS  (arena-at-night / broadcast scoreboard aesthetic)
    ========================================================================= */
 const C = {
-  bg: "#f6e35a",
-  bgRail: "#eabc0e",
-  panel: "#fffbea",
-  panelAlt: "#fdf2b8",
-  line: "#d4ad1a",
-  cream: "#211c04",
-  dim: "#5c5327",
-  dimmer: "#8a7f45",
+  bg: "#10141a",
+  bgRail: "#0c0f14",
+  panel: "#1a2029",
+  panelAlt: "#212938",
+  line: "#2a3241",
+  cream: "#eee8db",
+  dim: "#8a94a6",
+  dimmer: "#5c6577",
   wood: "#c1652f",
   woodDim: "#8a4a24",
-  gold: "#a8791f",
-  green: "#3f7d52",
+  gold: "#d8a83a",
+  green: "#4f9d69",
   red: "#c0463c",
-  blue: "#3a63a0",
+  blue: "#4a7fc1",
 };
 
 const POSITIONS = ["PG", "SG", "SF", "PF", "C"];
