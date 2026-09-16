@@ -558,11 +558,74 @@ function findByExactTeamName(teamName, rows, getTeamField) {
   return hit || null;
 }
 
+// Bart Torvik's own team-results file (torvik-seasons.json) uses a THIRD
+// naming convention — its own, independent of both our TEAMS list and the
+// CBBD player-data source's spellings above. It abbreviates "State" to
+// "St." almost everywhere (Michigan State -> Michigan St., Cal State
+// Fullerton -> Cal St. Fullerton — one generic rule below covers dozens of
+// programs), plus a handful of genuine one-off spellings that need an
+// explicit override. Kept separate from TORVIK_TEAM_ALIASES on purpose:
+// the two real sources don't always agree with each other, and reusing
+// that table here actively breaks a few teams (e.g. it maps "FIU" to
+// "Florida International" for the player-data source, but Torvik's own
+// file uses the bare "FIU" — the alias would make that lookup miss).
+const TORVIK_SEASONS_ALIASES = {
+  "Miami (FL)": "Miami FL",
+  "UConn": "Connecticut",
+  "Queens University of Charlotte": "Queens",
+  "FIU": "FIU",
+  "Sam Houston": "Sam Houston St.",
+  "CSU Bakersfield": "Cal St. Bakersfield",
+  "California Baptist": "Cal Baptist",
+  "Texas A&M University-Corpus Christi": "Texas A&M Corpus Chris",
+  "McNeese": "McNeese St.",
+  "Nicholls": "Nicholls St.",
+  "Loyola Maryland": "Loyola MD",
+  "Omaha": "Nebraska Omaha",
+  "UT Martin": "Tennessee Martin",
+  "Ole Miss": "Mississippi",
+  "Kansas City": "UMKC",
+  "UIC": "Illinois Chicago",
+  // These four override a CBBD player-data alias that would otherwise apply
+  // (see TORVIK_TEAM_ALIASES) but is wrong for Torvik specifically — it
+  // spells all of them closer to how our own TEAMS list already does.
+  "Appalachian State": "Appalachian St.",
+  "Grambling State": "Grambling St.",
+  "Penn": "Penn",
+  "American": "American",
+  "USC Upstate": "USC Upstate",
+  // normalizeTeamKey strips the accent rather than transliterating it, so
+  // the accented alias used for CBBD player data ("San José State") would
+  // never match Torvik's plain-ASCII "San Jose St." — override directly.
+  "San Jose State": "San Jose St.",
+};
+
+const _unmatchedTorvikSeasonsLogged = new Set();
+
 // Real historical team record/efficiency for a given team+year, or null.
+// Tries, in order: the Torvik-specific alias above (which wins when it
+// conflicts with the CBBD one, e.g. FIU), else the CBBD player-data alias
+// (many entries there — Pitt -> Pittsburgh, Mizzou -> Missouri, SC State ->
+// South Carolina State — happen to also be exactly what Torvik uses, so
+// they're inherited for free instead of duplicated), else the plain team
+// name; each of those is also tried with the generic "State" -> "St."
+// abbreviation before giving up. A miss across every year we have data for
+// is logged once per team so genuinely-missing aliases are easy to spot.
 function realSeasonFor(team, year) {
   const rows = torvikSeasons[String(year)];
-  if (!rows) return null;
-  return findByExactTeamName(team.name, rows, (r) => r.team);
+  if (!rows || !rows.length) return null;
+  const aliased = TORVIK_SEASONS_ALIASES[team.name] || TORVIK_TEAM_ALIASES[team.name] || team.name;
+  const candidates = [aliased, aliased.replace(/\bState\b/g, "St.")];
+  for (const c of candidates) {
+    const target = normalizeTeamKey(c);
+    const hit = rows.find((r) => normalizeTeamKey(r.team) === target);
+    if (hit) return hit;
+  }
+  if (!_unmatchedTorvikSeasonsLogged.has(team.name)) {
+    _unmatchedTorvikSeasonsLogged.add(team.name);
+    console.warn(`[Torvik team data] no match for "${team.name}" (tried "${aliased}") in ${year} — add an entry to TORVIK_SEASONS_ALIASES if this program has real data under a different name, or it may just be missing from Torvik's coverage.`);
+  }
+  return null;
 }
 
 // Real roster rows {player, position, startSeason, ppg, rpg, apg} for a
