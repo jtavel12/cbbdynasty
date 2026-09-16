@@ -1120,6 +1120,8 @@ function freshTrailState() {
     homeVisitsUsed: 0,         // home visits (2 max/season, not same week)
     homeVisitWeek: 0,
     signWeek: null,
+    signAttempts: 0,           // total sign attempts made on this recruit (max 2)
+    signAttemptWeek: null,     // last week a sign attempt was made (1 per week)
   };
 }
 
@@ -1352,6 +1354,20 @@ function signChance(recruit) {
   const total = recruit.interest + recruit.rivalPressure;
   const base = total <= 0 ? 0.5 : recruit.interest / total;
   return clamp(base / RECRUIT_DIFFICULTY, 0.02, 0.97);
+}
+
+// A sign attempt is only allowed when the recruit is better than a coin flip
+// (>50% odds), and each recruit can be attempted at most once per week and at
+// most twice overall. Returns why an attempt is (dis)allowed for UI + handlers.
+const MAX_SIGN_ATTEMPTS = 2;
+function signAttemptStatus(recruit, weekIndex) {
+  const chance = signChance(recruit);
+  const attempts = recruit.signAttempts || 0;
+  if (!recruit.offerExtended) return { ok: false, reason: "offer", chance, attempts };
+  if (attempts >= MAX_SIGN_ATTEMPTS) return { ok: false, reason: "max", chance, attempts };
+  if (recruit.signAttemptWeek === weekIndex) return { ok: false, reason: "week", chance, attempts };
+  if (chance <= 0.5) return { ok: false, reason: "odds", chance, attempts };
+  return { ok: true, reason: null, chance, attempts };
 }
 
 function advanceRecruitingWeeks(board, fromWeek, weeksElapsed, totalWeeks) {
@@ -2937,27 +2953,39 @@ function DynastyApp({ initial, onExit }) {
     const os = state.offseason;
     if (!os) return;
     if (scholarshipInfo.open <= 0) { flash("No scholarships available — cut a player to open a spot."); return; }
-    if (!recruit.offerExtended) { flash("Extend a scholarship offer before you can sign a transfer."); return; }
-    const chance = signChance(recruit);
+    const week = os.week;
+    const status = signAttemptStatus(recruit, week);
+    if (!status.ok) {
+      if (status.reason === "offer") flash("Extend a scholarship offer before you can sign a transfer.");
+      else if (status.reason === "odds") flash(`${recruit.name} must be above 50% to sign — you're at ${Math.round(status.chance * 100)}%. Keep working them.`);
+      else if (status.reason === "max") flash(`You've used both sign attempts on ${recruit.name} this cycle.`);
+      else if (status.reason === "week") flash(`You can only make one sign attempt per week — try ${recruit.name} again next week.`);
+      return;
+    }
+    const chance = status.chance;
+    const attempts = status.attempts + 1;
     if (Math.random() < chance) {
+      const poach = recruit.real ? { name: recruit.name, teamId: findOurTeamByRealName(recruit.originalTeam)?.id || null } : null;
       setState((s) => ({
         ...s,
+        poachedPlayers: poach ? [...(s.poachedPlayers || []), poach] : (s.poachedPlayers || []),
         offseason: {
           ...s.offseason,
-          transferBoard: s.offseason.transferBoard.map((r) => (r.id === recruit.id ? { ...r, committedTo: s.teamId } : r)),
+          transferBoard: s.offseason.transferBoard.map((r) => (r.id === recruit.id ? { ...r, committedTo: s.teamId, signAttempts: attempts, signAttemptWeek: week } : r)),
           committedTransfers: [...s.offseason.committedTransfers, recruit.id],
         },
       }));
       flash(`${recruit.name} is transferring in! (won at ${Math.round(chance * 100)}% odds)`);
     } else {
+      const left = MAX_SIGN_ATTEMPTS - attempts;
       setState((s) => ({
         ...s,
         offseason: {
           ...s.offseason,
-          transferBoard: s.offseason.transferBoard.map((r) => (r.id === recruit.id ? { ...r, rivalPressure: clamp(r.rivalPressure + 10, 0, 95) } : r)),
+          transferBoard: s.offseason.transferBoard.map((r) => (r.id === recruit.id ? { ...r, rivalPressure: clamp(r.rivalPressure + 10, 0, 95), signAttempts: attempts, signAttemptWeek: week } : r)),
         },
       }));
-      flash(`${recruit.name} isn't ready to commit yet. (${Math.round(chance * 100)}% odds)`);
+      flash(`${recruit.name} isn't ready to commit yet. (${Math.round(chance * 100)}% odds — ${left} attempt${left === 1 ? "" : "s"} left)`);
     }
   }
 
@@ -3197,22 +3225,34 @@ function DynastyApp({ initial, onExit }) {
 
   function attemptSign(recruit) {
     if (scholarshipInfo.open <= 0) { flash("No scholarships available — cut a player in the offseason to open a spot."); return; }
-    if (!recruit.offerExtended) { flash("Extend a scholarship offer before you can sign them."); return; }
-    const chance = signChance(recruit);
+    const week = state.recruitingWeekIndex;
+    const status = signAttemptStatus(recruit, week);
+    if (!status.ok) {
+      if (status.reason === "offer") flash("Extend a scholarship offer before you can sign them.");
+      else if (status.reason === "odds") flash(`${recruit.name} must be above 50% to sign — you're at ${Math.round(status.chance * 100)}%. Keep working them.`);
+      else if (status.reason === "max") flash(`You've used both sign attempts on ${recruit.name} this cycle.`);
+      else if (status.reason === "week") flash(`You can only make one sign attempt per week — try ${recruit.name} again next week.`);
+      return;
+    }
+    const chance = status.chance;
+    const attempts = status.attempts + 1;
     const success = Math.random() < chance;
     if (success) {
+      const poach = recruit.real ? { name: recruit.name, teamId: findOurTeamByRealName(recruit.originalTeam)?.id || null } : null;
       setState((s) => ({
         ...s,
-        recruitingBoard: s.recruitingBoard.map((r) => (r.id === recruit.id ? { ...r, committedTo: s.teamId } : r)),
+        recruitingBoard: s.recruitingBoard.map((r) => (r.id === recruit.id ? { ...r, committedTo: s.teamId, signAttempts: attempts, signAttemptWeek: week } : r)),
         incomingCommits: [...s.incomingCommits, recruit.id],
+        poachedPlayers: poach ? [...(s.poachedPlayers || []), poach] : (s.poachedPlayers || []),
       }));
       flash(`${recruit.name} has committed! (won at ${Math.round(chance * 100)}% odds)`);
     } else {
+      const left = MAX_SIGN_ATTEMPTS - attempts;
       setState((s) => ({
         ...s,
-        recruitingBoard: s.recruitingBoard.map((r) => (r.id === recruit.id ? { ...r, rivalPressure: clamp(r.rivalPressure + 10, 0, 95) } : r)),
+        recruitingBoard: s.recruitingBoard.map((r) => (r.id === recruit.id ? { ...r, rivalPressure: clamp(r.rivalPressure + 10, 0, 95), signAttempts: attempts, signAttemptWeek: week } : r)),
       }));
-      flash(`${recruit.name} isn't ready to commit yet. (${Math.round(chance * 100)}% odds — keep working them)`);
+      flash(`${recruit.name} isn't ready to commit yet. (${Math.round(chance * 100)}% odds — ${left} attempt${left === 1 ? "" : "s"} left)`);
     }
   }
 
@@ -3633,7 +3673,7 @@ function DynastyApp({ initial, onExit }) {
       </div>
 
       {viewTeamId && (
-        <TeamRosterModal teamId={viewTeamId} year={state.year} strengths={state.strengths} rank={rankById[viewTeamId]} onClose={() => setViewTeamId(null)} />
+        <TeamRosterModal teamId={viewTeamId} year={state.year} strengths={state.strengths} rank={rankById[viewTeamId]} poached={state.poachedPlayers || []} onClose={() => setViewTeamId(null)} />
       )}
       {jobPickerOpen && (
         <JobChangeModal
@@ -4189,10 +4229,23 @@ function RecruitBoard({ board, committedIds, targets, onToggleTarget, points, we
                       </button>
                     );
                   })}
-                  <button onClick={() => onSign(r)} disabled={!r.offerExtended} className="cbb-btn"
-                    style={{ ...btnStyle(r.offerExtended ? C.wood : C.line), fontSize: 12, padding: "7px 12px", cursor: r.offerExtended ? "pointer" : "not-allowed" }}>
-                    Attempt to Sign ({Math.round(chance * 100)}%)
-                  </button>
+                  {(() => {
+                    const status = signAttemptStatus(r, weekIndex);
+                    const left = MAX_SIGN_ATTEMPTS - (r.signAttempts || 0);
+                    let label;
+                    if (status.reason === "offer") label = "Offer required to sign";
+                    else if (status.reason === "max") label = "No sign attempts left";
+                    else if (status.reason === "week") label = `Already tried this week (${left} left)`;
+                    else if (status.reason === "odds") label = `Need >50% to sign (${Math.round(chance * 100)}%)`;
+                    else label = `Attempt to Sign (${Math.round(chance * 100)}%) · ${left} left`;
+                    return (
+                      <button onClick={() => onSign(r)} disabled={!status.ok} className="cbb-btn"
+                        title={status.ok ? undefined : "You can attempt to sign once a recruit is above 50%, once per week, up to twice overall."}
+                        style={{ ...btnStyle(status.ok ? C.wood : C.line), fontSize: 12, padding: "7px 12px", cursor: status.ok ? "pointer" : "not-allowed" }}>
+                        {label}
+                      </button>
+                    );
+                  })()}
                 </div>
               )}
             </Panel>
@@ -5057,13 +5110,19 @@ function LiveGame({ ctxInit, onFinish, onClose }) {
 }
 
 /* ---------- Opponent Roster Viewer ---------- */
-function TeamRosterModal({ teamId, year, strengths, rank, onClose }) {
+function TeamRosterModal({ teamId, year, strengths, rank, poached = [], onClose }) {
   const team = TEAM_MAP[teamId];
   const [view, setView] = useState("roster");
+  // Any real player the user has signed away from THIS team no longer appears
+  // on their roster — otherwise a poached recruit shows up in two places at once.
+  const poachedHere = useMemo(
+    () => new Set(poached.filter((p) => p.teamId === teamId).map((p) => p.name)),
+    [poached, teamId]
+  );
   const roster = useMemo(() => {
-    const r = buildInitialRoster(team, year);
+    const r = buildInitialRoster(team, year).filter((p) => !(p.realKey && poachedHere.has(p.realKey)));
     return [...r].sort((a, b) => b.overall - a.overall);
-  }, [teamId, year]);
+  }, [teamId, year, poachedHere]);
   const schedule = useMemo(() => genSchedule(team, year), [teamId, year]);
   const teamPower = useMemo(() => teamPowerRating(team, strengths, year, { noise: false }), [teamId, year, strengths]);
   const realCount = roster.filter((p) => p.realName).length;
@@ -5723,21 +5782,29 @@ function ScheduleTab({ schedule, teamConf, rankById, rivalIds, onViewTeam, onEdi
 
 /* ---------- Standings ---------- */
 function StandingsTab({ team, ranked, rankById, userRecord, onViewTeam }) {
-  // Standings is the win/loss table: reuse the shared record data but sort by
-  // record (not poll score). Top-25 teams still surface their national rank.
+  // Standings reflect the season SO FAR: every team shows the same number of
+  // games the user has played (0-0 before week 1, one game after week 1, and so
+  // on). Each CPU team's games are split by its full-season win rate, so the
+  // table stays honest week to week and only reaches full records at season's
+  // end. The user's own row uses their actual played record.
+  const gamesPlayed = Math.max(0, (userRecord.w || 0) + (userRecord.l || 0));
   const rows = ranked
-    .map((r) => ({
-      ...r.team,
-      wins: r.team.id === team.id ? userRecord.w : r.wins,
-      losses: r.team.id === team.id ? userRecord.l : r.losses,
-      isUser: r.team.id === team.id,
-    }))
+    .map((r) => {
+      if (r.team.id === team.id) {
+        return { ...r.team, wins: userRecord.w, losses: userRecord.l, isUser: true };
+      }
+      const fullG = r.wins + r.losses;
+      const capG = Math.min(gamesPlayed, fullG); // never exceed a team's real season length
+      const winPct = fullG > 0 ? r.wins / fullG : 0;
+      const wins = Math.round(winPct * capG);
+      return { ...r.team, wins, losses: capG - wins, isUser: false };
+    })
     .sort((a, b) => b.wins - a.wins || a.losses - b.losses || b.prestige - a.prestige);
 
   return (
     <div>
       <div style={{ fontSize: 11.5, color: C.dimmer, marginBottom: 10 }}>
-        Projected national standings — records are projected against each team&apos;s actual schedule strength (19 conference games + 11 non-conference), so a team that dominates a weaker league can rise to the top. Click any team to preview their roster.
+        National standings as of the games played so far — every team shows the same {gamesPlayed} game{gamesPlayed === 1 ? "" : "s"} you&apos;ve played, with each team&apos;s wins split by its season-long strength. Click any team to preview their roster.
       </div>
       <Panel style={{ overflow: "hidden" }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13.5 }}>
