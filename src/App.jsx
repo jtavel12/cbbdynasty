@@ -1952,21 +1952,12 @@ function historicalQuality(teamId) {
   return n ? wsum / n : null;
 }
 
-// The program's full year-by-year record for display: real historical W-L
-// (from team-season data) for every season before the user actually took
-// over THIS program, then the simulated seasons from state.history from
-// that point on. Each entry carries `real` so the UI can mark the seam
-// between "what actually happened" and "what the dynasty produced."
+// The program's year-by-year record for display: only seasons this dynasty
+// actually simulated while coaching this program. Real-world results (from
+// team-season data) are deliberately left out here — the point of a dynasty
+// is the new history the sim produces, not a replay of what really happened.
 function programHistoryFor(teamId, state) {
-  const simmed = [...state.history].filter((h) => h.teamId === teamId).sort((a, b) => a.year - b.year);
-  const startYear = simmed.length ? simmed[0].year : state.year;
-  const rec = teamRecordsRaw[teamId] || {};
-  const real = Object.keys(rec)
-    .map(Number)
-    .filter((y) => y < startYear && rec[y] && (rec[y].w + rec[y].l) > 0)
-    .sort((a, b) => a - b)
-    .map((y) => ({ year: y, wins: rec[y].w, losses: rec[y].l, rank: rec[y].rank, real: true }));
-  return [...real, ...simmed.map((h) => ({ ...h, real: false }))];
+  return [...state.history].filter((h) => h.teamId === teamId).sort((a, b) => a.year - b.year);
 }
 
 // Starting prestige for every program: mostly its historical record, with a
@@ -4894,30 +4885,16 @@ function DashboardTab({ state, team, record, nextGame, stage, onSim, onPlay, onS
         <Panel style={{ padding: 20 }}>
           <div style={{ fontSize: 11, color: C.dim, letterSpacing: "0.08em", marginBottom: 12 }}>PROGRAM HISTORY</div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-            {programHistory.map((h, i) => {
+            {programHistory.map((h) => {
               const title = h.postseason === "National Champions";
-              const startsSim = !h.real && (i === 0 || programHistory[i - 1].real);
               return (
-                <React.Fragment key={h.year}>
-                  {startsSim && i > 0 && (
-                    <div title="Real history ends here — everything from here on is your dynasty's simulated results."
-                      style={{ display: "flex", alignItems: "center", gap: 6, color: C.wood, fontSize: 10, letterSpacing: "0.05em", alignSelf: "stretch" }}>
-                      <div style={{ width: 1, background: C.wood, flex: 1 }} />
-                      <span style={{ whiteSpace: "nowrap" }}>YOUR DYNASTY →</span>
-                    </div>
+                <div key={h.year} style={{ border: `1px solid ${title ? C.gold : C.line}`, padding: "8px 12px", minWidth: 74 }}>
+                  <div className="cbb-num" style={{ fontSize: 13, color: C.dim }}>{seasonLabel(h.year)}</div>
+                  <div className="cbb-num" style={{ fontSize: 16, fontWeight: 600 }}>{h.wins}-{h.losses}</div>
+                  {h.postseason && (
+                    <div style={{ fontSize: 9.5, color: title ? C.gold : C.wood, marginTop: 3, letterSpacing: "0.03em" }}>{h.postseason}</div>
                   )}
-                  <div style={{ border: `1px solid ${title ? C.gold : C.line}`, borderStyle: h.real ? "dashed" : "solid", padding: "8px 12px", minWidth: 74, opacity: h.real ? 0.75 : 1 }}
-                    title={h.real ? "Real historical record" : "Simulated result"}>
-                    <div className="cbb-num" style={{ fontSize: 13, color: C.dim }}>{seasonLabel(h.year)}</div>
-                    <div className="cbb-num" style={{ fontSize: 16, fontWeight: 600 }}>{h.wins}-{h.losses}</div>
-                    {h.postseason && (
-                      <div style={{ fontSize: 9.5, color: title ? C.gold : C.wood, marginTop: 3, letterSpacing: "0.03em" }}>{h.postseason}</div>
-                    )}
-                    {h.real && h.rank ? (
-                      <div style={{ fontSize: 9.5, color: C.dimmer, marginTop: 3 }}>#{h.rank}</div>
-                    ) : null}
-                  </div>
-                </React.Fragment>
+                </div>
               );
             })}
           </div>
@@ -7064,17 +7041,9 @@ function ProgramTab({ state, team, record, reputation, rivalIds, rankById }) {
       )}
 
       {(() => {
-        // Real backfill here uses the TRUE career start (earliest year across
-        // every team this coach has run), not per-program, so it can never
-        // overlap a simulated row already logged for a different job.
-        const careerStartYear = state.history.length ? Math.min(...state.history.map((h) => h.year)) : state.year;
-        const realRec = teamRecordsRaw[team.id] || {};
-        const realRows = Object.keys(realRec)
-          .map(Number)
-          .filter((y) => y < careerStartYear && realRec[y] && (realRec[y].w + realRec[y].l) > 0)
-          .sort((a, b) => a - b)
-          .map((y) => ({ year: y, teamId: team.id, wins: realRec[y].w, losses: realRec[y].l, real: true }));
-        const rows = [...realRows, ...state.history.map((h) => ({ ...h, real: false }))];
+        // Every team this coach has run, across every job — purely the
+        // dynasty's own simulated results, never a real-world backfill.
+        const rows = state.history;
         if (rows.length === 0) return null;
         return (
           <Panel style={{ padding: 20 }}>
@@ -7086,27 +7055,17 @@ function ProgramTab({ state, team, record, reputation, rivalIds, rankById }) {
                 </tr>
               </thead>
               <tbody>
-                {[...rows].reverse().map((h, i, arr) => {
+                {[...rows].reverse().map((h) => {
                   const title = h.postseason === "National Champions";
                   const poy = h.awards && h.awards.poy && h.awards.poy.isUser ? h.awards.poy.name : null;
-                  const endsSim = !h.real && (i === arr.length - 1 || arr[i + 1].real);
                   return (
-                    <React.Fragment key={`${h.teamId}-${h.year}`}>
-                      <tr style={{ borderBottom: `1px solid ${C.line}`, opacity: h.real ? 0.75 : 1 }} title={h.real ? "Real historical record" : "Simulated result"}>
-                        <td className="cbb-num" style={td}>{seasonLabel(h.year)}{h.real && <span style={{ fontSize: 9.5, color: C.dimmer, marginLeft: 6 }}>REAL</span>}</td>
-                        <td style={td}>{TEAM_MAP[h.teamId]?.name || "—"}</td>
-                        <td className="cbb-num" style={td}>{h.wins}-{h.losses}</td>
-                        <td style={{ ...td, color: title ? C.gold : h.postseason ? C.wood : C.dimmer }}>{h.postseason || "—"}</td>
-                        <td style={{ ...td, color: poy ? C.gold : C.dimmer }}>{poy || "—"}</td>
-                      </tr>
-                      {endsSim && (
-                        <tr>
-                          <td colSpan={5} style={{ padding: "4px 14px", fontSize: 10, color: C.wood, letterSpacing: "0.05em", borderBottom: `1px solid ${C.line}` }}>
-                            ↑ YOUR DYNASTY — SIMULATED FROM HERE · REAL HISTORY BELOW ↓
-                          </td>
-                        </tr>
-                      )}
-                    </React.Fragment>
+                    <tr key={`${h.teamId}-${h.year}`} style={{ borderBottom: `1px solid ${C.line}` }}>
+                      <td className="cbb-num" style={td}>{seasonLabel(h.year)}</td>
+                      <td style={td}>{TEAM_MAP[h.teamId]?.name || "—"}</td>
+                      <td className="cbb-num" style={td}>{h.wins}-{h.losses}</td>
+                      <td style={{ ...td, color: title ? C.gold : h.postseason ? C.wood : C.dimmer }}>{h.postseason || "—"}</td>
+                      <td style={{ ...td, color: poy ? C.gold : C.dimmer }}>{poy || "—"}</td>
+                    </tr>
                   );
                 })}
               </tbody>
