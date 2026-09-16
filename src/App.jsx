@@ -5819,7 +5819,7 @@ function ProgramTab({ state, team, record, reputation, rivalIds, rankById }) {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20, maxWidth: 940 }}>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 14 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 14 }}>
         <StatBlock label="Career Record" value={`${careerW}-${careerL}`} />
         <StatBlock label="Win %" value={winPct} />
         <StatBlock label="Seasons" value={coach.seasons} />
