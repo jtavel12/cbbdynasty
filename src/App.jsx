@@ -2607,13 +2607,16 @@ function GlobalStyle() {
       .cbb-scroll::-webkit-scrollbar { width: 8px; height: 8px; }
       .cbb-scroll::-webkit-scrollbar-thumb { background: ${C.line}; border-radius: 0; }
       .cbb-scroll::-webkit-scrollbar-track { background: transparent; }
-      .cbb-row { transition: background .15s ease, transform .15s ease; }
-      .cbb-row:hover { background: ${C.panelAlt}; }
+      .cbb-row { transition: background .15s ease, box-shadow .15s ease; }
+      .cbb-row:hover { background: ${C.panelAlt}; box-shadow: inset 3px 0 0 ${C.wood}; }
+      .cbb-row:active { filter: brightness(0.94); }
       .cbb-btn { transition: transform .08s ease, background .15s ease, filter .15s ease, box-shadow .15s ease; }
       .cbb-btn:hover { filter: brightness(1.1); box-shadow: 0 2px 0 rgba(0,0,0,0.25); }
       .cbb-btn:active { transform: scale(0.97); filter: brightness(0.96); }
       .cbb-card { transition: border-color .15s ease, transform .15s ease, box-shadow .15s ease; }
       .cbb-card-hover:hover { border-color: ${C.wood}; transform: translateY(-2px); box-shadow: 0 4px 10px rgba(0,0,0,0.28); }
+      @keyframes cbbSignPulse { 0% { box-shadow: inset 0 0 0 2px ${C.gold}, 0 0 0 rgba(216,168,58,0); background: rgba(216,168,58,0.22); } 100% { box-shadow: inset 0 0 0 2px transparent, 0 0 0 rgba(216,168,58,0); background: transparent; } }
+      .cbb-sign-pulse { animation: cbbSignPulse 1.3s ease-out both; }
       @keyframes cbbSlideIn { from { opacity: 0; transform: translateX(14px); } to { opacity: 1; transform: translateX(0); } }
       @keyframes cbbFadeUp { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
       @keyframes cbbTabFade { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
@@ -4345,6 +4348,21 @@ function RecruitBoard({ board, committedIds, targets, onToggleTarget, points, we
   const [openId, setOpenId] = useState(null);
   const needSet = new Set(needs || []);
   const targetSet = new Set(targets || []);
+
+  // Celebrate a recruit the moment they join committedIds (a sign or a won
+  // transfer), rather than leaving the state change to read as a plain
+  // "Signed" label flip — cleared a couple seconds after it appears.
+  const prevCommittedRef = useRef(committedIds);
+  const [justSignedIds, setJustSignedIds] = useState(() => new Set());
+  useEffect(() => {
+    const prev = prevCommittedRef.current;
+    const added = committedIds.filter((id) => !prev.includes(id));
+    prevCommittedRef.current = committedIds;
+    if (added.length === 0) return;
+    setJustSignedIds(new Set(added));
+    const t = setTimeout(() => setJustSignedIds(new Set()), 1300);
+    return () => clearTimeout(t);
+  }, [committedIds]);
   const q = query.trim().toLowerCase();
 
   // Distinct hometown states present on the board (INTL grouped last).
@@ -4441,8 +4459,9 @@ function RecruitBoard({ board, committedIds, targets, onToggleTarget, points, we
           const open = openId === r.id;
           const chance = signChance(r);
           const isTarget = targetSet.has(r.id);
+          const justSigned = justSignedIds.has(r.id);
           return (
-            <Panel key={r.id} style={{ padding: 0 }}>
+            <Panel key={r.id} className={justSigned ? "cbb-sign-pulse" : undefined} style={{ padding: 0 }}>
               <div className="cbb-row"
                 onClick={() => setOpenId(open ? null : r.id)}
                 style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 16px", cursor: mine ? "default" : "pointer" }}>
@@ -4480,7 +4499,7 @@ function RecruitBoard({ board, committedIds, targets, onToggleTarget, points, we
                   </div>
                 </div>
                 {mine ? (
-                  <span style={{ color: C.green, fontSize: 12, display: "flex", alignItems: "center", gap: 4 }}><Check size={13} /> Signed</span>
+                  <span className={justSigned ? "cbb-crown-pop" : undefined} style={{ color: C.green, fontSize: 12, display: "flex", alignItems: "center", gap: 4 }}><Check size={13} /> Signed</span>
                 ) : (
                   <span style={{ fontSize: 11, color: C.dimmer }}>{Math.round(chance * 100)}% to sign</span>
                 )}
