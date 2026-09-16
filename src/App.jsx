@@ -735,11 +735,25 @@ function careerOutlierBonus(name) {
 // Overall lives on a strict 40-99 scale (see genAttrs* — every attribute is
 // floored at 40), so the minutes-weighted team overalls and sim math all sit
 // on the same band.
+// Raw positional weighting graded genuine contributors too low (a 19/5/3 lead
+// guard came out in the low 60s). This piecewise curve recalibrates the whole
+// league onto a truer scale — anchored so a proven mid-major starter like
+// Tulane's Rowan Brumbaugh reads ~77 — while keeping deep-bench walk-ons near
+// the 40s floor and preserving the 99 ceiling. Every player (real, generated,
+// developed) flows through computeOverall, so ratings stay consistent.
+function calibrateOverall(raw) {
+  const r = clamp(raw, 40, 99);
+  const out = r <= 62
+    ? 42 + (r - 40) * ((77 - 42) / (62 - 40))
+    : 77 + (r - 62) * ((99 - 77) / (99 - 62));
+  return clamp(Math.round(out), 40, 99);
+}
+
 function computeOverall(pos, attrs) {
   const w = POS_WEIGHTS[pos] || POS_WEIGHTS.SF;
   let sum = 0;
   for (const k of ATTR_KEYS) sum += (attrs[k] ?? 40) * (w[k] ?? 0);
-  return clamp(Math.round(sum), 40, 99);
+  return calibrateOverall(Math.round(sum));
 }
 
 // A player's effective overall if fielded at `pos` — identical to their listed
@@ -1215,12 +1229,16 @@ function genTransferBoard(year) {
 // interest in a low-major — the Anthony-Davis-won't-look-at-you effect.
 function seedInterest(board, team) {
   return board.map((r) => {
+    // Hometown pull: recruits within 250 miles of campus lean toward staying
+    // close, so give them a standing interest bump.
+    const miles = recruitDistanceMiles(r, team);
+    const proximityBoost = miles != null && miles <= 250 ? 12 : 0;
     const here = r.real && findOurTeamByRealName(r.originalTeam)?.id === team.id;
-    if (here) return { ...r, interest: randInt(50, 75) };
+    if (here) return { ...r, interest: clamp(randInt(50, 75) + proximityBoost, 1, 90), proximityBoost };
     const signedPr = r.signedPrestige ?? r.originalPrestige ?? 3;
     const gap = Math.abs(team.prestige - signedPr);
-    const interest = clamp(Math.round(58 - gap * 20 + rand(-6, 6)), 1, 55);
-    return { ...r, interest };
+    const interest = clamp(Math.round(58 - gap * 20 + rand(-6, 6)) + proximityBoost, 1, 67);
+    return { ...r, interest, proximityBoost };
   });
 }
 
@@ -1301,10 +1319,14 @@ function applyRecruitAction(recruit, actionKey, weekIndex = 0) {
   return next;
 }
 
+// Landing prospects was too easy, so the raw interest-share odds are made 33%
+// harder to convert (divide the base probability by 1.33).
+const RECRUIT_DIFFICULTY = 1.33;
 function signChance(recruit) {
   if (!recruit.offerExtended) return 0;
   const total = recruit.interest + recruit.rivalPressure;
-  return total <= 0 ? 0.5 : clamp(recruit.interest / total, 0.03, 0.97);
+  const base = total <= 0 ? 0.5 : recruit.interest / total;
+  return clamp(base / RECRUIT_DIFFICULTY, 0.02, 0.97);
 }
 
 function advanceRecruitingWeeks(board, fromWeek, weeksElapsed, totalWeeks) {
@@ -1441,6 +1463,17 @@ function genSchedule(team, year) {
   }
 
   return games;
+}
+
+// Non-conference scheduling rules: a school may be booked at most once in the
+// non-conference slate, and a team can never schedule a member of its own
+// conference out of conference. Returns false for an opponent change that
+// would break either rule (`slate` is the full schedule, `gameId` the game
+// being edited so it doesn't count itself as a duplicate).
+function nonConfOppAllowed(slate, gameId, oppId, teamConf) {
+  const opp = TEAM_MAP[oppId];
+  if (!opp || opp.conf === teamConf) return false;
+  return !slate.some((g) => !g.conf && g.id !== gameId && g.oppId === oppId);
 }
 
 // A team's power MUST live on the same scale as `userTeamOverall` (the
@@ -2593,13 +2626,21 @@ function DynastyApp({ initial, onExit }) {
   }
 
   function editDraftGame(gameId, changes) {
-    setState((s) => ({
-      ...s,
-      offseason: {
-        ...s.offseason,
-        scheduleDraft: s.offseason.scheduleDraft.map((g) => (g.id === gameId && !g.conf && !g.played ? { ...g, ...changes } : g)),
-      },
-    }));
+    setState((s) => {
+      let c = changes;
+      if ("oppId" in changes && !nonConfOppAllowed(s.offseason.scheduleDraft, gameId, changes.oppId, team.conf)) {
+        c = { ...changes };
+        delete c.oppId;
+      }
+      if (Object.keys(c).length === 0) return s;
+      return {
+        ...s,
+        offseason: {
+          ...s.offseason,
+          scheduleDraft: s.offseason.scheduleDraft.map((g) => (g.id === gameId && !g.conf && !g.played ? { ...g, ...c } : g)),
+        },
+      };
+    });
   }
 
   function startPostseason() {
@@ -2932,12 +2973,20 @@ function DynastyApp({ initial, onExit }) {
   // Coach edits a non-conference matchup (opponent or home/away). Conference
   // and already-played games are guarded in the UI, and defensively here.
   function editGame(gameId, changes) {
-    setState((s) => ({
-      ...s,
-      schedule: s.schedule.map((g) =>
-        g.id === gameId && !g.conf && !g.played ? { ...g, ...changes } : g
-      ),
-    }));
+    setState((s) => {
+      let c = changes;
+      if ("oppId" in changes && !nonConfOppAllowed(s.schedule, gameId, changes.oppId, team.conf)) {
+        c = { ...changes };
+        delete c.oppId;
+      }
+      if (Object.keys(c).length === 0) return s;
+      return {
+        ...s,
+        schedule: s.schedule.map((g) =>
+          g.id === gameId && !g.conf && !g.played ? { ...g, ...c } : g
+        ),
+      };
+    });
   }
 
   const seasonOver = state.schedule.every((g) => g.played);
@@ -3954,6 +4003,7 @@ function OffseasonTab({ stage, offseason, team, roster, nextYear, committedFresh
           <tbody>
             {draftNonConf.map((g) => (
               <ScheduleRow key={g.id} g={g} teamConf={team.conf} rankById={rankById} isRival={false}
+                takenOppIds={new Set(draftNonConf.map((d) => d.oppId))}
                 onViewTeam={onViewTeam} onEditGame={onEditGame} onViewBox={null} />
             ))}
           </tbody>
@@ -4462,15 +4512,16 @@ function TrophyBadge({ count, label, gold }) {
   );
 }
 
-function ScheduleRow({ g, teamConf, rankById, isRival, onViewTeam, onEditGame, onViewBox }) {
+function ScheduleRow({ g, teamConf, rankById, isRival, onViewTeam, onEditGame, onViewBox, takenOppIds }) {
   const [editing, setEditing] = useState(false);
   const opp = TEAM_MAP[g.oppId];
   const editable = !g.conf && !g.played && !!onEditGame;
   const signature = g.played && g.result.win && g.result.oppRank && g.result.oppRank <= 25;
   const hasBox = g.played && g.result.box && g.result.box.length > 0;
-  // Non-conference opponents = every program outside your conference.
+  // Non-conference opponents = every program outside your conference that
+  // isn't already booked elsewhere in the non-con slate (each school once).
   const options = editable
-    ? TEAMS.filter((t) => t.conf !== teamConf).sort((a, b) => a.name.localeCompare(b.name))
+    ? TEAMS.filter((t) => t.conf !== teamConf && (t.id === g.oppId || !takenOppIds?.has(t.id))).sort((a, b) => a.name.localeCompare(b.name))
     : [];
 
   return (
@@ -4547,6 +4598,7 @@ function ScheduleRow({ g, teamConf, rankById, isRival, onViewTeam, onEditGame, o
 function ScheduleTab({ schedule, teamConf, rankById, rivalIds, onViewTeam, onEditGame, onViewBox }) {
   const nonConf = schedule.filter((g) => !g.conf);
   const conf = schedule.filter((g) => g.conf);
+  const takenOppIds = new Set(nonConf.map((g) => g.oppId));
 
   const table = (games, editable) => (
     <Panel style={{ overflow: "hidden", marginBottom: 18 }}>
@@ -4559,7 +4611,7 @@ function ScheduleTab({ schedule, teamConf, rankById, rivalIds, onViewTeam, onEdi
         <tbody>
           {games.map((g) => (
             <ScheduleRow key={g.id} g={g} teamConf={teamConf} rankById={rankById}
-              isRival={rivalIds && rivalIds.has(g.oppId)}
+              isRival={rivalIds && rivalIds.has(g.oppId)} takenOppIds={takenOppIds}
               onViewTeam={onViewTeam} onEditGame={editable ? onEditGame : null} onViewBox={onViewBox} />
           ))}
         </tbody>
