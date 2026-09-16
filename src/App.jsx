@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useMemo, useCallback } from "react"
 import torvikSeasonsRaw from "./data/torvik-seasons.json";
 import torvikPlayersRaw from "./data/torvik-players.json";
 import teamLocationsRaw from "./data/team-locations.json";
+import teamRecordsRaw from "./data/team-records.json";
 import {
   LayoutDashboard, Users, ListOrdered, Search, CalendarDays, Trophy,
   Save, RotateCcw, ChevronUp, ChevronDown, Play, FastForward, Star,
@@ -1495,7 +1496,10 @@ function teamPowerRating(team, strengthMap, year, { noise = true } = {}) {
     }
   }
   const drift = strengthMap[team.id] ?? 0;
-  const talent = 38 + ((team.prestige - 1) / 4) * 40; // prestige 1->38 ... 5->78
+  // Use the smooth prestige so gradual drift shows up in the standings even
+  // before a program crosses to the next whole star.
+  const prestige = team.prestigeExact ?? team.prestige;
+  const talent = 38 + ((prestige - 1) / 4) * 40; // prestige 1->38 ... 5->78
   return clamp(talent + drift + jitter, 25, 92);
 }
 
@@ -1542,6 +1546,113 @@ function projectedRecord(team, powerById) {
   const games = CONF_GAMES + NONCONF_GAMES;
   return { wins, losses: games - wins };
 }
+
+/* =========================================================================
+   PROGRAM PRESTIGE — history-seeded and fluid
+   Prestige is no longer a fixed hand-authored label. Each program is SEEDED
+   from its real historical track record (win%, national rank, recency-
+   weighted), then drifts season to season as the dynasty plays out: sustained
+   success raises it, sustained struggle lowers it. We track a smooth internal
+   value (team.prestigeExact, 1.0–5.0) for gradual movement while every existing
+   consumer keeps reading the familiar rounded 1–5 integer team.prestige.
+   ========================================================================= */
+// Preserve the authored reputation before any live mutation overwrites it, so
+// re-seeding a new dynasty always starts from the original values.
+for (const t of TEAMS) t.prestigeStatic = t.prestige;
+
+const PRESTIGE_DRIFT = 0.15; // gradual: one season moves 15% toward the target
+
+// Map a 0..1 quality onto the 1..5 prestige scale. Shared by the historical
+// seed and the yearly drift target so both speak the same language.
+function prestigeFromQuality(q) {
+  return clamp(1 + ((q - 0.14) / 0.72) * 4, 1, 5);
+}
+
+// Recency-weighted quality of a program across every real season on record.
+function historicalQuality(teamId) {
+  const rec = teamRecordsRaw[teamId];
+  if (!rec) return null;
+  const years = Object.keys(rec).map(Number);
+  if (!years.length) return null;
+  const maxY = Math.max(...years);
+  let wsum = 0, n = 0;
+  for (const y of years) {
+    const e = rec[String(y)];
+    const games = e.w + e.l;
+    if (!games) continue;
+    const winPct = e.w / games;
+    const rankQ = e.rank ? clamp(1 - (e.rank - 1) / 363, 0, 1) : 0.3;
+    const wt = Math.pow(0.82, maxY - y); // recent seasons matter most
+    wsum += (0.55 * winPct + 0.45 * rankQ) * wt;
+    n += wt;
+  }
+  return n ? wsum / n : null;
+}
+
+// Starting prestige for every program: mostly its historical record, with a
+// little weight left on the authored reputation so brand names don't crater on
+// a down decade. Programs with no data keep their static value.
+function baselinePrestigeById() {
+  const out = {};
+  for (const t of TEAMS) {
+    const q = historicalQuality(t.id);
+    const stat = t.prestigeStatic ?? t.prestige;
+    out[t.id] = q == null ? stat : 0.75 * prestigeFromQuality(q) + 0.25 * stat;
+  }
+  return out;
+}
+
+// Quality (0..1) a team earned in a single completed season. Real seasons pull
+// from the record book; beyond the data (or for the human coach's own result,
+// passed via `override`) we fall back to the simulated record and power rating.
+function seasonQualityFor(team, year, powerById, override) {
+  if (override != null) return override;
+  const real = teamRecordsRaw[team.id] && teamRecordsRaw[team.id][String(year)];
+  if (real && real.w + real.l > 0) {
+    const winPct = real.w / (real.w + real.l);
+    const rankQ = real.rank
+      ? clamp(1 - (real.rank - 1) / 363, 0, 1)
+      : clamp((powerById[team.id] - 25) / 70, 0, 1);
+    return 0.55 * winPct + 0.45 * rankQ;
+  }
+  const pr = projectedRecord(team, powerById);
+  const g = pr.wins + pr.losses;
+  const winPct = g ? pr.wins / g : 0.5;
+  const rankQ = clamp((powerById[team.id] - 25) / 70, 0, 1);
+  return 0.55 * winPct + 0.45 * rankQ;
+}
+
+// Nudge every program's prestige toward the target implied by the season that
+// just finished. Gradual, so it takes several strong (or weak) years to move a
+// program a full tier. `userQuality` carries the human coach's real outcome.
+function driftPrestige(prevById, year, powerById, userTeamId, userQuality) {
+  const next = {};
+  for (const t of TEAMS) {
+    const prev = prevById[t.id] ?? t.prestigeStatic ?? t.prestige;
+    const q = seasonQualityFor(t, year, powerById, t.id === userTeamId ? userQuality : null);
+    const target = prestigeFromQuality(q);
+    next[t.id] = clamp(prev + (target - prev) * PRESTIGE_DRIFT, 1, 5);
+  }
+  return next;
+}
+
+// Push a prestige map onto the live team objects so every existing consumer
+// (power baseline, recruiting, standings, UI stars) reads the current value.
+// team.prestige stays a rounded 1–5 integer; team.prestigeExact holds the
+// smooth value the power baseline uses for fluid standings between whole steps.
+function applyLivePrestige(prestigeById) {
+  if (!prestigeById) return;
+  for (const t of TEAMS) {
+    const exact = prestigeById[t.id];
+    if (exact == null) continue;
+    t.prestigeExact = Math.round(exact * 100) / 100;
+    t.prestige = clamp(Math.round(exact), 1, 5);
+  }
+}
+
+// Seed the league from history at load so even the pre-dynasty team picker
+// reflects real track records. A running dynasty re-applies its own saved map.
+applyLivePrestige(baselinePrestigeById());
 
 /* =========================================================================
    RANKINGS
@@ -2359,6 +2470,12 @@ function DynastyApp({ initial, onExit }) {
     return () => clearTimeout(saveTimer.current);
   }, [state]);
 
+  // Keep the live team objects in sync with this dynasty's fluid prestige so
+  // every consumer (power, recruiting, standings, stars) reads current values.
+  // Runs during render (idempotent) so the first paint already reflects it,
+  // and covers loaded saves as well as in-session drift.
+  useMemo(() => { applyLivePrestige(state.prestigeById || baselinePrestigeById()); }, [state.prestigeById]);
+
   const team = TEAM_MAP[state.teamId];
 
   // The Transfer Portal only exists during the offseason, so it appears as its
@@ -2869,6 +2986,15 @@ function DynastyApp({ initial, onExit }) {
   function advanceYear() {
     const powerById = powerTableFor(state.strengths, state.year);
     const awards = computeAwards(state, rankById, ranked, powerById);
+    // Fluid prestige: nudge the whole league from the season that just ended.
+    const uGames = record.w + record.l;
+    const uWinPct = uGames ? record.w / uGames : 0.5;
+    const uRank = rankById[state.teamId];
+    const uRankQ = uRank ? clamp(1 - (uRank - 1) / 363, 0, 1) : clamp((powerById[state.teamId] - 25) / 70, 0, 1);
+    const nextPrestige = driftPrestige(
+      state.prestigeById || baselinePrestigeById(), state.year, powerById, state.teamId,
+      clamp(0.55 * uWinPct + 0.45 * uRankQ, 0, 1)
+    );
     const os = state.offseason;
     // Early departures resolve from the offseason declarations (after any
     // persuasion). Players talked into staying are kept off the leaving list.
@@ -2912,6 +3038,7 @@ function DynastyApp({ initial, onExit }) {
     setState({
       ...state,
       year: newYear,
+      prestigeById: nextPrestige,
       roster: newRoster,
       depthChart: defaultDepthChart(newRoster),
       schedule: (os && os.scheduleDraft) ? os.scheduleDraft : genSchedule(team, newYear),
@@ -2941,12 +3068,23 @@ function DynastyApp({ initial, onExit }) {
     const coach = finalizeCoachSeason(state.coach, record, state.postseason, state.teamId);
     const powerById = powerTableFor(state.strengths, state.year);
     const awards = computeAwards(state, rankById, ranked, powerById);
+    // Fluid prestige: the season you just finished at your old school still
+    // counts, so drift the whole league before switching jobs.
+    const uGames = record.w + record.l;
+    const uWinPct = uGames ? record.w / uGames : 0.5;
+    const uRank = rankById[state.teamId];
+    const uRankQ = uRank ? clamp(1 - (uRank - 1) / 363, 0, 1) : clamp((powerById[state.teamId] - 25) / 70, 0, 1);
+    const nextPrestige = driftPrestige(
+      state.prestigeById || baselinePrestigeById(), state.year, powerById, state.teamId,
+      clamp(0.55 * uWinPct + 0.45 * uRankQ, 0, 1)
+    );
     const newYear = state.year + 1;
     const roster = buildInitialRoster(newTeam, newYear);
     setState({
       ...state,
       teamId: newTeam.id,
       year: newYear,
+      prestigeById: nextPrestige,
       roster,
       depthChart: defaultDepthChart(roster),
       schedule: genSchedule(newTeam, newYear),
@@ -4052,6 +4190,13 @@ function TeamRosterModal({ teamId, year, strengths, rank, onClose }) {
   const schedule = useMemo(() => genSchedule(team, year), [teamId, year]);
   const teamPower = useMemo(() => teamPowerRating(team, strengths, year, { noise: false }), [teamId, year, strengths]);
   const realCount = roster.filter((p) => p.realName).length;
+  // Real season-by-season records (Barttorvik), newest first.
+  const history = useMemo(() => {
+    const rec = teamRecordsRaw[teamId] || {};
+    return Object.keys(rec)
+      .map((y) => ({ year: +y, ...rec[y] }))
+      .sort((a, b) => b.year - a.year);
+  }, [teamId]);
 
   const tabBtn = (id, label) => (
     <button
@@ -4091,6 +4236,7 @@ function TeamRosterModal({ teamId, year, strengths, rank, onClose }) {
       <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
         {tabBtn("roster", "Roster")}
         {tabBtn("schedule", "Schedule")}
+        {history.length > 0 && tabBtn("history", "Program History")}
       </div>
 
       {view === "roster" && (
@@ -4149,6 +4295,34 @@ function TeamRosterModal({ teamId, year, strengths, rank, onClose }) {
                   </tr>
                 );
               })}
+            </tbody>
+          </table>
+        </Panel>
+      )}
+
+      {view === "history" && (
+        <Panel style={{ overflow: "hidden" }}>
+          <div style={{ fontSize: 11, color: C.dimmer, padding: "8px 10px 0" }}>
+            Real season results from Torvik data. Rk = end-of-season national rating rank.
+          </div>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13.5 }}>
+            <thead>
+              <tr style={{ borderBottom: `1px solid ${C.line}`, color: C.dim, fontSize: 11, textAlign: "left" }}>
+                <th style={th}>Season</th><th style={th}>Overall</th><th style={th}>Conf</th><th style={th}>Conf W-L</th><th style={th}>Rk</th>
+              </tr>
+            </thead>
+            <tbody>
+              {history.map((h) => (
+                <tr key={h.year} className="cbb-row" style={{ borderBottom: `1px solid ${C.line}` }}>
+                  <td style={{ ...td, fontWeight: 600 }} className="cbb-num">{seasonLabel(h.year)}</td>
+                  <td style={{ ...td, fontWeight: 700 }} className="cbb-num">{h.wl}</td>
+                  <td style={td}>{h.conf}</td>
+                  <td style={td} className="cbb-num">{h.confWL || "—"}</td>
+                  <td style={{ ...td, color: h.rank <= 25 ? C.wood : C.dim, fontWeight: h.rank <= 25 ? 700 : 400 }} className="cbb-num">
+                    {h.rank <= 25 ? `#${h.rank}` : h.rank}
+                  </td>
+                </tr>
+              ))}
             </tbody>
           </table>
         </Panel>
@@ -4959,11 +5133,16 @@ export default function CBBDynasty() {
   }, []);
 
   function startDynasty(team, slot, year = FIRST_YEAR) {
+    // Reset the league to its history-seeded baseline (a prior dynasty this
+    // session may have drifted the live values) before building the roster.
+    const prestigeById = baselinePrestigeById();
+    applyLivePrestige(prestigeById);
     const roster = buildInitialRoster(team, year);
     const state = {
       slot,
       teamId: team.id,
       year,
+      prestigeById,
       roster,
       depthChart: defaultDepthChart(roster),
       schedule: genSchedule(team, year),
