@@ -8,7 +8,7 @@ import {
   Save, RotateCcw, ChevronUp, ChevronDown, Play, FastForward, Star,
   ShieldCheck, X, Check, TrendingUp, TrendingDown, Award, Crown,
   Medal, HeartPulse, Swords, Flame, GraduationCap, Landmark, Lock,
-  Clock, Gauge, Zap, Minus, Timer
+  Clock, Gauge, Zap, Minus, Timer, DollarSign
 } from "lucide-react";
 
 /* =========================================================================
@@ -1107,6 +1107,22 @@ function starsFromValue(v) {
   return 1;
 }
 
+// A recruit's NIL ask: baseByStars scaled by whether they're a proven transfer,
+// their own competition-adjusted production (the same `adjustedValue` that
+// drives their star rating), and the pedigree of the program that produced
+// those numbers. nilFloor is never shown to the user — only nilTarget (the
+// "ask") is, as guidance when they make an NIL offer.
+const NIL_BASE_BY_STARS = { 5: 700_000, 4: 250_000, 3: 60_000, 2: 25_000, 1: 10_000 };
+function computeNilAsk({ stars, adjustedValue, isTransfer, prestige }) {
+  const base = NIL_BASE_BY_STARS[clamp(Math.round(stars || 1), 1, 5)];
+  const transferMult = isTransfer ? 1.6 : 1;
+  const productionMult = clamp(0.4 + (clamp(adjustedValue || 0, 0, 22) / 22) * 0.9, 0.4, 1.3);
+  const pedigreeMult = clamp(0.4 + ((clamp(prestige || 2, 1, 5) - 1) / 4) * 0.9, 0.4, 1.3);
+  const nilTarget = Math.round(base * transferMult * productionMult * pedigreeMult * rand(0.85, 1.15));
+  const nilFloor = Math.round(nilTarget * rand(0.60, 0.80));
+  return { nilTarget, nilFloor };
+}
+
 // Fresh, per-cycle recruiting-trail bookkeeping shared by every recruit object.
 function freshTrailState() {
   return {
@@ -1114,6 +1130,7 @@ function freshTrailState() {
     interest: 0,               // 0-100 warmth toward YOUR program
     rivalPressure: randInt(15, 45),
     offerExtended: false,
+    nilOffer: 0,                // dollars currently pledged (pending until sign)
     callsUsed: 0,
     callsThisWeek: 0,
     visitsUsed: 0,             // official visits (1 max)
@@ -1147,6 +1164,7 @@ function buildRealNewcomer(r, year) {
   const stars = starsFromValue(adjustedValue);
   const rating = clamp(0.55 + (adjustedValue / 26) * 0.44, 0.55, 1.0);
   const ht = normalizeHometown(r.hometown);
+  const { nilTarget, nilFloor } = computeNilAsk({ stars, adjustedValue, isTransfer: transfer, prestige: originalPrestige });
   return {
     id: uid(),
     name: r.player,
@@ -1167,6 +1185,7 @@ function buildRealNewcomer(r, year) {
     originalPrestige,
     signedPrestige: originalPrestige, // caliber of program they actually chose
     adjustedValue,
+    nilTarget, nilFloor,
     hsStatline: { ppg: frPpg.toFixed(1), rpg: frRpg.toFixed(1) },
     ...freshTrailState(),
   };
@@ -1202,6 +1221,9 @@ function genSyntheticPool(kind) {
     const pos = pick(POSITIONS);
     const stCode = pick(STATES);
     const centroid = STATE_CENTROIDS[stCode] || null;
+    const signedPrestige = clamp(Math.round(stars), 1, 5);
+    const isTransfer = kind === "transfer";
+    const { nilTarget, nilFloor } = computeNilAsk({ stars, adjustedValue, isTransfer, prestige: signedPrestige });
     pool.push({
       id: uid(),
       name: fullName(),
@@ -1212,13 +1234,14 @@ function genSyntheticPool(kind) {
       hometownLat: centroid ? centroid.lat : null,
       hometownLng: centroid ? centroid.lng : null,
       international: false,
-      classYear: kind === "transfer" ? pick(["SO", "JR", "SR"]) : "FR",
-      isTransfer: kind === "transfer",
+      classYear: isTransfer ? pick(["SO", "JR", "SR"]) : "FR",
+      isTransfer,
       stars,
       rating: Math.round(rating * 10000) / 10000,
       productionScore,
       adjustedValue,
-      signedPrestige: clamp(Math.round(stars), 1, 5),
+      signedPrestige,
+      nilTarget, nilFloor,
       hsStatline: {
         ppg: ((productionScore / 99) * 22 + rand(2, 6)).toFixed(1),
         rpg: ((pos === "C" || pos === "PF") ? (productionScore / 99) * 10 + rand(1, 3) : (productionScore / 99) * 5 + rand(1, 2)).toFixed(1),
@@ -1348,6 +1371,36 @@ function applyRecruitAction(recruit, actionKey, weekIndex = 0) {
   if (actionKey === "VISIT") next.visitsUsed = (next.visitsUsed || 0) + 1;
   if (actionKey === "HOME") { next.homeVisitsUsed = (next.homeVisitsUsed || 0) + 1; next.homeVisitWeek = weekIndex; }
   return next;
+}
+
+// The interest a given NIL dollar offer buys, as a standalone curve (not a
+// delta) so re-pledging a higher or lower amount can be applied as just the
+// difference from the previous pledge's boost. Below the (never-shown) floor
+// buys nothing; floor->target ramps linearly up to the full +25 (the single
+// biggest lever on the board, bigger than an Official Visit's +16-26); at or
+// above target it's the full +25 plus a sqrt-diminishing bonus for going
+// over, capped around +15 extra by 5x the target.
+const NIL_MAX_BOOST = 25;
+const NIL_OVER_BONUS = 15;
+function nilInterestBoost(offer, floor, target) {
+  const o = Math.max(0, offer || 0);
+  const f = Math.max(0, floor || 0);
+  const t = Math.max(f + 1, target || f + 1);
+  if (o < f) return 0;
+  if (o < t) return NIL_MAX_BOOST * (o - f) / (t - f);
+  const over = clamp(o / t - 1, 0, 4) / 4; // 0..1 as offer runs 1x -> 5x target
+  return NIL_MAX_BOOST + NIL_OVER_BONUS * Math.sqrt(over);
+}
+
+// Set (or revise) a recruit's NIL pledge: only the CHANGE in the boost curve
+// is applied to interest, so raising or lowering an existing pledge adjusts
+// interest correctly instead of re-granting the full boost each time.
+function applyNilOffer(recruit, amount) {
+  const floor = recruit.nilFloor ?? 0;
+  const target = recruit.nilTarget ?? floor + 1;
+  const prevBoost = nilInterestBoost(recruit.nilOffer || 0, floor, target);
+  const nextBoost = nilInterestBoost(amount, floor, target);
+  return { ...recruit, nilOffer: Math.max(0, Math.round(amount)), interest: clamp(recruit.interest + (nextBoost - prevBoost), 0, 100) };
 }
 
 // Chance to sign IS the recruit's interest, read 1:1 — the board never shows a
@@ -1743,6 +1796,49 @@ function applyLivePrestige(prestigeById) {
 // Seed the league from history at load so even the pre-dynasty team picker
 // reflects real track records. A running dynasty re-applies its own saved map.
 applyLivePrestige(baselinePrestigeById());
+
+/* =========================================================================
+   NIL (NAME, IMAGE, LIKENESS) BUDGETS
+   A per-team dollar budget, classified into High/Mid/Low Major off the same
+   `conf` field every team already carries, then interpolated within that
+   tier's range by the team's existing 1-5 `prestige` — mirrors the
+   baselinePrestigeById()/driftPrestige() pattern above so it persists and
+   drifts the same way prestige does.
+   ========================================================================= */
+const HIGH_MAJOR_CONFS = new Set(["ACC", "Big Ten", "Big 12", "SEC", "Big East", "Pac-12"]);
+const MID_MAJOR_CONFS = new Set(["American", "Atlantic 10", "Mountain West", "WCC", "Missouri Valley", "CAA", "Ivy", "Horizon"]);
+const NIL_TIER_RANGES = {
+  high: [800_000, 4_000_000],
+  mid: [150_000, 900_000],
+  low: [20_000, 250_000],
+};
+
+function nilTierFor(team) {
+  if (HIGH_MAJOR_CONFS.has(team.conf)) return "high";
+  if (MID_MAJOR_CONFS.has(team.conf)) return "mid";
+  return "low";
+}
+
+// Where a team lands in its tier's range, driven by its existing 1-5 prestige.
+function nilBudgetForTeam(team) {
+  const [lo, hi] = NIL_TIER_RANGES[nilTierFor(team)];
+  const t = clamp((team.prestige - 1) / 4, 0, 1);
+  return Math.round(lo + (hi - lo) * t);
+}
+
+function baselineNilBudgetById() {
+  const out = {};
+  for (const t of TEAMS) out[t.id] = nilBudgetForTeam(t);
+  return out;
+}
+
+// $2.1M / $450K / $8,200-style compact formatting for budgets and offers.
+function formatNil(n) {
+  const v = Math.round(n || 0);
+  if (v >= 1_000_000) return `$${(v / 1_000_000).toFixed(v >= 10_000_000 ? 0 : 1)}M`;
+  if (v >= 1_000) return `$${Math.round(v / 1_000)}K`;
+  return `$${v.toLocaleString()}`;
+}
 
 /* =========================================================================
    RANKINGS
@@ -2491,6 +2587,85 @@ function evaluateSeason(exp, record, psSummary) {
   return { securityDelta: Math.round(sec), met, winMargin: record.w - exp.winTarget };
 }
 
+/* =========================================================================
+   NIL YEARLY OBJECTIVES
+   Each program's 3 objectives are drawn from this pool, filtered to the
+   team's rounded 1-5 prestige (minTier/maxTier), same as seasonExpectation's
+   tiering above. Objects in `state` only ever carry {id, label, boostPct} —
+   never the `evaluate` function itself, since state has to survive
+   JSON.stringify for save/load. advanceYear() looks the function back up by
+   id from this pool at grading time.
+   ========================================================================= */
+const NIL_OBJECTIVE_POOL = [
+  { id: "natty", label: "Win the National Championship", boostPct: 0.20, minTier: 5, maxTier: 5,
+    evaluate: (ctx) => ctx.psSummary === "National Champions" },
+  { id: "final_four", label: "Reach the Final Four", boostPct: 0.18, minTier: 4, maxTier: 5,
+    evaluate: (ctx) => psValue(ctx.psSummary) >= psValue("Final Four") },
+  { id: "elite_eight", label: "Reach the Elite Eight", boostPct: 0.15, minTier: 3, maxTier: 5,
+    evaluate: (ctx) => psValue(ctx.psSummary) >= psValue("Elite Eight") },
+  { id: "conf_tourney", label: "Win your conference tournament", boostPct: 0.14, minTier: 1, maxTier: 5,
+    evaluate: (ctx) => ctx.confChampionId === ctx.teamId },
+  { id: "make_tourney", label: "Make the NCAA Tournament", boostPct: 0.12, minTier: 3, maxTier: 5,
+    evaluate: (ctx) => psValue(ctx.psSummary) >= psValue("NCAA Tournament") },
+  { id: "top25", label: "Finish the season ranked in the AP Top 25", boostPct: 0.12, minTier: 3, maxTier: 5,
+    evaluate: (ctx) => (ctx.rankById[ctx.teamId] || 999) <= 25 },
+  { id: "win25", label: "Win 25 games", boostPct: 0.12, minTier: 4, maxTier: 5,
+    evaluate: (ctx) => ctx.record.w >= 25 },
+  { id: "win20", label: "Win 20 games", boostPct: 0.10, minTier: 3, maxTier: 4,
+    evaluate: (ctx) => ctx.record.w >= 20 },
+  { id: "win15", label: "Win 15 games", boostPct: 0.09, minTier: 2, maxTier: 3,
+    evaluate: (ctx) => ctx.record.w >= 15 },
+  { id: "finish500", label: "Finish .500 or better", boostPct: 0.08, minTier: 1, maxTier: 3,
+    evaluate: (ctx) => ctx.record.w >= ctx.record.l },
+  { id: "beat_ranked", label: "Beat a ranked (Top 25) opponent", boostPct: 0.08, minTier: 1, maxTier: 5,
+    evaluate: (ctx) => ctx.beatRanked },
+  { id: "improve", label: "Win more games than last season", boostPct: 0.08, minTier: 1, maxTier: 2,
+    evaluate: (ctx) => ctx.prevWins == null || ctx.record.w > ctx.prevWins },
+];
+const NIL_OBJECTIVE_BY_ID = Object.fromEntries(NIL_OBJECTIVE_POOL.map((o) => [o.id, o]));
+
+// Pick 3 objectives appropriate to a team's rounded prestige (1-5).
+function pickObjectivesFor(prestige) {
+  const tier = clamp(Math.round(prestige || 2), 1, 5);
+  const eligible = NIL_OBJECTIVE_POOL.filter((o) => tier >= o.minTier && tier <= o.maxTier);
+  return shuffled(eligible).slice(0, 3).map((o) => ({ id: o.id, label: o.label, boostPct: o.boostPct }));
+}
+
+// Grade a team's 3 objectives against how the season actually went, returning
+// the ones met (each carrying its boostPct) and the total compounding boost.
+function evaluateNilObjectives(objectives, ctx) {
+  const met = (objectives || []).filter((o) => NIL_OBJECTIVE_BY_ID[o.id]?.evaluate(ctx));
+  const totalBoost = met.reduce((sum, o) => sum + o.boostPct, 0);
+  return { met, totalBoost };
+}
+
+// Lighter year-over-year NIL growth for CPU teams we never simulate objectives
+// for in detail — scaled off the same 0..1 season-quality signal driftPrestige
+// already computes, roughly calibrated to "met ~1.5 of 3 objectives" on average.
+function cpuNilGrowth(quality) {
+  return clamp(0.02 + (quality ?? 0.5) * 0.28, 0.02, 0.30);
+}
+
+// Advance every team's NIL budget one season: the human's team grades its 3
+// real objectives (compounding their boostPct onto the current budget); every
+// other team gets the lighter CPU approximation off the same season-quality
+// signal driftPrestige already computes. Mirrors driftPrestige's shape so the
+// two run side by side in advanceYear()/changeJob() without surprises.
+function advanceNilBudgets(prevNilById, userTeamId, userObjectives, evalCtx, year, powerById) {
+  const { met, totalBoost } = evaluateNilObjectives(userObjectives, evalCtx);
+  const next = {};
+  for (const t of TEAMS) {
+    const prev = prevNilById[t.id] ?? nilBudgetForTeam(t);
+    if (t.id === userTeamId) {
+      next[t.id] = Math.round(prev * (1 + totalBoost));
+    } else {
+      const quality = seasonQualityFor(t, year, powerById, null);
+      next[t.id] = Math.round(prev * (1 + cpuNilGrowth(quality)));
+    }
+  }
+  return { nextNilById: next, met, totalBoost };
+}
+
 function hotSeatTier(sec) {
   if (sec >= 75) return { label: "Untouchable", color: C.green };
   if (sec >= 45) return { label: "Secure", color: C.green };
@@ -2904,6 +3079,7 @@ function DynastyApp({ initial, onExit }) {
   }, [state.strengths, state.year, state.teamId, record, state.roster, state.depthChart, powerBaseline, state.seasonSeed]);
 
   const reputation = reputationOf(state.coach);
+  const nilBudget = (state.nilBudgetById || baselineNilBudgetById())[state.teamId] ?? nilBudgetForTeam(team);
   const leaders = useMemo(
     () => buildLeaderboard(state.year, state.teamId, state.roster),
     [state.year, state.teamId, state.roster]
@@ -3098,6 +3274,23 @@ function DynastyApp({ initial, onExit }) {
     }));
   }
 
+  // Pledge (or revise) an NIL offer on a transfer-portal recruit. Spends
+  // nothing from the budget yet — it's only reserved (shown as "pending")
+  // until the recruit actually signs; see attemptSignTransfer.
+  function doNilOfferTransfer(recruit, amount) {
+    const os = state.offseason;
+    if (!os) return;
+    const budget = (state.nilBudgetById || baselineNilBudgetById())[state.teamId] ?? 0;
+    const pendingElsewhere = os.transferBoard.reduce((sum, r) =>
+      sum + (r.id !== recruit.id && !r.committedTo ? (r.nilOffer || 0) : 0), 0);
+    const capped = clamp(amount, 0, Math.max(0, budget - pendingElsewhere));
+    const updated = applyNilOffer(recruit, capped);
+    setState((s) => ({
+      ...s,
+      offseason: { ...s.offseason, transferBoard: s.offseason.transferBoard.map((r) => (r.id === recruit.id ? updated : r)) },
+    }));
+  }
+
   // One persuasion attempt per declared player: pick a pitch, and if it's the
   // (randomly assigned) correct one, the player withdraws and stays.
   function persuadePlayer(playerId, pitchIndex) {
@@ -3136,16 +3329,21 @@ function DynastyApp({ initial, onExit }) {
     const attempts = status.attempts + 1;
     if (Math.random() < chance) {
       const poach = recruit.real ? { name: recruit.name, teamId: findOurTeamByRealName(recruit.originalTeam)?.id || null } : null;
+      const nilSpend = recruit.nilOffer || 0;
       setState((s) => ({
         ...s,
         poachedPlayers: poach ? [...(s.poachedPlayers || []), poach] : (s.poachedPlayers || []),
+        nilBudgetById: nilSpend > 0 ? {
+          ...(s.nilBudgetById || baselineNilBudgetById()),
+          [s.teamId]: Math.max(0, ((s.nilBudgetById || baselineNilBudgetById())[s.teamId] ?? 0) - nilSpend),
+        } : (s.nilBudgetById || baselineNilBudgetById()),
         offseason: {
           ...s.offseason,
           transferBoard: s.offseason.transferBoard.map((r) => (r.id === recruit.id ? { ...r, committedTo: s.teamId, signAttempts: attempts, signAttemptWeek: week } : r)),
           committedTransfers: [...s.offseason.committedTransfers, recruit.id],
         },
       }));
-      flash(`${recruit.name} is transferring in! (won at ${Math.round(chance * 100)}% odds)`);
+      flash(`${recruit.name} is transferring in! (won at ${Math.round(chance * 100)}% odds)${nilSpend > 0 ? ` — ${formatNil(nilSpend)} NIL deal` : ""}`);
     } else {
       const left = MAX_SIGN_ATTEMPTS - attempts;
       setState((s) => ({
@@ -3372,6 +3570,21 @@ function DynastyApp({ initial, onExit }) {
     });
   }
 
+  // Pledge (or revise) an NIL offer on a high-school recruit. Spends nothing
+  // from the budget yet — it's only reserved (shown as "pending") until the
+  // recruit actually signs; see attemptSign.
+  function doNilOffer(recruit, amount) {
+    const budget = (state.nilBudgetById || baselineNilBudgetById())[state.teamId] ?? 0;
+    const pendingElsewhere = state.recruitingBoard.reduce((sum, r) =>
+      sum + (r.id !== recruit.id && !r.committedTo ? (r.nilOffer || 0) : 0), 0);
+    const capped = clamp(amount, 0, Math.max(0, budget - pendingElsewhere));
+    const updated = applyNilOffer(recruit, capped);
+    setState((s) => ({
+      ...s,
+      recruitingBoard: s.recruitingBoard.map((r) => (r.id === recruit.id ? updated : r)),
+    }));
+  }
+
   // Apply the outcome of an interactive visit: deduct its distance-priced cost,
   // add the interest the coach's choices earned, and mark the visit used.
   function finishVisit(totalGain) {
@@ -3418,13 +3631,18 @@ function DynastyApp({ initial, onExit }) {
     const success = Math.random() < chance;
     if (success) {
       const poach = recruit.real ? { name: recruit.name, teamId: findOurTeamByRealName(recruit.originalTeam)?.id || null } : null;
+      const nilSpend = recruit.nilOffer || 0;
       setState((s) => ({
         ...s,
         recruitingBoard: s.recruitingBoard.map((r) => (r.id === recruit.id ? { ...r, committedTo: s.teamId, signAttempts: attempts, signAttemptWeek: week } : r)),
         incomingCommits: [...s.incomingCommits, recruit.id],
         poachedPlayers: poach ? [...(s.poachedPlayers || []), poach] : (s.poachedPlayers || []),
+        nilBudgetById: nilSpend > 0 ? {
+          ...(s.nilBudgetById || baselineNilBudgetById()),
+          [s.teamId]: Math.max(0, ((s.nilBudgetById || baselineNilBudgetById())[s.teamId] ?? 0) - nilSpend),
+        } : (s.nilBudgetById || baselineNilBudgetById()),
       }));
-      flash(`${recruit.name} has committed! (won at ${Math.round(chance * 100)}% odds)`);
+      flash(`${recruit.name} has committed! (won at ${Math.round(chance * 100)}% odds)${nilSpend > 0 ? ` — ${formatNil(nilSpend)} NIL deal` : ""}`);
     } else {
       const left = MAX_SIGN_ATTEMPTS - attempts;
       setState((s) => ({
@@ -3568,6 +3786,20 @@ function DynastyApp({ initial, onExit }) {
     const nextExp = seasonExpectation(nextPrestige[state.teamId] ?? team.prestige);
     const fired = secAfter <= 8;
 
+    // NIL: grade this season's 3 objectives, compound the budget, and pick
+    // next season's 3 off the program's drifted prestige.
+    const confChampionId = state.postseason?.confChampions?.[team.conf] ?? null;
+    const beatRanked = state.schedule.some((g) => g.played && g.result?.win && g.result.oppRank && g.result.oppRank <= 25);
+    const prevHistoryEntry = [...state.history].reverse().find((h) => h.teamId === state.teamId);
+    const nilCtx = {
+      record, psSummary, rankById, teamId: state.teamId, confChampionId, beatRanked,
+      prevWins: prevHistoryEntry ? prevHistoryEntry.wins : null,
+    };
+    const { nextNilById, met: nilMet, totalBoost: nilBoost } = advanceNilBudgets(
+      state.nilBudgetById || baselineNilBudgetById(), state.teamId, state.nilObjectives, nilCtx, state.year, powerById
+    );
+    const nextNilObjectives = pickObjectivesFor(nextPrestige[state.teamId] ?? team.prestige);
+
     // Prestige movement since last season, for trend indicators.
     const prevP = state.prestigeById || baselinePrestigeById();
     const prestigeTrendById = {};
@@ -3583,6 +3815,10 @@ function DynastyApp({ initial, onExit }) {
       seniorCount: seniors.length,
       incomingCount: incomingRecruits.length,
       repBefore: reputationOf(state.coach), repAfter: reputationOf(coach),
+      nilObjectivesMet: nilMet,
+      nilBoostPct: nilBoost,
+      nilBudgetBefore: (state.nilBudgetById || baselineNilBudgetById())[state.teamId] ?? nilBudgetForTeam(team),
+      nilBudgetAfter: nextNilById[state.teamId],
     };
 
     setState({
@@ -3590,6 +3826,8 @@ function DynastyApp({ initial, onExit }) {
       year: newYear,
       seasonSeed: (Math.random() * 0xffffffff) >>> 0,
       prestigeById: nextPrestige,
+      nilBudgetById: nextNilById,
+      nilObjectives: nextNilObjectives,
       roster: newRoster,
       depthChart: defaultDepthChart(newRoster),
       schedule: (os && os.scheduleDraft) ? os.scheduleDraft : genSchedule(team, newYear),
@@ -3640,12 +3878,30 @@ function DynastyApp({ initial, onExit }) {
     const newYear = state.year + 1;
     const roster = buildInitialRoster(newTeam, newYear);
     coach.jobSecurity = 55; // new job, fresh honeymoon with the administration
+
+    // NIL: the program you're LEAVING still grades its 3 objectives and grows
+    // its budget off this season, same as a normal advanceYear — it just
+    // won't be the budget you're spending from next year.
+    const psSummary = postseasonSummary(state.postseason, state.teamId);
+    const confChampionId = state.postseason?.confChampions?.[team.conf] ?? null;
+    const beatRanked = state.schedule.some((g) => g.played && g.result?.win && g.result.oppRank && g.result.oppRank <= 25);
+    const prevHistoryEntry = [...state.history].reverse().find((h) => h.teamId === state.teamId);
+    const nilCtx = {
+      record, psSummary, rankById, teamId: state.teamId, confChampionId, beatRanked,
+      prevWins: prevHistoryEntry ? prevHistoryEntry.wins : null,
+    };
+    const { nextNilById } = advanceNilBudgets(
+      state.nilBudgetById || baselineNilBudgetById(), state.teamId, state.nilObjectives, nilCtx, state.year, powerById
+    );
+
     setState({
       ...state,
       teamId: newTeam.id,
       year: newYear,
       seasonSeed: (Math.random() * 0xffffffff) >>> 0,
       prestigeById: nextPrestige,
+      nilBudgetById: nextNilById,
+      nilObjectives: pickObjectivesFor(nextPrestige[newTeam.id] ?? newTeam.prestige),
       roster,
       depthChart: defaultDepthChart(roster),
       schedule: genSchedule(newTeam, newYear),
@@ -3664,7 +3920,7 @@ function DynastyApp({ initial, onExit }) {
         ...(state.awardsHistory || []),
         ...(awards.userHonors.length ? [{ year: state.year, teamName: team.name, honors: awards.userHonors }] : []),
       ],
-      history: [...state.history, { year: state.year, wins: record.w, losses: record.l, teamId: state.teamId, postseason: postseasonSummary(state.postseason, state.teamId), awards }],
+      history: [...state.history, { year: state.year, wins: record.w, losses: record.l, teamId: state.teamId, postseason: psSummary, awards }],
     });
     setJobPickerOpen(false);
     setTab("dashboard");
@@ -3776,6 +4032,7 @@ function DynastyApp({ initial, onExit }) {
               reputation={reputation} bracketology={bracketology}
               expectation={state.expectation || seasonExpectation(team.prestige)}
               jobSecurity={state.coach?.jobSecurity ?? 60}
+              rankById={rankById}
               onViewPlayer={setPlayerViewId} />
           )}
           {tab === "roster" && <RosterTab roster={state.roster} onViewPlayer={setPlayerViewId} />}
@@ -3792,6 +4049,8 @@ function DynastyApp({ initial, onExit }) {
               totalWeeks={TOTAL_SEASON_WEEKS}
               onAction={doRecruitAction}
               onSign={attemptSign}
+              onNilOffer={doNilOffer}
+              nilBudget={nilBudget}
               team={team}
               needs={needs}
               scholarshipInfo={scholarshipInfo}
@@ -3805,6 +4064,8 @@ function DynastyApp({ initial, onExit }) {
               committedFreshmen={state.incomingCommits.length}
               onAction={doTransferAction}
               onSign={attemptSignTransfer}
+              onNilOffer={doNilOfferTransfer}
+              nilBudget={nilBudget}
               onAdvanceWeek={advanceOffseasonWeek}
             />
           )}
@@ -3820,6 +4081,8 @@ function DynastyApp({ initial, onExit }) {
               rankById={rankById}
               onAction={doTransferAction}
               onSign={attemptSignTransfer}
+              onNilOffer={doNilOfferTransfer}
+              nilBudget={nilBudget}
               onPersuade={persuadePlayer}
               onAdvanceWeek={advanceOffseasonWeek}
               onEditGame={editDraftGame}
@@ -3906,12 +4169,13 @@ function DynastyApp({ initial, onExit }) {
 }
 
 /* ---------- Dashboard ---------- */
-function DashboardTab({ state, team, record, nextGame, stage, onSim, onPlay, onSimToConf, onSimSeason, onEnterPostseason, onEnterOffseason, onGoTab, onAdvanceYear, reputation, bracketology, expectation, jobSecurity, onViewPlayer }) {
+function DashboardTab({ state, team, record, nextGame, stage, onSim, onPlay, onSimToConf, onSimSeason, onEnterPostseason, onEnterOffseason, onGoTab, onAdvanceYear, reputation, bracketology, expectation, jobSecurity, rankById, onViewPlayer }) {
   const overall = Math.round(userTeamOverall(state.roster, state.depthChart));
   const topPlayer = [...state.roster].sort((a, b) => b.overall - a.overall)[0];
   const injured = state.roster.filter(isHurt);
   const streak = currentStreak(state.schedule);
   const hasUnplayedNonConf = state.schedule.some((g) => !g.conf && !g.played);
+  const nilBudget = (state.nilBudgetById || baselineNilBudgetById())[team.id] ?? nilBudgetForTeam(team);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20, maxWidth: 900 }}>
@@ -3919,6 +4183,7 @@ function DashboardTab({ state, team, record, nextGame, stage, onSim, onPlay, onS
         <StatBlock label="Team Overall" value={overall} />
         <StatBlock label="Record" value={`${record.w}-${record.l}`} />
         <StatBlock label="Roster Size" value={state.roster.length} />
+        <StatBlock label="NIL Budget" value={formatNil(nilBudget)} />
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 14 }}>
@@ -3961,6 +4226,39 @@ function DashboardTab({ state, team, record, nextGame, stage, onSim, onPlay, onS
                 </div>
               </div>
             </div>
+          </Panel>
+        );
+      })()}
+
+      {state.nilObjectives && state.nilObjectives.length > 0 && (() => {
+        const confChampionId = state.postseason?.confChampions?.[team.conf] ?? null;
+        const beatRanked = state.schedule.some((g) => g.played && g.result?.win && g.result.oppRank && g.result.oppRank <= 25);
+        const prevHistoryEntry = [...state.history].reverse().find((h) => h.teamId === state.teamId);
+        const ctx = {
+          record, psSummary: postseasonSummary(state.postseason, state.teamId), rankById: rankById || {},
+          teamId: state.teamId, confChampionId, beatRanked,
+          prevWins: prevHistoryEntry ? prevHistoryEntry.wins : null,
+        };
+        return (
+          <Panel style={{ padding: 20 }}>
+            <div style={{ fontSize: 11, color: C.dim, letterSpacing: "0.08em", marginBottom: 12 }}>
+              NIL OBJECTIVES · {formatNil((state.nilBudgetById || baselineNilBudgetById())[team.id] ?? nilBudgetForTeam(team))} budget
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {state.nilObjectives.map((o) => {
+                const met = NIL_OBJECTIVE_BY_ID[o.id]?.evaluate(ctx);
+                return (
+                  <div key={o.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, fontSize: 13 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      {met ? <Check size={14} color={C.green} /> : <Minus size={14} color={C.dimmer} />}
+                      <span style={{ color: met ? C.cream : C.dim }}>{o.label}</span>
+                    </div>
+                    <span className="cbb-num" style={{ fontSize: 11.5, color: met ? C.green : C.dimmer }}>+{Math.round(o.boostPct * 100)}%</span>
+                  </div>
+                );
+              })}
+            </div>
+            <div style={{ fontSize: 11, color: C.dimmer, marginTop: 10 }}>Boosts compound onto next season's NIL budget for every objective met when the season ends.</div>
           </Panel>
         );
       })()}
@@ -4335,10 +4633,41 @@ function InterestBar({ value, colorHigh }) {
   );
 }
 
+// NIL offer control for one recruit row: a dollar input the coach proposes,
+// bounded by what's actually still available (this recruit's own current
+// pledge plus whatever isn't already reserved on other recruits), guided by
+// the recruit's `nilTarget` ask (never the hidden `nilFloor`). Doesn't spend
+// the budget itself — onNilOffer only reserves it as "pending" until the
+// recruit signs.
+function NilOfferRow({ recruit, nilBudget, nilPending, onNilOffer }) {
+  const own = recruit.nilOffer || 0;
+  const available = Math.max(0, Math.round((nilBudget || 0) - nilPending + own));
+  const [draft, setDraft] = useState(own);
+  const clampedDraft = clamp(Math.round(Number(draft) || 0), 0, Math.max(available, own));
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", width: "100%", paddingTop: 6, borderTop: `1px dashed ${C.line}`, marginTop: 2 }}>
+      <DollarSign size={13} color={C.gold} />
+      <input
+        type="number" min={0} max={available} step={1000}
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        style={{ width: 110, background: C.panel, border: `1px solid ${C.line}`, color: C.cream, padding: "6px 8px", fontSize: 12 }}
+      />
+      <button onClick={() => { onNilOffer(recruit, clampedDraft); setDraft(clampedDraft); }} className="cbb-btn"
+        style={{ fontSize: 12, padding: "7px 11px", border: `1px solid ${C.gold}`, background: own > 0 ? C.panelAlt : "transparent", color: C.cream, cursor: "pointer" }}>
+        {own > 0 ? "Update NIL Offer" : "Pledge NIL"}
+      </button>
+      <span style={{ fontSize: 11, color: C.dimmer }}>
+        Ask: ~{formatNil(recruit.nilTarget)} · Available: {formatNil(available)}{own > 0 ? ` · Pledged: ${formatNil(own)}` : ""}
+      </span>
+    </div>
+  );
+}
+
 // Shared recruit-board list used by both in-season recruiting and the
 // off-season transfer portal. `weekIndex`/`totalWeeks` drive per-week action
 // limits (calls, home visits) and the signing-progress readout.
-function RecruitBoard({ board, committedIds, targets, onToggleTarget, points, weekIndex, totalWeeks, onAction, onSign, needs, maxSign, emptyLabel, team }) {
+function RecruitBoard({ board, committedIds, targets, onToggleTarget, points, weekIndex, totalWeeks, onAction, onSign, onNilOffer, nilBudget, needs, maxSign, emptyLabel, team }) {
   const [view, setView] = useState("all"); // all | targets | committed
   const [posFilter, setPosFilter] = useState("ALL");
   const [starFilter, setStarFilter] = useState(0);
@@ -4397,6 +4726,9 @@ function RecruitBoard({ board, committedIds, targets, onToggleTarget, points, we
   );
   const shown = list.slice(0, 80);
   const canTarget = typeof onToggleTarget === "function";
+  // Total pledged-but-not-yet-signed NIL across the board, so each row's
+  // control can show/cap how much budget is actually still available.
+  const nilPending = board.reduce((sum, r) => sum + (!r.committedTo ? (r.nilOffer || 0) : 0), 0);
 
   const chip = (label, active, onClick) => (
     <button onClick={onClick} className="cbb-btn"
@@ -4549,6 +4881,9 @@ function RecruitBoard({ board, committedIds, targets, onToggleTarget, points, we
                       </button>
                     );
                   })()}
+                  {typeof onNilOffer === "function" && (
+                    <NilOfferRow recruit={r} nilBudget={nilBudget} nilPending={nilPending} onNilOffer={onNilOffer} />
+                  )}
                 </div>
               )}
             </Panel>
@@ -4562,7 +4897,7 @@ function RecruitBoard({ board, committedIds, targets, onToggleTarget, points, we
   );
 }
 
-function RecruitingTab({ board, committedIds, targets, onToggleTarget, points, budget, weekIndex, totalWeeks, onAction, onSign, team, needs = [], scholarshipInfo }) {
+function RecruitingTab({ board, committedIds, targets, onToggleTarget, points, budget, weekIndex, totalWeeks, onAction, onSign, onNilOffer, nilBudget, team, needs = [], scholarshipInfo }) {
   const pct = Math.round(clamp((weekIndex - 1) / totalWeeks, 0, 1) * 100);
   const open = scholarshipInfo?.open ?? 0;
   return (
@@ -4583,7 +4918,7 @@ function RecruitingTab({ board, committedIds, targets, onToggleTarget, points, b
       <RecruitBoard
         board={board} committedIds={committedIds} targets={targets} onToggleTarget={onToggleTarget}
         points={points} weekIndex={weekIndex} totalWeeks={totalWeeks}
-        onAction={onAction} onSign={onSign} needs={needs} maxSign={5} team={team}
+        onAction={onAction} onSign={onSign} onNilOffer={onNilOffer} nilBudget={nilBudget} needs={needs} maxSign={5} team={team}
         emptyLabel="No high-school prospects match those filters."
       />
       <div style={{ fontSize: 11.5, color: C.dimmer, marginTop: 14, maxWidth: 700 }}>
@@ -4710,7 +5045,7 @@ function CutsPanel({ roster, scholarshipInfo, onCut, onViewPlayer }) {
 /* ---------- Offseason ---------- */
 // Dedicated Transfer Portal tab — only mounted during the offseason. Works the
 // same portal board as the Offseason tab so either entry point stays in sync.
-function TransferPortalTab({ offseason, team, scholarshipInfo, committedFreshmen, onAction, onSign, onAdvanceWeek }) {
+function TransferPortalTab({ offseason, team, scholarshipInfo, committedFreshmen, onAction, onSign, onNilOffer, nilBudget, onAdvanceWeek }) {
   const committed = offseason.committedTransfers || [];
   return (
     <div>
@@ -4745,6 +5080,8 @@ function TransferPortalTab({ offseason, team, scholarshipInfo, committedFreshmen
         totalWeeks={OFFSEASON_WEEKS}
         onAction={onAction}
         onSign={onSign}
+        onNilOffer={onNilOffer}
+        nilBudget={nilBudget}
         team={team}
         emptyLabel="No transfers match those filters."
       />
@@ -4813,7 +5150,7 @@ function DraftDecisionsPanel({ declarations, onPersuade }) {
   );
 }
 
-function OffseasonTab({ stage, offseason, team, roster, nextYear, committedFreshmen, scholarshipInfo, rankById, onAction, onSign, onPersuade, onAdvanceWeek, onEditGame, onChangeJob, onAdvanceYear, onViewTeam, onViewPlayer, onCut, onDev }) {
+function OffseasonTab({ stage, offseason, team, roster, nextYear, committedFreshmen, scholarshipInfo, rankById, onAction, onSign, onNilOffer, nilBudget, onPersuade, onAdvanceWeek, onEditGame, onChangeJob, onAdvanceYear, onViewTeam, onViewPlayer, onCut, onDev }) {
   if (!offseason) {
     return (
       <div>
@@ -4873,6 +5210,8 @@ function OffseasonTab({ stage, offseason, team, roster, nextYear, committedFresh
         totalWeeks={OFFSEASON_WEEKS}
         onAction={onAction}
         onSign={onSign}
+        onNilOffer={onNilOffer}
+        nilBudget={nilBudget}
         team={team}
         emptyLabel="No transfers match those filters."
       />
@@ -5744,6 +6083,21 @@ function SeasonRecapModal({ recap, onClose }) {
           <RecapChip label="Incoming class" value={`${recap.incomingCount} signed`} />
         </div>
 
+        {recap.nilObjectivesMet != null && (
+          <div>
+            <div style={{ fontSize: 11, color: C.gold, letterSpacing: "0.08em", marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}>
+              <TrendingUp size={13} /> NIL: {formatNil(recap.nilBudgetBefore)} → {formatNil(recap.nilBudgetAfter)}
+              {recap.nilBoostPct > 0 ? ` (+${Math.round(recap.nilBoostPct * 100)}%)` : ""}
+            </div>
+            {recap.nilObjectivesMet.length > 0 ? recap.nilObjectivesMet.map((o) => (
+              <div key={o.id} style={{ fontSize: 12.5, marginBottom: 2, color: C.dim }}>
+                <Check size={11} color={C.green} style={{ verticalAlign: "middle", marginRight: 5 }} />
+                {o.label} <span style={{ color: C.green }}>+{Math.round(o.boostPct * 100)}%</span>
+              </div>
+            )) : <div style={{ fontSize: 12.5, color: C.dimmer }}>No NIL objectives met this season.</div>}
+          </div>
+        )}
+
         {a.userHonors && a.userHonors.length > 0 && (
           <div>
             <div style={{ fontSize: 11, color: C.gold, letterSpacing: "0.08em", marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}><Medal size={13} /> YOUR PLAYERS HONORED</div>
@@ -6601,6 +6955,8 @@ export default function CBBDynasty() {
       year,
       seasonSeed: (Math.random() * 0xffffffff) >>> 0,
       prestigeById,
+      nilBudgetById: baselineNilBudgetById(),
+      nilObjectives: pickObjectivesFor(team.prestige),
       roster,
       depthChart: defaultDepthChart(roster),
       schedule: genSchedule(team, year),
