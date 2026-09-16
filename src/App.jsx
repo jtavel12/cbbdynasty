@@ -1120,6 +1120,8 @@ function freshTrailState() {
     homeVisitsUsed: 0,         // home visits (2 max/season, not same week)
     homeVisitWeek: 0,
     signWeek: null,
+    signAttempts: 0,           // total sign attempts made on this recruit (max 2)
+    signAttemptWeek: null,     // last week a sign attempt was made (1 per week)
   };
 }
 
@@ -1352,6 +1354,20 @@ function signChance(recruit) {
   const total = recruit.interest + recruit.rivalPressure;
   const base = total <= 0 ? 0.5 : recruit.interest / total;
   return clamp(base / RECRUIT_DIFFICULTY, 0.02, 0.97);
+}
+
+// A sign attempt is only allowed when the recruit is better than a coin flip
+// (>50% odds), and each recruit can be attempted at most once per week and at
+// most twice overall. Returns why an attempt is (dis)allowed for UI + handlers.
+const MAX_SIGN_ATTEMPTS = 2;
+function signAttemptStatus(recruit, weekIndex) {
+  const chance = signChance(recruit);
+  const attempts = recruit.signAttempts || 0;
+  if (!recruit.offerExtended) return { ok: false, reason: "offer", chance, attempts };
+  if (attempts >= MAX_SIGN_ATTEMPTS) return { ok: false, reason: "max", chance, attempts };
+  if (recruit.signAttemptWeek === weekIndex) return { ok: false, reason: "week", chance, attempts };
+  if (chance <= 0.5) return { ok: false, reason: "odds", chance, attempts };
+  return { ok: true, reason: null, chance, attempts };
 }
 
 function advanceRecruitingWeeks(board, fromWeek, weeksElapsed, totalWeeks) {
@@ -1856,11 +1872,11 @@ function simMatchup(m, ctx) {
   if (m.b && !m.a) return { ...m, winner: m.b, bye: true };
   if (!m.a && !m.b) return m;
 
-  const { powerById, userTeamId, roster, depthChart, strengths, year } = ctx;
+  const { powerById, userTeamId, roster, depthChart, strengths, year, powerBaseline } = ctx;
   if (userTeamId && (m.a === userTeamId || m.b === userTeamId)) {
     const oppId = m.a === userTeamId ? m.b : m.a;
     const oppPower = teamPowerRating(TEAM_MAP[oppId], strengths, year);
-    const res = simulateGame(roster, healthyDepthChart(depthChart, roster), oppPower);
+    const res = simulateGame(roster, healthyDepthChart(depthChart, roster), oppPower, 0, powerBaseline);
     const winner = res.win ? userTeamId : oppId;
     const uScore = res.myScore, oScore = res.oppScore;
     return {
@@ -2033,8 +2049,20 @@ function userTeamOverall(roster, depthChart) {
   return totalW ? sum / totalW : 55;
 }
 
-function simulateGame(roster, depthChart, oppPower, momentum = 0) {
-  const myPower = userTeamOverall(roster, depthChart) + momentum;
+// The user's roster OVR average lives on a different scale than the barthag-
+// derived power CPU teams use, so grading the user by raw OVR let weak real
+// programs (e.g. Chicago State) steamroll their schedule. `baseline` pegs the
+// SEASON-START real roster to the school's real barthag strength: hold the real
+// roster and you play exactly like the real team (year one is true to history);
+// out-recruit that roster and you rise above it, fall behind and you drop below.
+function userGamePower(roster, depthChart, baseline) {
+  const raw = userTeamOverall(roster, depthChart);
+  if (!baseline) return raw;
+  return clamp(baseline.barthagPower + (raw - baseline.realOverall), 25, 95);
+}
+
+function simulateGame(roster, depthChart, oppPower, momentum = 0, baseline = null) {
+  const myPower = userGamePower(roster, depthChart, baseline) + momentum;
   const diff = myPower - oppPower;
   // Talent drives the margin; the random term is small enough that upsets
   // happen but the better team wins the large majority of the time.
@@ -2679,6 +2707,17 @@ function DynastyApp({ initial, onExit }) {
 
   const team = TEAM_MAP[state.teamId];
 
+  // Pegs the user's team onto the same power scale CPU teams use. Recomputed per
+  // season: the real historical roster for (team, year) is mapped to that team's
+  // real barthag strength, so a roster that matches history plays true to it and
+  // only genuine roster changes (recruiting, progression, attrition) move it.
+  const powerBaseline = useMemo(() => {
+    const realRoster = buildInitialRoster(team, state.year);
+    const realOverall = userTeamOverall(realRoster, defaultDepthChart(realRoster));
+    const barthagPower = teamPowerRating(team, state.strengths, state.year, { noise: false });
+    return { realOverall, barthagPower };
+  }, [state.teamId, state.year, state.strengths]);
+
   // The Transfer Portal only exists during the offseason, so it appears as its
   // own tab (right after Recruiting) only while an offseason is active.
   const navTabs = useMemo(() => {
@@ -2709,13 +2748,14 @@ function DynastyApp({ initial, onExit }) {
   // tab, schedule/standings rank badges, and postseason seeding.
   const { rankById, ranked } = useMemo(() => {
     const powerById = powerTableFor(state.strengths, state.year);
-    // The user's power in the poll is the roster they've ACTUALLY built, not the
-    // school's historical strength — so recruiting a great team directly lifts
-    // their ranking and quality of poll standing.
-    powerById[state.teamId] = userTeamOverall(state.roster, state.depthChart);
+    // The user's poll power is their real-team baseline plus whatever their built
+    // roster adds or subtracts — on the SAME scale as every CPU team, so a real
+    // roster ranks true to history and recruiting a great team lifts them from
+    // there (rather than the raw OVR average, which over-ranked weak programs).
+    powerById[state.teamId] = userGamePower(state.roster, state.depthChart, powerBaseline);
     const recordById = recordTableFor(powerById, state.teamId, record, state.year);
     return computeRankings(powerById, recordById, state.teamId);
-  }, [state.strengths, state.year, state.teamId, record, state.roster, state.depthChart]);
+  }, [state.strengths, state.year, state.teamId, record, state.roster, state.depthChart, powerBaseline]);
 
   const reputation = reputationOf(state.coach);
   const leaders = useMemo(
@@ -2782,7 +2822,7 @@ function DynastyApp({ initial, onExit }) {
     const oppPower = teamPowerRating(opp, state.strengths, state.year);
     const hdc = healthyDepthChart(state.depthChart, state.roster);
     const mom = momentumMod(currentStreak(state.schedule));
-    const result = simulateGame(state.roster, hdc, oppPower, mom);
+    const result = simulateGame(state.roster, hdc, oppPower, mom, powerBaseline);
     commitGameResult(result, opp, rankById[nextGame.oppId] || null);
   }
 
@@ -2793,7 +2833,7 @@ function DynastyApp({ initial, onExit }) {
     const oppPower = teamPowerRating(opp, state.strengths, state.year);
     const hdc = healthyDepthChart(state.depthChart, state.roster);
     const mom = momentumMod(currentStreak(state.schedule));
-    setLivePlay({ teamId: state.teamId, opp, oppId: nextGame.oppId, oppPower, oppRank: rankById[nextGame.oppId] || null, home: nextGame.home, momentum: mom, roster: state.roster, dc: hdc });
+    setLivePlay({ teamId: state.teamId, opp, oppId: nextGame.oppId, oppPower, oppRank: rankById[nextGame.oppId] || null, home: nextGame.home, momentum: mom, roster: state.roster, dc: hdc, powerBaseline });
   }
 
   function simToEndOfSeason() {
@@ -2807,7 +2847,7 @@ function DynastyApp({ initial, onExit }) {
       const oppPower = teamPowerRating(opp, state.strengths, state.year);
       const mom = momentumMod(currentStreak(games.filter((x) => x.played)));
       const hdc = healthyDepthChart(state.depthChart, roster);
-      const result = simulateGame(roster, hdc, oppPower, mom);
+      const result = simulateGame(roster, hdc, oppPower, mom, powerBaseline);
       const oppRank = rankById[g.oppId] || null;
       roster = roster.map((p) => {
         const bx = result.boxByPlayer[p.id];
@@ -2845,7 +2885,7 @@ function DynastyApp({ initial, onExit }) {
       const oppPower = teamPowerRating(opp, state.strengths, state.year);
       const mom = momentumMod(currentStreak(games.filter((x) => x.played)));
       const hdc = healthyDepthChart(state.depthChart, roster);
-      const result = simulateGame(roster, hdc, oppPower, mom);
+      const result = simulateGame(roster, hdc, oppPower, mom, powerBaseline);
       const oppRank = rankById[g.oppId] || null;
       roster = roster.map((p) => {
         const bx = result.boxByPlayer[p.id];
@@ -2937,27 +2977,39 @@ function DynastyApp({ initial, onExit }) {
     const os = state.offseason;
     if (!os) return;
     if (scholarshipInfo.open <= 0) { flash("No scholarships available — cut a player to open a spot."); return; }
-    if (!recruit.offerExtended) { flash("Extend a scholarship offer before you can sign a transfer."); return; }
-    const chance = signChance(recruit);
+    const week = os.week;
+    const status = signAttemptStatus(recruit, week);
+    if (!status.ok) {
+      if (status.reason === "offer") flash("Extend a scholarship offer before you can sign a transfer.");
+      else if (status.reason === "odds") flash(`${recruit.name} must be above 50% to sign — you're at ${Math.round(status.chance * 100)}%. Keep working them.`);
+      else if (status.reason === "max") flash(`You've used both sign attempts on ${recruit.name} this cycle.`);
+      else if (status.reason === "week") flash(`You can only make one sign attempt per week — try ${recruit.name} again next week.`);
+      return;
+    }
+    const chance = status.chance;
+    const attempts = status.attempts + 1;
     if (Math.random() < chance) {
+      const poach = recruit.real ? { name: recruit.name, teamId: findOurTeamByRealName(recruit.originalTeam)?.id || null } : null;
       setState((s) => ({
         ...s,
+        poachedPlayers: poach ? [...(s.poachedPlayers || []), poach] : (s.poachedPlayers || []),
         offseason: {
           ...s.offseason,
-          transferBoard: s.offseason.transferBoard.map((r) => (r.id === recruit.id ? { ...r, committedTo: s.teamId } : r)),
+          transferBoard: s.offseason.transferBoard.map((r) => (r.id === recruit.id ? { ...r, committedTo: s.teamId, signAttempts: attempts, signAttemptWeek: week } : r)),
           committedTransfers: [...s.offseason.committedTransfers, recruit.id],
         },
       }));
       flash(`${recruit.name} is transferring in! (won at ${Math.round(chance * 100)}% odds)`);
     } else {
+      const left = MAX_SIGN_ATTEMPTS - attempts;
       setState((s) => ({
         ...s,
         offseason: {
           ...s.offseason,
-          transferBoard: s.offseason.transferBoard.map((r) => (r.id === recruit.id ? { ...r, rivalPressure: clamp(r.rivalPressure + 10, 0, 95) } : r)),
+          transferBoard: s.offseason.transferBoard.map((r) => (r.id === recruit.id ? { ...r, rivalPressure: clamp(r.rivalPressure + 10, 0, 95), signAttempts: attempts, signAttemptWeek: week } : r)),
         },
       }));
-      flash(`${recruit.name} isn't ready to commit yet. (${Math.round(chance * 100)}% odds)`);
+      flash(`${recruit.name} isn't ready to commit yet. (${Math.round(chance * 100)}% odds — ${left} attempt${left === 1 ? "" : "s"} left)`);
     }
   }
 
@@ -3023,6 +3075,7 @@ function DynastyApp({ initial, onExit }) {
       depthChart: state.depthChart,
       strengths: state.strengths,
       year: state.year,
+      powerBaseline,
     };
     let userBox = null;
     const captureBox = (bracket) => {
@@ -3106,7 +3159,7 @@ function DynastyApp({ initial, onExit }) {
     setLivePlay({
       teamId: state.teamId, opp, oppId, oppPower,
       oppRank: rankById[oppId] || null, home: true, momentum: 0,
-      roster: state.roster, dc: hdc,
+      roster: state.roster, dc: hdc, powerBaseline,
       isPostseason: true, loc,
     });
   }
@@ -3197,22 +3250,34 @@ function DynastyApp({ initial, onExit }) {
 
   function attemptSign(recruit) {
     if (scholarshipInfo.open <= 0) { flash("No scholarships available — cut a player in the offseason to open a spot."); return; }
-    if (!recruit.offerExtended) { flash("Extend a scholarship offer before you can sign them."); return; }
-    const chance = signChance(recruit);
+    const week = state.recruitingWeekIndex;
+    const status = signAttemptStatus(recruit, week);
+    if (!status.ok) {
+      if (status.reason === "offer") flash("Extend a scholarship offer before you can sign them.");
+      else if (status.reason === "odds") flash(`${recruit.name} must be above 50% to sign — you're at ${Math.round(status.chance * 100)}%. Keep working them.`);
+      else if (status.reason === "max") flash(`You've used both sign attempts on ${recruit.name} this cycle.`);
+      else if (status.reason === "week") flash(`You can only make one sign attempt per week — try ${recruit.name} again next week.`);
+      return;
+    }
+    const chance = status.chance;
+    const attempts = status.attempts + 1;
     const success = Math.random() < chance;
     if (success) {
+      const poach = recruit.real ? { name: recruit.name, teamId: findOurTeamByRealName(recruit.originalTeam)?.id || null } : null;
       setState((s) => ({
         ...s,
-        recruitingBoard: s.recruitingBoard.map((r) => (r.id === recruit.id ? { ...r, committedTo: s.teamId } : r)),
+        recruitingBoard: s.recruitingBoard.map((r) => (r.id === recruit.id ? { ...r, committedTo: s.teamId, signAttempts: attempts, signAttemptWeek: week } : r)),
         incomingCommits: [...s.incomingCommits, recruit.id],
+        poachedPlayers: poach ? [...(s.poachedPlayers || []), poach] : (s.poachedPlayers || []),
       }));
       flash(`${recruit.name} has committed! (won at ${Math.round(chance * 100)}% odds)`);
     } else {
+      const left = MAX_SIGN_ATTEMPTS - attempts;
       setState((s) => ({
         ...s,
-        recruitingBoard: s.recruitingBoard.map((r) => (r.id === recruit.id ? { ...r, rivalPressure: clamp(r.rivalPressure + 10, 0, 95) } : r)),
+        recruitingBoard: s.recruitingBoard.map((r) => (r.id === recruit.id ? { ...r, rivalPressure: clamp(r.rivalPressure + 10, 0, 95), signAttempts: attempts, signAttemptWeek: week } : r)),
       }));
-      flash(`${recruit.name} isn't ready to commit yet. (${Math.round(chance * 100)}% odds — keep working them)`);
+      flash(`${recruit.name} isn't ready to commit yet. (${Math.round(chance * 100)}% odds — ${left} attempt${left === 1 ? "" : "s"} left)`);
     }
   }
 
@@ -3633,7 +3698,7 @@ function DynastyApp({ initial, onExit }) {
       </div>
 
       {viewTeamId && (
-        <TeamRosterModal teamId={viewTeamId} year={state.year} strengths={state.strengths} rank={rankById[viewTeamId]} onClose={() => setViewTeamId(null)} />
+        <TeamRosterModal teamId={viewTeamId} year={state.year} strengths={state.strengths} rank={rankById[viewTeamId]} poached={state.poachedPlayers || []} onClose={() => setViewTeamId(null)} />
       )}
       {jobPickerOpen && (
         <JobChangeModal
@@ -4189,10 +4254,23 @@ function RecruitBoard({ board, committedIds, targets, onToggleTarget, points, we
                       </button>
                     );
                   })}
-                  <button onClick={() => onSign(r)} disabled={!r.offerExtended} className="cbb-btn"
-                    style={{ ...btnStyle(r.offerExtended ? C.wood : C.line), fontSize: 12, padding: "7px 12px", cursor: r.offerExtended ? "pointer" : "not-allowed" }}>
-                    Attempt to Sign ({Math.round(chance * 100)}%)
-                  </button>
+                  {(() => {
+                    const status = signAttemptStatus(r, weekIndex);
+                    const left = MAX_SIGN_ATTEMPTS - (r.signAttempts || 0);
+                    let label;
+                    if (status.reason === "offer") label = "Offer required to sign";
+                    else if (status.reason === "max") label = "No sign attempts left";
+                    else if (status.reason === "week") label = `Already tried this week (${left} left)`;
+                    else if (status.reason === "odds") label = `Need >50% to sign (${Math.round(chance * 100)}%)`;
+                    else label = `Attempt to Sign (${Math.round(chance * 100)}%) · ${left} left`;
+                    return (
+                      <button onClick={() => onSign(r)} disabled={!status.ok} className="cbb-btn"
+                        title={status.ok ? undefined : "You can attempt to sign once a recruit is above 50%, once per week, up to twice overall."}
+                        style={{ ...btnStyle(status.ok ? C.wood : C.line), fontSize: 12, padding: "7px 12px", cursor: status.ok ? "pointer" : "not-allowed" }}>
+                        {label}
+                      </button>
+                    );
+                  })()}
                 </div>
               )}
             </Panel>
@@ -4903,7 +4981,7 @@ function VisitExperience({ recruit, actionKey, team, onClose, onFinish }) {
 function LiveGame({ ctxInit, onFinish, onClose }) {
   const T = TEMPO_POSS.balanced; // possessions per team are locked at tip from tempo
   const [ctx] = useState(() => {
-    const myPower = userTeamOverall(ctxInit.roster, ctxInit.dc) + ctxInit.momentum;
+    const myPower = userGamePower(ctxInit.roster, ctxInit.dc, ctxInit.powerBaseline) + ctxInit.momentum;
     return {
       roster: ctxInit.roster, dc: ctxInit.dc, oppName: ctxInit.opp.name,
       oppPower: ctxInit.oppPower, myPower, tend: liveTendencies(ctxInit.roster, ctxInit.dc),
@@ -5057,13 +5135,19 @@ function LiveGame({ ctxInit, onFinish, onClose }) {
 }
 
 /* ---------- Opponent Roster Viewer ---------- */
-function TeamRosterModal({ teamId, year, strengths, rank, onClose }) {
+function TeamRosterModal({ teamId, year, strengths, rank, poached = [], onClose }) {
   const team = TEAM_MAP[teamId];
   const [view, setView] = useState("roster");
+  // Any real player the user has signed away from THIS team no longer appears
+  // on their roster — otherwise a poached recruit shows up in two places at once.
+  const poachedHere = useMemo(
+    () => new Set(poached.filter((p) => p.teamId === teamId).map((p) => p.name)),
+    [poached, teamId]
+  );
   const roster = useMemo(() => {
-    const r = buildInitialRoster(team, year);
+    const r = buildInitialRoster(team, year).filter((p) => !(p.realKey && poachedHere.has(p.realKey)));
     return [...r].sort((a, b) => b.overall - a.overall);
-  }, [teamId, year]);
+  }, [teamId, year, poachedHere]);
   const schedule = useMemo(() => genSchedule(team, year), [teamId, year]);
   const teamPower = useMemo(() => teamPowerRating(team, strengths, year, { noise: false }), [teamId, year, strengths]);
   const realCount = roster.filter((p) => p.realName).length;
@@ -5723,21 +5807,48 @@ function ScheduleTab({ schedule, teamConf, rankById, rivalIds, onViewTeam, onEdi
 
 /* ---------- Standings ---------- */
 function StandingsTab({ team, ranked, rankById, userRecord, onViewTeam }) {
-  // Standings is the win/loss table: reuse the shared record data but sort by
-  // record (not poll score). Top-25 teams still surface their national rank.
+  // Standings reflect the season SO FAR: every team shows the same number of
+  // games the user has played (0-0 before week 1, one game after week 1, and so
+  // on). Each CPU team's games are split by its full-season win rate, so the
+  // table stays honest week to week and only reaches full records at season's
+  // end. The user's own row uses their actual played record.
+  const gamesPlayed = Math.max(0, (userRecord.w || 0) + (userRecord.l || 0));
+
+  // Conference filter: "All" shows the national table; picking a league narrows
+  // it to that conference's members and re-numbers them as a standalone standing.
+  const [confFilter, setConfFilter] = useState("All");
+  const confOptions = useMemo(
+    () => [...new Set(ranked.map((r) => r.team.conf))].sort((a, b) => a.localeCompare(b)),
+    [ranked]
+  );
+
   const rows = ranked
-    .map((r) => ({
-      ...r.team,
-      wins: r.team.id === team.id ? userRecord.w : r.wins,
-      losses: r.team.id === team.id ? userRecord.l : r.losses,
-      isUser: r.team.id === team.id,
-    }))
+    .map((r) => {
+      if (r.team.id === team.id) {
+        return { ...r.team, wins: userRecord.w, losses: userRecord.l, isUser: true };
+      }
+      const fullG = r.wins + r.losses;
+      const capG = Math.min(gamesPlayed, fullG); // never exceed a team's real season length
+      const winPct = fullG > 0 ? r.wins / fullG : 0;
+      const wins = Math.round(winPct * capG);
+      return { ...r.team, wins, losses: capG - wins, isUser: false };
+    })
+    .filter((t) => confFilter === "All" || t.conf === confFilter)
     .sort((a, b) => b.wins - a.wins || a.losses - b.losses || b.prestige - a.prestige);
 
   return (
     <div>
-      <div style={{ fontSize: 11.5, color: C.dimmer, marginBottom: 10 }}>
-        Projected national standings — records are projected against each team&apos;s actual schedule strength (19 conference games + 11 non-conference), so a team that dominates a weaker league can rise to the top. Click any team to preview their roster.
+      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
+        <span style={{ fontSize: 11.5, color: C.dimmer, flex: "1 1 240px" }}>
+          {confFilter === "All"
+            ? <>National standings as of the games played so far — every team shows the same {gamesPlayed} game{gamesPlayed === 1 ? "" : "s"} you&apos;ve played, with each team&apos;s wins split by its season-long strength. Click any team to preview their roster.</>
+            : <><strong>{confFilter}</strong> standings through {gamesPlayed} game{gamesPlayed === 1 ? "" : "s"} — records are each team&apos;s season pace across their full schedule. Click any team to preview their roster.</>}
+        </span>
+        <select value={confFilter} onChange={(e) => setConfFilter(e.target.value)}
+          style={{ background: C.panel, border: `1px solid ${C.line}`, color: C.cream, padding: "6px 10px", fontSize: 13 }}>
+          <option value="All">All conferences</option>
+          {confOptions.map((c) => <option key={c} value={c}>{c}</option>)}
+        </select>
       </div>
       <Panel style={{ overflow: "hidden" }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13.5 }}>
