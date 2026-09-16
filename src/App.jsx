@@ -3273,10 +3273,6 @@ function DynastyApp({ initial, onExit }) {
   const [toast, setToast] = useState(null);
   const [viewTeamId, setViewTeamId] = useState(null);
   const [jobPickerOpen, setJobPickerOpen] = useState(false);
-  // True when the job picker was opened BECAUSE the coach was just fired
-  // (jobSecurity bottomed out), not a voluntary "Coaching Offers" browse —
-  // gates the unclosable modal + "start a new dynasty instead" escape hatch.
-  const [firedFlow, setFiredFlow] = useState(false);
   const [playerViewId, setPlayerViewId] = useState(null);
   const [boxViewId, setBoxViewId] = useState(null);
   const [recap, setRecap] = useState(null);
@@ -3375,6 +3371,34 @@ function DynastyApp({ initial, onExit }) {
     const used = returning + committed;
     return { returning, committed, used, open: Math.max(0, SCHOLARSHIP_LIMIT - used) };
   }, [state.roster, state.incomingCommits, state.offseason]);
+
+  // Whether the coach was fired and hasn't resolved it yet — read straight off
+  // PERSISTED state (state.coachFired), not local component state. A fired
+  // coach who reloads the page, or whose autosave fires before they've acted,
+  // must land right back in this same blocked state; ephemeral state alone
+  // can't survive a refresh, which is exactly how this used to be bypassable.
+  const firedFlow = !!state.coachFired;
+
+  // While fired and unresolved, the rest of the app — every tab, every other
+  // modal, all normal play — is fully gated behind this screen. Nothing here
+  // renders the nav rail or any other route back into the old job; the only
+  // ways out are picking a new job or retiring into a brand new dynasty.
+  if (firedFlow) {
+    return (
+      <div style={{ minHeight: "100vh", background: C.bg }}>
+        {recap && <SeasonRecapModal recap={recap} onClose={() => setRecap(null)} />}
+        <JobChangeModal
+          currentTeamId={state.teamId}
+          nextYear={state.year + 1}
+          reputation={reputation}
+          firedFlow
+          onPick={changeJob}
+          onRestart={onExit}
+          onClose={() => {}}
+        />
+      </div>
+    );
+  }
 
   // Shared finish path for both the instant sim and Coach Mode: applies a
   // { win, myScore, oppScore, boxByPlayer } result to season stats, injuries,
@@ -4167,13 +4191,15 @@ function DynastyApp({ initial, onExit }) {
       history: [...state.history, { year: state.year, wins: record.w, losses: record.l, teamId: state.teamId, postseason: psSummary, awards, draft }],
       expectation: nextExp,
       prestigeTrendById,
+      // Persisted, not ephemeral — this is what actually gates the app (see
+      // the firedFlow early-return above), so a fired coach can't dodge the
+      // consequence by refreshing before the job-change modal even opens.
+      coachFired: fired,
     });
     setRecap(recapData);
     if (fired) {
       setTimeout(() => {
         flash(`${team.name} has parted ways with you after missing expectations. Find a new job.`);
-        setFiredFlow(true);
-        setJobPickerOpen(true);
       }, 300);
     }
   }
@@ -4240,9 +4266,9 @@ function DynastyApp({ initial, onExit }) {
         ...(awards.userHonors.length ? [{ year: state.year, teamName: team.name, honors: awards.userHonors }] : []),
       ],
       history: [...state.history, { year: state.year, wins: record.w, losses: record.l, teamId: state.teamId, postseason: psSummary, awards }],
+      coachFired: false,
     });
     setJobPickerOpen(false);
-    setFiredFlow(false);
     setTab("dashboard");
     flash(`New job accepted — you're now the head coach at ${newTeam.name}.`);
   }
@@ -4439,14 +4465,14 @@ function DynastyApp({ initial, onExit }) {
         <TeamRosterModal teamId={viewTeamId} year={state.year} strengths={state.strengths} rank={rankById[viewTeamId]} poached={state.poachedPlayers || []} onClose={() => setViewTeamId(null)} />
       )}
       {jobPickerOpen && (
+        // Voluntary "Coaching Offers" browse only — a firing is handled by
+        // the firedFlow early-return above and never reaches this tree.
         <JobChangeModal
           currentTeamId={state.teamId}
           nextYear={state.year + 1}
           reputation={reputation}
-          firedFlow={firedFlow}
           onPick={changeJob}
-          onRestart={onExit}
-          onClose={() => { setJobPickerOpen(false); setFiredFlow(false); }}
+          onClose={() => setJobPickerOpen(false)}
         />
       )}
       {playerViewId && (
@@ -6413,12 +6439,19 @@ function JobChangeModal({ currentTeamId, nextYear, reputation = 0, firedFlow = f
     .filter((t) => t.id !== currentTeamId && t.name.toLowerCase().includes(q.toLowerCase()))
     .sort((a, b) => b.prestige - a.prestige || a.name.localeCompare(b.name));
   const currentTeamName = TEAM_MAP[currentTeamId]?.name || "Your program";
+  // Whether ANY program (unfiltered by the search box) is actually reachable
+  // at this reputation — if not, there's no "take a job" path to offer at
+  // all, so a fired coach goes straight into a forced restart.
+  const anyEligible = TEAMS.some((t) => t.id !== currentTeamId && reputation >= (JOB_REP_REQ[t.prestige] ?? 0));
+  const noOffers = firedFlow && !anyEligible;
 
   return (
     <Modal
       title={firedFlow ? "You've been fired" : "Take another job"}
       subtitle={firedFlow
-        ? `${currentTeamName} has let you go. Take a job at a program that meets your reputation below, or retire this career and start a brand new dynasty. You have ${reputation} reputation (${reputationTier(reputation)}).`
+        ? (noOffers
+            ? `${currentTeamName} has let you go, and no program will hire a coach with your reputation (${reputation}, ${reputationTier(reputation)}). Retire this career and start a brand new dynasty.`
+            : `${currentTeamName} has let you go. Take a job at a program that meets your reputation below, or retire this career and start a brand new dynasty. You have ${reputation} reputation (${reputationTier(reputation)}).`)
         : `Leave your program to coach a new team starting in ${seasonLabel(nextYear)}. Bigger programs only hire coaches with the reputation to match — you have ${reputation} (${reputationTier(reputation)}). Your current roster stays behind.`}
       onClose={firedFlow ? () => {} : onClose}
       maxWidth={860}
@@ -6427,7 +6460,9 @@ function JobChangeModal({ currentTeamId, nextYear, reputation = 0, firedFlow = f
         <Panel style={{ padding: 14, marginBottom: 16, borderLeft: `3px solid ${C.red}` }}>
           {!confirmingRestart ? (
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 14, flexWrap: "wrap" }}>
-              <div style={{ fontSize: 12.5, color: C.dim }}>Don&apos;t want to rebuild at a smaller program? Walk away and start a completely new dynasty instead.</div>
+              <div style={{ fontSize: 12.5, color: C.dim }}>
+                {noOffers ? "No program will hire you at this reputation — start a completely new dynasty." : "Don't want to rebuild at a smaller program? Walk away and start a completely new dynasty instead."}
+              </div>
               <button onClick={() => setConfirmingRestart(true)} className="cbb-btn"
                 style={{ fontSize: 12.5, padding: "8px 14px", border: `1px solid ${C.red}`, background: "transparent", color: C.red, cursor: "pointer", whiteSpace: "nowrap" }}>
                 Retire &amp; start a new dynasty
@@ -6437,10 +6472,12 @@ function JobChangeModal({ currentTeamId, nextYear, reputation = 0, firedFlow = f
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 14, flexWrap: "wrap" }}>
               <div style={{ fontSize: 12.5, color: C.red }}>This permanently deletes your current save. This can&apos;t be undone.</div>
               <div style={{ display: "flex", gap: 8 }}>
-                <button onClick={() => setConfirmingRestart(false)} className="cbb-btn"
-                  style={{ fontSize: 12.5, padding: "8px 14px", border: `1px solid ${C.line}`, background: "transparent", color: C.dim, cursor: "pointer" }}>
-                  Cancel
-                </button>
+                {!noOffers && (
+                  <button onClick={() => setConfirmingRestart(false)} className="cbb-btn"
+                    style={{ fontSize: 12.5, padding: "8px 14px", border: `1px solid ${C.line}`, background: "transparent", color: C.dim, cursor: "pointer" }}>
+                    Cancel
+                  </button>
+                )}
                 <button onClick={onRestart} className="cbb-btn"
                   style={{ fontSize: 12.5, padding: "8px 14px", border: `1px solid ${C.red}`, background: C.red, color: C.cream, cursor: "pointer", whiteSpace: "nowrap" }}>
                   Yes, delete and start over
@@ -6450,42 +6487,46 @@ function JobChangeModal({ currentTeamId, nextYear, reputation = 0, firedFlow = f
           )}
         </Panel>
       )}
-      <input
-        value={q}
-        onChange={(e) => setQ(e.target.value)}
-        placeholder="Search programs…"
-        style={{ width: "100%", background: C.panelAlt, border: `1px solid ${C.line}`, color: C.cream, padding: "10px 14px", fontSize: 14, marginBottom: 16, outline: "none" }}
-      />
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 12 }}>
-        {filtered.map((t) => {
-          const req = JOB_REP_REQ[t.prestige] ?? 0;
-          const locked = reputation < req;
-          return (
-            <button
-              key={t.id}
-              onClick={() => !locked && onPick(t)}
-              disabled={locked}
-              className="cbb-btn"
-              style={{
-                textAlign: "left", cursor: locked ? "not-allowed" : "pointer", padding: "14px 12px",
-                background: C.panelAlt, border: `1px solid ${C.line}`, borderLeft: `4px solid ${locked ? C.line : t.primary}`,
-                color: locked ? C.dimmer : C.cream, display: "flex", flexDirection: "column", gap: 6, opacity: locked ? 0.7 : 1,
-              }}
-            >
-              <div style={{ fontWeight: 600, fontSize: 14, display: "flex", alignItems: "center", gap: 6 }}>
-                {locked && <Lock size={12} />} {t.name}
-              </div>
-              <div style={{ fontSize: 11.5, color: C.dim }}>{t.conf}</div>
-              <div style={{ display: "flex", gap: 2, marginTop: 2 }}>
-                {Array.from({ length: 5 }).map((_, i) => (
-                  <div key={i} style={{ width: 12, height: 4, background: i < t.prestige ? (locked ? C.dimmer : C.wood) : C.line }} />
-                ))}
-              </div>
-              {locked && <div style={{ fontSize: 10.5, color: C.red }}>Needs {req} reputation</div>}
-            </button>
-          );
-        })}
-      </div>
+      {!noOffers && (
+        <>
+          <input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="Search programs…"
+            style={{ width: "100%", background: C.panelAlt, border: `1px solid ${C.line}`, color: C.cream, padding: "10px 14px", fontSize: 14, marginBottom: 16, outline: "none" }}
+          />
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 12 }}>
+            {filtered.map((t) => {
+              const req = JOB_REP_REQ[t.prestige] ?? 0;
+              const locked = reputation < req;
+              return (
+                <button
+                  key={t.id}
+                  onClick={() => !locked && onPick(t)}
+                  disabled={locked}
+                  className="cbb-btn"
+                  style={{
+                    textAlign: "left", cursor: locked ? "not-allowed" : "pointer", padding: "14px 12px",
+                    background: C.panelAlt, border: `1px solid ${C.line}`, borderLeft: `4px solid ${locked ? C.line : t.primary}`,
+                    color: locked ? C.dimmer : C.cream, display: "flex", flexDirection: "column", gap: 6, opacity: locked ? 0.7 : 1,
+                  }}
+                >
+                  <div style={{ fontWeight: 600, fontSize: 14, display: "flex", alignItems: "center", gap: 6 }}>
+                    {locked && <Lock size={12} />} {t.name}
+                  </div>
+                  <div style={{ fontSize: 11.5, color: C.dim }}>{t.conf}</div>
+                  <div style={{ display: "flex", gap: 2, marginTop: 2 }}>
+                    {Array.from({ length: 5 }).map((_, i) => (
+                      <div key={i} style={{ width: 12, height: 4, background: i < t.prestige ? (locked ? C.dimmer : C.wood) : C.line }} />
+                    ))}
+                  </div>
+                  {locked && <div style={{ fontSize: 10.5, color: C.red }}>Needs {req} reputation</div>}
+                </button>
+              );
+            })}
+          </div>
+        </>
+      )}
     </Modal>
   );
 }
