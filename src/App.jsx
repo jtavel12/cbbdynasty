@@ -627,10 +627,17 @@ function realClassForName(name, year, fallbackStart) {
 }
 
 // A newcomer to a team this `year` who already appeared in an earlier season
-// is a transfer, not a true freshman.
+// is a transfer, not a true freshman — but CAREER_INDEX is keyed by name only
+// across all 365 teams and ~18 years, so an unbounded lookback conflates
+// different real people who happen to share a name (verified against the
+// actual data: 2,000+ names span team/year combinations no single college
+// career could cover, e.g. one row in 2008 and another in 2025). Bounding the
+// lookback to a plausible career length fixes true freshmen getting
+// mislabeled as transfers off a same-named stranger's old, unrelated season.
+const TRANSFER_LOOKBACK_YEARS = 5;
 function isTransferName(name, year) {
   const c = CAREER_INDEX[name];
-  return !!(c && c.some((r) => r.year < year));
+  return !!(c && c.some((r) => r.year < year && r.year >= year - TRANSFER_LOOKBACK_YEARS));
 }
 
 // A player's actual real stat row for a specific season, or null.
@@ -766,15 +773,6 @@ function overallAtPos(player, pos) {
   return computeOverall(pos, player.attrs);
 }
 
-// Re-apply persisted progression points on top of a freshly (re)derived
-// attribute set. Real players re-derive from their real stat line every year,
-// so their manually-earned development would vanish without this.
-function applyBoosts(attrs, boosts) {
-  if (!boosts) return attrs;
-  const out = { ...attrs };
-  for (const k of ATTR_KEYS) if (boosts[k]) out[k] = clamp((out[k] ?? 40) + boosts[k], 40, 99);
-  return out;
-}
 
 function ratingToStars(rating) {
   if (rating >= 0.985) return 5;
@@ -892,24 +890,96 @@ function genAttrsWalkOn() {
   return out;
 }
 
+// Durability: a player's injury-risk profile, kept entirely separate from
+// `attrs`/overall (it never feeds computeOverall — it ONLY scales injury
+// chance, see maybeInjure). Derived from real games-played history where we
+// have it — a player who was consistently available for real games is a good
+// bet to stay available here too. Set once at signing, like starsAtSigning,
+// not re-derived season to season (real data seeds the initial read; nothing
+// afterward overrides it).
+function computeDurability(gp, classYear) {
+  const g = Number(gp) || 0;
+  if (g >= 27) return 99;
+  if (g >= 20) return 85;
+  if (g >= 15) return 75;
+  if (g >= 10) return 65;
+  if (g >= 1) return 50;
+  // No real games-played sample at all (generated players, or a real player
+  // with no recorded minutes): a class-based default — an upperclassman has,
+  // by definition, stayed on a roster longer without washing out — with
+  // enough spread that it isn't a flat number across the whole roster.
+  const base = { FR: 68, SO: 72, JR: 76, SR: 80 }[classYear] ?? 70;
+  return clamp(Math.round(base + rand(-8, 8)), 40, 95);
+}
+
 // Maps CBBD's free-text position strings onto our five roster slots. Returns
 // null for generic/unknown tags ("Guard", "Forward", "Athlete", "N/A") so a
 // stat-based inference can take over.
+// Position tags in the real data are overwhelmingly generic: of ~192K rows,
+// "Guard" and "Forward" alone are ~86% of them (vs. barely a few hundred
+// specific "Point Guard"/"Power Forward"-style tags). Neither generic tag was
+// being recognized here at all before — both fell straight through to
+// inferPositionFromStats, whose cascading fallback branches happened to
+// funnel most of that traffic into SF, which is why SF was wildly
+// over-represented roster-wide. This now recognizes the generic buckets and
+// splits each one with thresholds calibrated off that bucket's OWN real
+// percentiles in the dataset (see splitGuard/splitForward below), instead of
+// guessing at a cutoff or defaulting everything one direction.
 function mapRealPosition(raw) {
   if (!raw) return null;
   const s = String(raw).toLowerCase().trim();
   if (s.includes("point")) return "PG";
   if (s.includes("shooting")) return "SG";
-  if (s.includes("center")) return "C";
   if (s.includes("power")) return "PF";
   if (s.includes("small")) return "SF";
+  if (s.includes("center") && !s.includes("forward")) return "C";
   return null;
 }
 
-// Data has no height, and position tags are frequently generic or flat-out
-// wrong (e.g. Antoine Jacks, a sub-6ft point guard, tagged Power Forward). We
-// infer a slot from the player's statistical profile instead: assist-heavy
-// guards, rebound-heavy bigs, everything else on the wing.
+// A broader bucket for tags mapRealPosition doesn't resolve to a specific
+// slot: plain "Guard"/"Forward"/"Center", and the "Guard/Forward" and
+// "Forward/Center" combo tags. Split by resolvePosition below using stats.
+function broadRealPosition(raw) {
+  if (!raw) return null;
+  const s = String(raw).toLowerCase().trim();
+  if (s.includes("forward") && s.includes("center")) return "BIG";
+  if (s.includes("guard") && s.includes("forward")) return "WING";
+  if (s.includes("guard")) return "GUARD";
+  if (s.includes("forward")) return "FORWARD";
+  if (s.includes("center")) return "C";
+  return null;
+}
+
+// Split a generic "Forward" tag into SF/PF. Thresholds are the REAL median
+// rpg (~3.2) and ppg (~4.7) for Forward-tagged rows in the actual dataset
+// (checked directly against torvik-players.json), so a rebound-heavy,
+// lighter-scoring profile reads PF and a scoring-heavier, lighter-boards
+// profile reads SF — calibrated to the data, not guessed at.
+function splitForward(rpg, ppg) {
+  const reboundSignal = rpg - 3.2;
+  const scoringSignal = (ppg - 4.7) * 0.3;
+  return reboundSignal - scoringSignal >= 0 ? "PF" : "SF";
+}
+// Same idea for a generic "Guard" tag into PG/SG, off the real median apg
+// (~1.2) and ppg (~5.7) for Guard-tagged rows. The PG cutoff sits a bit above
+// the raw median so PG stays the smaller, more selective bucket real rosters
+// actually carry (most "guards" on a full roster are shooting guards).
+function splitGuard(apg, ppg) {
+  const passSignal = apg - 1.9;
+  const scoreSignal = (ppg - 6.5) * 0.15;
+  return passSignal - scoreSignal >= 0 ? "PG" : "SG";
+}
+// "Forward/Center" combo -> PF/C, off the same >=7 rpg bar used elsewhere in
+// the app for "clearly a center". "Guard/Forward" combo (a tweener/wing) ->
+// SG/SF, leaning SF once rebounding share picks up or scoring is modest.
+function splitBig(rpg) { return rpg >= 7 ? "C" : "PF"; }
+function splitWing(rpg, ppg) { return rpg >= 3.5 || (rpg >= 2 && ppg < 8) ? "SF" : "SG"; }
+
+// Data has no height/weight (checked — it isn't in the import pipeline at
+// all), so for the ~6% of rows with no usable tag ("Athlete", "Not
+// Available", or nothing) we infer a slot from the player's statistical
+// profile instead: assist-heavy guards, rebound-heavy bigs, everything else
+// on the wing.
 function inferPositionFromStats(real) {
   const gp = Number(real?.gp) || 0;
   if (!gp) return null;
@@ -924,28 +994,49 @@ function inferPositionFromStats(real) {
   return apg >= 1.6 ? "SG" : "SF";
 }
 
-// The final slot for a real player: trust a SPECIFIC tag (Point/Shooting/Small/
-// Power/Center) unless the stats make it clearly implausible — a "big" who
-// never rebounds and dishes like a guard gets reclassified. Generic/missing
-// tags fall straight through to the stat inference.
+// The final slot for a real player. A SPECIFIC tag (Point/Shooting/Small/
+// Power/Center) is trusted unless stats make it clearly implausible — a
+// "big" who never rebounds and dishes like a guard gets reclassified. A
+// GENERIC/combo tag is split with the calibrated stat rules above. With no
+// usable tag at all AND no production to read either, an even random pick
+// keeps a total unknown from skewing the roster any one direction.
 function resolvePosition(real) {
-  const mapped = mapRealPosition(real?.position);
-  const inferred = inferPositionFromStats(real);
-  if (!mapped) return inferred || "SF";
+  const specific = mapRealPosition(real?.position);
   const gp = Number(real?.gp) || 0;
-  if (gp > 0 && inferred) {
-    const listedBig = mapped === "C" || mapped === "PF";
-    const playsGuard = inferred === "PG" || inferred === "SG";
-    if (listedBig && playsGuard && perGame(real.rpg, gp) < 3.5 && perGame(real.apg, gp) >= 2.5) {
-      return inferred; // tagged as a big but statistically a guard
+  const rpg = perGame(real?.rpg, gp), ppg = perGame(real?.ppg, gp), apg = perGame(real?.apg, gp);
+
+  if (specific) {
+    const inferred = inferPositionFromStats(real);
+    if (gp > 0 && inferred) {
+      const listedBig = specific === "C" || specific === "PF";
+      const playsGuard = inferred === "PG" || inferred === "SG";
+      if (listedBig && playsGuard && rpg < 3.5 && apg >= 2.5) return inferred; // tagged big, plays like a guard
+      const listedGuard = specific === "PG" || specific === "SG";
+      const playsBig = inferred === "C" || inferred === "PF";
+      if (listedGuard && playsBig && rpg >= 7 && apg < 1.5) return inferred; // tagged guard, plays like a big
     }
-    const listedGuard = mapped === "PG" || mapped === "SG";
-    const playsBig = inferred === "C" || inferred === "PF";
-    if (listedGuard && playsBig && perGame(real.rpg, gp) >= 7 && perGame(real.apg, gp) < 1.5) {
-      return inferred; // tagged as a guard but statistically a big
-    }
+    return specific;
   }
-  return mapped;
+
+  const broad = broadRealPosition(real?.position);
+  if (broad) {
+    if (gp === 0) {
+      // No production to read at all — split the bucket evenly rather than
+      // let an all-zero stat line default one direction.
+      if (broad === "GUARD") return pick(["PG", "SG"]);
+      if (broad === "FORWARD") return pick(["SF", "PF"]);
+      if (broad === "BIG") return pick(["PF", "C"]);
+      if (broad === "WING") return pick(["SG", "SF"]);
+      return broad; // "C" already specific
+    }
+    if (broad === "GUARD") return splitGuard(apg, ppg);
+    if (broad === "FORWARD") return splitForward(rpg, ppg);
+    if (broad === "BIG") return splitBig(rpg);
+    if (broad === "WING") return splitWing(rpg, ppg);
+    return broad; // "C"
+  }
+
+  return inferPositionFromStats(real) || pick(POSITIONS);
 }
 
 // Drop rows that don't look like real men's-D1 roster members — the source
@@ -995,6 +1086,7 @@ function makePlayer({ pos, classYear, prestige, starsAtSigning, real, walkOn }) 
     height: `${randInt(6, 6)}'${randInt(9, 11)}"`.replace("6'11\"", "6'11\""),
     attrs,
     overall,
+    durability: computeDurability(gp, classYear),
     starsAtSigning: starsAtSigning ?? null,
     season: { gp: 0, pts: 0, reb: 0, ast: 0 },
     career: { pts: 0, reb: 0, ast: 0, gp: 0 },
@@ -1024,7 +1116,7 @@ function buildInitialRoster(team, year) {
   // Every real player on the team makes the roster — no position-slot cap can
   // drop a genuine contributor (the bug that hid Tulane's Rowan Brumbaugh).
   let roster = shuffled(realPlayersFor(team, year)).map((r, i) => {
-    const pos = resolvePosition(r) || "SF";
+    const pos = resolvePosition(r) || pick(POSITIONS);
     return makePlayer({ pos, classYear: realClassFor(r) || classesForSlot[i % classesForSlot.length], prestige: team.prestige, real: r });
   });
 
@@ -1375,18 +1467,25 @@ function applyRecruitAction(recruit, actionKey, weekIndex = 0) {
 
 // The interest a given NIL dollar offer buys, as a standalone curve (not a
 // delta) so re-pledging a higher or lower amount can be applied as just the
-// difference from the previous pledge's boost. Below the (never-shown) floor
-// buys nothing; floor->target ramps linearly up to the full +25 (the single
-// biggest lever on the board, bigger than an Official Visit's +16-26); at or
-// above target it's the full +25 plus a sqrt-diminishing bonus for going
-// over, capped around +15 extra by 5x the target.
+// difference from the previous pledge's boost. floor->target ramps linearly
+// up to the full +25 (the single biggest lever on the board, bigger than an
+// Official Visit's +16-26); at or above target it's the full +25 plus a
+// sqrt-diminishing bonus for going over, capped around +15 extra by 5x the
+// target. A real (nonzero) offer that comes in UNDER the floor isn't neutral
+// — it reads as an insult relative to the recruit's market value and actively
+// costs interest, scaling up to a severe -35 as the offer approaches $0
+// relative to their floor (so a token $1 on a real recruit's floor is
+// effectively a hard rejection, not a no-op). Never having made a NIL offer
+// at all (amount 0) stays neutral — plenty of recruits sign without one.
 const NIL_MAX_BOOST = 25;
 const NIL_OVER_BONUS = 15;
+const NIL_LOWBALL_PENALTY = 35;
 function nilInterestBoost(offer, floor, target) {
   const o = Math.max(0, offer || 0);
   const f = Math.max(0, floor || 0);
   const t = Math.max(f + 1, target || f + 1);
-  if (o < f) return 0;
+  if (o <= 0) return 0;
+  if (o < f) return -NIL_LOWBALL_PENALTY * (1 - o / Math.max(f, 1));
   if (o < t) return NIL_MAX_BOOST * (o - f) / (t - f);
   const over = clamp(o / t - 1, 0, 4) / 4; // 0..1 as offer runs 1x -> 5x target
   return NIL_MAX_BOOST + NIL_OVER_BONUS * Math.sqrt(over);
@@ -1414,13 +1513,16 @@ function signChance(recruit) {
 }
 
 // A sign attempt is only allowed when the recruit is better than a coin flip
-// (>50% odds), and each recruit can be attempted at most once per week and at
-// most twice overall. Returns why an attempt is (dis)allowed for UI + handlers.
+// (>50% odds), a real NIL offer meeting their (never-shown) floor is on the
+// table, and each recruit can be attempted at most once per week and at most
+// twice overall. Returns why an attempt is (dis)allowed for UI + handlers.
 const MAX_SIGN_ATTEMPTS = 2;
 function signAttemptStatus(recruit, weekIndex) {
   const chance = signChance(recruit);
   const attempts = recruit.signAttempts || 0;
   if (!recruit.offerExtended) return { ok: false, reason: "offer", chance, attempts };
+  const nilFloor = recruit.nilFloor ?? 0;
+  if ((recruit.nilOffer || 0) < nilFloor) return { ok: false, reason: "nil", chance, attempts };
   if (attempts >= MAX_SIGN_ATTEMPTS) return { ok: false, reason: "max", chance, attempts };
   if (recruit.signAttemptWeek === weekIndex) return { ok: false, reason: "week", chance, attempts };
   if (chance <= 0.5) return { ok: false, reason: "odds", chance, attempts };
@@ -1485,6 +1587,7 @@ function recruitToPlayer(recruit, team) {
       height: `6'${randInt(0, 11)}"`,
       attrs,
       overall,
+      durability: computeDurability(recruit.realStats?.gp, recruit.classYear || "FR"),
       starsAtSigning: recruit.stars,
       ratingAtSigning: recruit.rating,
       season: { gp: 0, pts: 0, reb: 0, ast: 0 },
@@ -1512,6 +1615,7 @@ function recruitToPlayer(recruit, team) {
     height: `6'${randInt(0, 11)}"`,
     attrs,
     overall,
+    durability: computeDurability(0, "FR"),
     starsAtSigning: stars,
     ratingAtSigning: rating,
     season: { gp: 0, pts: 0, reb: 0, ast: 0 },
@@ -1665,11 +1769,13 @@ function genSeasonStrengths() {
 // than the national curve so the spread between the best and worst team in a
 // conference genuinely shows up game to game.
 function gameWinProb(power, oppPower) {
-  // Steep enough that a clear talent edge is a strong favorite (not a coin
-  // flip): a 10-point overall gap is ~a 79% winner, a 20-point gap ~92%. This
-  // is what makes better-rated rosters actually win, and lets the best teams
-  // reliably reach — and win — the postseason.
-  return clamp(0.5 + (power - oppPower) / 34, 0.03, 0.97);
+  // Steep enough that a clear talent edge is a strong favorite, not a coin
+  // flip: a 10-point overall gap is ~86% for the better team, a 20-point gap
+  // is already clamped near the ceiling. This is what makes better-rated
+  // rosters win consistently and reliably reach — and win — the postseason,
+  // while the 2%/98% floor/ceiling still leaves room for a real (if rare)
+  // upset instead of eliminating variance outright.
+  return clamp(0.5 + (power - oppPower) / 27, 0.02, 0.98);
 }
 
 // Projected W-L from STRENGTH OF SCHEDULE, not raw prestige: a team is
@@ -1730,6 +1836,23 @@ function historicalQuality(teamId) {
     n += wt;
   }
   return n ? wsum / n : null;
+}
+
+// The program's full year-by-year record for display: real historical W-L
+// (from team-season data) for every season before the user actually took
+// over THIS program, then the simulated seasons from state.history from
+// that point on. Each entry carries `real` so the UI can mark the seam
+// between "what actually happened" and "what the dynasty produced."
+function programHistoryFor(teamId, state) {
+  const simmed = [...state.history].filter((h) => h.teamId === teamId).sort((a, b) => a.year - b.year);
+  const startYear = simmed.length ? simmed[0].year : state.year;
+  const rec = teamRecordsRaw[teamId] || {};
+  const real = Object.keys(rec)
+    .map(Number)
+    .filter((y) => y < startYear && rec[y] && (rec[y].w + rec[y].l) > 0)
+    .sort((a, b) => a - b)
+    .map((y) => ({ year: y, wins: rec[y].w, losses: rec[y].l, rank: rec[y].rank, real: true }));
+  return [...real, ...simmed.map((h) => ({ ...h, real: false }))];
 }
 
 // Starting prestige for every program: mostly its historical record, with a
@@ -1872,23 +1995,22 @@ function seasonRngFor(seasonSeed, teamId, year) {
   return mulberry32(h >>> 0);
 }
 
-// One CPU team's emergent season as a per-game win/loss sequence. Each game is a
-// Bernoulli trial at the team's real win rate (or a power projection when there's
-// no historical record), so the season AVERAGES near its real total but binomial
-// variance swings it a few games either way — the "loosely anchored" model. Wins
-// accrue game by game, so a record only fills in as its games are actually played
-// rather than showing the final result from the opening tip.
+// One CPU team's emergent season as a per-game win/loss sequence. Each game is
+// a Bernoulli trial at the team's PROJECTED win rate off its own simulated
+// power rating (conference-strength-adjusted, see projectedRecord) — never a
+// real historical win rate. Once a dynasty is running, nothing about a CPU
+// team's season is anchored to what actually happened in reality; only the
+// team's simulated power (prestige + season drift, or its year-one barthag
+// seed) decides how good it plays. Binomial variance still swings the total
+// a few games either way, so seasons aren't a fixed foregone conclusion. A
+// team's real historical rank (when available) is passed through separately
+// purely as a fading PRESEASON poll prior (see rankingScore) — that's the
+// one place real data is allowed to seed, not override, the simulation.
 function cpuSeasonSeq(team, year, powerById, seasonSeed) {
   const real = teamRecordsRaw[team.id] && teamRecordsRaw[team.id][String(year)];
-  let G, p;
-  if (real && real.w + real.l > 0) {
-    G = real.w + real.l;
-    p = real.w / G;
-  } else {
-    const pr = projectedRecord(team, powerById);
-    G = pr.wins + pr.losses;
-    p = G ? pr.wins / G : 0.5;
-  }
+  const pr = projectedRecord(team, powerById);
+  const G = pr.wins + pr.losses;
+  const p = G ? pr.wins / G : 0.5;
   const rng = seasonRngFor(seasonSeed, team.id, year);
   const seq = new Array(G);
   for (let i = 0; i < G; i++) seq[i] = rng() < p ? 1 : 0;
@@ -2019,11 +2141,11 @@ function simMatchup(m, ctx) {
   if (m.b && !m.a) return { ...m, winner: m.b, bye: true };
   if (!m.a && !m.b) return m;
 
-  const { powerById, userTeamId, roster, depthChart, strengths, year, powerBaseline } = ctx;
+  const { powerById, userTeamId, roster, depthChart, minutes, strengths, year, powerBaseline } = ctx;
   if (userTeamId && (m.a === userTeamId || m.b === userTeamId)) {
     const oppId = m.a === userTeamId ? m.b : m.a;
     const oppPower = teamPowerRating(TEAM_MAP[oppId], strengths, year);
-    const res = simulateGame(roster, healthyDepthChart(depthChart, roster), oppPower, 0, powerBaseline);
+    const res = simulateGame(roster, depthChart, oppPower, 0, powerBaseline, minutes);
     const winner = res.win ? userTeamId : oppId;
     const uScore = res.myScore, oScore = res.oppScore;
     return {
@@ -2173,24 +2295,81 @@ function postseasonSummary(ps, userTeamId) {
   return null;
 }
 
-function depthChartMinutes(order) {
-  // returns array parallel to `order` with minutes for that position group (40 total)
-  const splits = [24, 11, 5, 0, 0];
-  return order.map((_, i) => splits[i] ?? 0);
+// Fallback split used only when a player has no explicit minutes assignment
+// yet (e.g. a freshly-signed recruit before the coach has set their minutes).
+const DEFAULT_MIN_SPLITS = [24, 11, 5, 0, 0];
+
+// Minutes for each player in a position group's rotation order. `minutesMap`
+// (state.minutes, playerId -> assigned minutes) is the coach's direct
+// assignment from the Depth Chart tab; falls back to the old fixed split for
+// anyone not yet in it, and to the fixed split entirely when no map is given.
+function depthChartMinutes(order, minutesMap) {
+  if (!minutesMap) return order.map((_, i) => DEFAULT_MIN_SPLITS[i] ?? 0);
+  return order.map((id, i) => {
+    const m = minutesMap[id];
+    return m != null ? m : (DEFAULT_MIN_SPLITS[i] ?? 0);
+  });
 }
 
-function userTeamOverall(roster, depthChart) {
+// A flat { playerId: minutes } map seeding every slotted player at the old
+// fixed split, so a freshly-built depth chart starts from a sane rotation
+// the coach can then hand-tune.
+function defaultMinutesFor(depthChart) {
+  const out = {};
+  POSITIONS.forEach((pos) => {
+    (depthChart[pos] || []).forEach((id, i) => { out[id] = DEFAULT_MIN_SPLITS[i] ?? 0; });
+  });
+  return out;
+}
+
+// Minutes above 34 progressively cost a player effectiveness late in games —
+// gassed legs, not a talent change. Flat below the threshold, ramping to a
+// ~12% penalty at the full 40-minute regulation cap.
+function fatigueMultiplier(minutes) {
+  const m = Number(minutes) || 0;
+  if (m <= 34) return 1;
+  return clamp(1 - (m - 34) * 0.02, 0.88, 1);
+}
+
+// The minutes actually played at one position on a given night: the coach's
+// planned split (from `depthChartMinutes`), with any minutes belonging to an
+// injured player redistributed across the healthy players still slotted
+// there — proportional to their own planned share, so a starter's direct
+// backup absorbs most of the vacated run rather than an even bench split.
+// Returns [{ id, minutes }] for the healthy players who actually take the
+// floor; an injured player is simply absent, never returned.
+function positionMinutes(pos, depthChart, roster, minutesMap) {
+  const order = (depthChart[pos] || []).filter((id) => roster.find((p) => p.id === id));
+  const planned = depthChartMinutes(order, minutesMap);
+  let deficit = 0;
+  const healthyIdx = [];
+  order.forEach((id, i) => {
+    if (isHurt(roster.find((p) => p.id === id))) deficit += planned[i];
+    else healthyIdx.push(i);
+  });
+  if (!healthyIdx.length) return [];
+  if (deficit <= 0) return healthyIdx.map((i) => ({ id: order[i], minutes: planned[i] }));
+  const weights = healthyIdx.map((i) => Math.max(planned[i], 1));
+  const totalWeight = weights.reduce((a, b) => a + b, 0);
+  const bumped = healthyIdx.map((i, k) => planned[i] + (deficit * weights[k]) / totalWeight);
+  const rounded = bumped.map((m) => clamp(Math.round(m), 0, 40));
+  const target = healthyIdx.reduce((s, i) => s + planned[i], 0) + deficit;
+  const drift = clamp(Math.round(target), 0, 200) - rounded.reduce((a, b) => a + b, 0);
+  if (drift !== 0 && rounded.length) rounded[0] = clamp(rounded[0] + drift, 0, 40);
+  return healthyIdx.map((i, k) => ({ id: order[i], minutes: rounded[k] }));
+}
+
+function userTeamOverall(roster, depthChart, minutesMap) {
   let totalW = 0, sum = 0;
   POSITIONS.forEach((pos) => {
-    const order = depthChart[pos].filter((id) => roster.find((p) => p.id === id));
-    const mins = depthChartMinutes(order);
-    order.forEach((id, i) => {
+    positionMinutes(pos, depthChart, roster, minutesMap).forEach(({ id, minutes: m }) => {
       const pl = roster.find((p) => p.id === id);
-      if (!pl || !mins[i]) return;
+      if (!pl || !m) return;
       // Grade each player at the slot they're actually playing, so fielding
-      // someone out of position costs the team real strength.
-      sum += overallAtPos(pl, pos) * mins[i];
-      totalW += mins[i];
+      // someone out of position costs the team real strength; heavy minutes
+      // past 34 cost a bit more on top of that.
+      sum += overallAtPos(pl, pos) * fatigueMultiplier(m) * m;
+      totalW += m;
     });
   });
   return totalW ? sum / totalW : 55;
@@ -2206,18 +2385,21 @@ function userTeamOverall(roster, depthChart) {
 // across nearly the full power scale, so recruiting — not the school's history —
 // is what determines your strength once you reshape the team.
 const ROSTER_SENSITIVITY = 1.8;
-function userGamePower(roster, depthChart, baseline) {
-  const raw = userTeamOverall(roster, depthChart);
+function userGamePower(roster, depthChart, baseline, minutesMap) {
+  const raw = userTeamOverall(roster, depthChart, minutesMap);
   if (!baseline) return raw;
   return clamp(baseline.barthagPower + (raw - baseline.realOverall) * ROSTER_SENSITIVITY, 25, 95);
 }
 
-function simulateGame(roster, depthChart, oppPower, momentum = 0, baseline = null) {
-  const myPower = userGamePower(roster, depthChart, baseline) + momentum;
+function simulateGame(roster, depthChart, oppPower, momentum = 0, baseline = null, minutesMap = null) {
+  const myPower = userGamePower(roster, depthChart, baseline, minutesMap) + momentum;
   const diff = myPower - oppPower;
   // Talent drives the margin; the random term is small enough that upsets
-  // happen but the better team wins the large majority of the time.
-  const margin = diff * 0.75 + rand(-8, 8);
+  // still happen on a given night, but the better team wins the large
+  // majority of the time — tightened alongside gameWinProb so a strong
+  // roster's edge shows up just as reliably in your own games as in every
+  // CPU-simulated game around the league.
+  const margin = diff * 0.9 + rand(-6, 6);
   const base = 66 + myPower / 6;
   const win = margin >= 0;
   let myScore = Math.max(Math.round(base + margin / 2 + rand(-4, 4)), 38);
@@ -2230,15 +2412,13 @@ function simulateGame(roster, depthChart, oppPower, momentum = 0, baseline = nul
   // per-player box score
   const boxByPlayer = {};
   POSITIONS.forEach((pos) => {
-    const order = depthChart[pos].filter((id) => roster.find((p) => p.id === id));
-    const mins = depthChartMinutes(order);
-    order.forEach((id, i) => {
-      const m = mins[i];
+    positionMinutes(pos, depthChart, roster, minutesMap).forEach(({ id, minutes: m }) => {
       if (!m) return;
       const pl = roster.find((p) => p.id === id);
-      const pts = Math.max(0, Math.round((m / 30) * (pl.attrs.scoring / 99) * 24 * rand(0.7, 1.3)));
-      const reb = Math.max(0, Math.round((m / 30) * (pl.attrs.rebounding / 99) * 11 * rand(0.6, 1.4)));
-      const ast = Math.max(0, Math.round((m / 30) * (pl.attrs.passing / 99) * 7 * rand(0.5, 1.5)));
+      const fat = fatigueMultiplier(m);
+      const pts = Math.max(0, Math.round((m / 30) * (pl.attrs.scoring / 99) * fat * 24 * rand(0.7, 1.3)));
+      const reb = Math.max(0, Math.round((m / 30) * (pl.attrs.rebounding / 99) * fat * 11 * rand(0.6, 1.4)));
+      const ast = Math.max(0, Math.round((m / 30) * (pl.attrs.passing / 99) * fat * 7 * rand(0.5, 1.5)));
       boxByPlayer[id] = { pts, reb, ast, min: m };
     });
   });
@@ -2272,30 +2452,13 @@ function progressRosterForNewYear(roster, incoming, team, newYear) {
         gp: p.career.gp + p.season.gp,
       };
 
-      // Real players: track how their actual career went. Re-derive attributes
-      // from their real stat line for the NEW season, so e.g. Kemba Walker
-      // climbs 8.9 -> 14.6 -> 23.5 ppg and his overall rises to match. Star
-      // rating (starsAtSigning) is intentionally left frozen at signing, so
-      // deciding whom to sign off a freshman grade carries real risk/upside.
-      if (p.realName && p.realKey && newYear != null) {
-        const row = realStatRowForName(p.realKey, newYear);
-        const gp = Number(row?.gp) || 0;
-        if (row && gp > 0 && (row.ppg != null || row.rpg != null || row.apg != null)) {
-          const ourTeam = findOurTeamByRealName(row.team);
-          const tier = ourTeam ? clamp((ourTeam.prestige - 1) / 4, 0, 1) : (p.originalTier ?? 0.5);
-          // Re-derive from the real stat line, then re-apply any progression
-          // points spent on this player so development persists year to year.
-          const attrs = applyBoosts(genAttrsFromRealStats(row, tier, careerOutlierBonus(p.realKey), p.pos), p.boosts);
-          return {
-            ...p, class: nextClass, attrs, overall: computeOverall(p.pos, attrs),
-            career: rolledCareer, season: { gp: 0, pts: 0, reb: 0, ast: 0 },
-          };
-        }
-      }
-
-      // Generated players (and real players past their real career) develop
-      // synthetically toward their potential. Attributes already carry any past
-      // progression, so growth compounds on top of it.
+      // Every player — real-named or fully generated — develops synthetically
+      // toward their potential from here on. A real player's initial rating is
+      // still seeded from their real production at signing (see makePlayer),
+      // but once they're on your roster their career is YOURS: how they
+      // actually grow depends on your simulated season and development
+      // spending, never on what that real person did in reality afterward.
+      // Attributes already carry any past progression, so growth compounds.
       const growth = Math.round((p.attrs.potential - p.overall) * rand(0.05, 0.22));
       const bump = clamp(growth, -2, 9);
       const attrs = { potential: p.attrs.potential };
@@ -2334,19 +2497,6 @@ function progressRosterForNewYear(roster, incoming, team, newYear) {
    ========================================================================= */
 function isHurt(p) { return (p.injuredGames || 0) > 0; }
 
-// Depth chart with injured players pulled out — the effective rotation the
-// coach actually fields on a given night.
-function healthyDepthChart(depthChart, roster) {
-  const dc = {};
-  POSITIONS.forEach((pos) => {
-    dc[pos] = (depthChart[pos] || []).filter((id) => {
-      const p = roster.find((x) => x.id === id);
-      return p && !isHurt(p);
-    });
-  });
-  return dc;
-}
-
 // Signed win/loss streak read off the most recent games (positive = winning).
 function currentStreak(schedule) {
   const played = schedule.filter((g) => g.played);
@@ -2367,33 +2517,56 @@ function tickInjuries(roster) {
   return roster.map((p) => (isHurt(p) ? { ...p, injuredGames: p.injuredGames - 1 } : p));
 }
 
-// Small per-game chance a healthy rotation player tweaks something and misses
-// a few games. Returns the updated roster and (if any) the new injury.
-function maybeInjure(roster, rotationIds) {
-  if (Math.random() >= 0.10) return { roster, injured: null };
-  const cands = rotationIds.filter((id) => {
+// Per-game injury risk for one player: scales up with minutes load (heavy
+// workload, more wear) and down with durability (a tougher player shrugs off
+// the same workload). Bench guys at a handful of minutes are very unlikely to
+// go down; a fragile player logging 38+ minutes a night is a real risk.
+function injuryRiskFor(minutes, durability) {
+  const m = clamp(Number(minutes) || 0, 0, 45);
+  const d = clamp(durability ?? 70, 40, 99);
+  const loadFactor = Math.pow(m / 30, 1.6);
+  const durFactor = clamp(1.6 - d / 70, 0.35, 1.8);
+  return clamp(0.012 * loadFactor * durFactor, 0, 0.09);
+}
+
+// How long an injury sidelines a player: usually short, with a chance of a
+// longer-term absence that grows as durability drops.
+function injuryLengthFor(durability) {
+  const d = clamp(durability ?? 70, 40, 99);
+  const base = randInt(1, 4);
+  const extra = Math.random() < (99 - d) / 120 ? randInt(3, 12) : 0;
+  return clamp(base + extra, 1, 18);
+}
+
+// One independent roll per healthy rotation player each game; returns the
+// updated roster and (if anyone went down) the new injury. Multiple players
+// can theoretically go down in the same game, but only the headline injury is
+// reported in the flash message.
+function maybeInjure(roster, rotationMinutes) {
+  const hits = [];
+  for (const { id, minutes } of rotationMinutes) {
     const p = roster.find((x) => x.id === id);
-    return p && !isHurt(p);
-  });
-  if (!cands.length) return { roster, injured: null };
-  const id = pick(cands);
-  const games = randInt(2, 6);
-  const name = roster.find((p) => p.id === id).name;
+    if (!p || isHurt(p)) continue;
+    if (Math.random() < injuryRiskFor(minutes, p.durability)) hits.push(p);
+  }
+  if (!hits.length) return { roster, injured: null };
+  const hurtById = new Map(hits.map((p) => [p.id, injuryLengthFor(p.durability)]));
+  const lead = pick(hits);
   return {
-    roster: roster.map((p) => (p.id === id ? { ...p, injuredGames: games } : p)),
-    injured: { id, name, games },
+    roster: roster.map((p) => (hurtById.has(p.id) ? { ...p, injuredGames: hurtById.get(p.id) } : p)),
+    injured: { id: lead.id, name: lead.name, games: hurtById.get(lead.id), extra: hits.length - 1 },
   };
 }
 
-// The ids that logged real minutes in the healthy rotation (candidates for
-// picking up a knock).
-function rotationIdsOf(depthChart, roster) {
-  const ids = [];
-  const hdc = healthyDepthChart(depthChart, roster);
+// The { id, minutes } pairs for players actually taking the floor in the
+// healthy rotation (injury-vacated minutes already redistributed) —
+// candidates for picking up a knock, weighted by their real workload.
+function rotationMinutesOf(depthChart, roster, minutesMap) {
+  const out = [];
   POSITIONS.forEach((pos) => {
-    depthChartMinutes(hdc[pos]).forEach((m, i) => { if (m > 0) ids.push(hdc[pos][i]); });
+    positionMinutes(pos, depthChart, roster, minutesMap).forEach(({ id, minutes: m }) => { if (m > 0) out.push({ id, minutes: m }); });
   });
-  return ids;
+  return out;
 }
 
 /* =========================================================================
@@ -2412,7 +2585,7 @@ function bestRealLine(team, year) {
   const mapped = rows
     .map((r) => ({
       name: r.player,
-      pos: mapRealPosition(r.position) || "SF",
+      pos: resolvePosition(r),
       gp: Number(r.gp) || 0,
       ppg: perGame(r.ppg, r.gp),
       rpg: perGame(r.rpg, r.gp),
@@ -3072,11 +3245,11 @@ function DynastyApp({ initial, onExit }) {
     // roster adds or subtracts — on the SAME scale as every CPU team, so a real
     // roster ranks true to history and recruiting a great team lifts them from
     // there (rather than the raw OVR average, which over-ranked weak programs).
-    powerById[state.teamId] = userGamePower(state.roster, state.depthChart, powerBaseline);
+    powerById[state.teamId] = userGamePower(state.roster, state.depthChart, powerBaseline, state.minutes);
     const gamesPlayed = record.w + record.l;
     const recordById = accruedRecordTable(powerById, state.teamId, record, state.year, state.seasonSeed, gamesPlayed);
     return computeRankings(powerById, recordById, state.teamId, gamesPlayed);
-  }, [state.strengths, state.year, state.teamId, record, state.roster, state.depthChart, powerBaseline, state.seasonSeed]);
+  }, [state.strengths, state.year, state.teamId, record, state.roster, state.depthChart, state.minutes, powerBaseline, state.seasonSeed]);
 
   const reputation = reputationOf(state.coach);
   const nilBudget = (state.nilBudgetById || baselineNilBudgetById())[state.teamId] ?? nilBudgetForTeam(team);
@@ -3109,7 +3282,7 @@ function DynastyApp({ initial, onExit }) {
       return { ...p, season: { gp: p.season.gp + 1, pts: p.season.pts + box.pts, reb: p.season.reb + box.reb, ast: p.season.ast + box.ast } };
     });
     roster = tickInjuries(roster);
-    const inj = maybeInjure(roster, rotationIdsOf(state.depthChart, roster));
+    const inj = maybeInjure(roster, rotationMinutesOf(state.depthChart, roster, state.minutes));
     roster = inj.roster;
     const box = boxArray(result.boxByPlayer, state.roster);
 
@@ -3134,7 +3307,7 @@ function DynastyApp({ initial, onExit }) {
     let msg = result.win
       ? `Beat ${opp.name} ${result.myScore}-${result.oppScore}${sig ? ` — signature win over No. ${oppRank}!` : ""}`
       : `Lost to ${opp.name} ${result.oppScore}-${result.myScore}`;
-    if (inj.injured) msg += ` ${inj.injured.name} injured (out ${inj.injured.games}).`;
+    if (inj.injured) msg += ` ${inj.injured.name} injured (out ${inj.injured.games}).${inj.injured.extra > 0 ? ` ${inj.injured.extra} other player${inj.injured.extra > 1 ? "s" : ""} also banged up.` : ""}`;
     flash(msg);
   }
 
@@ -3142,9 +3315,8 @@ function DynastyApp({ initial, onExit }) {
     if (!nextGame) return;
     const opp = TEAM_MAP[nextGame.oppId];
     const oppPower = teamPowerRating(opp, state.strengths, state.year);
-    const hdc = healthyDepthChart(state.depthChart, state.roster);
     const mom = momentumMod(currentStreak(state.schedule));
-    const result = simulateGame(state.roster, hdc, oppPower, mom, powerBaseline);
+    const result = simulateGame(state.roster, state.depthChart, oppPower, mom, powerBaseline, state.minutes);
     commitGameResult(result, opp, rankById[nextGame.oppId] || null);
   }
 
@@ -3153,9 +3325,8 @@ function DynastyApp({ initial, onExit }) {
     if (!nextGame) return;
     const opp = TEAM_MAP[nextGame.oppId];
     const oppPower = teamPowerRating(opp, state.strengths, state.year);
-    const hdc = healthyDepthChart(state.depthChart, state.roster);
     const mom = momentumMod(currentStreak(state.schedule));
-    setLivePlay({ teamId: state.teamId, opp, oppId: nextGame.oppId, oppPower, oppRank: rankById[nextGame.oppId] || null, home: nextGame.home, momentum: mom, roster: state.roster, dc: hdc, powerBaseline });
+    setLivePlay({ teamId: state.teamId, opp, oppId: nextGame.oppId, oppPower, oppRank: rankById[nextGame.oppId] || null, home: nextGame.home, momentum: mom, roster: state.roster, dc: state.depthChart, minutes: state.minutes, powerBaseline });
   }
 
   function simToEndOfSeason() {
@@ -3168,8 +3339,7 @@ function DynastyApp({ initial, onExit }) {
       const opp = TEAM_MAP[g.oppId];
       const oppPower = teamPowerRating(opp, state.strengths, state.year);
       const mom = momentumMod(currentStreak(games.filter((x) => x.played)));
-      const hdc = healthyDepthChart(state.depthChart, roster);
-      const result = simulateGame(roster, hdc, oppPower, mom, powerBaseline);
+      const result = simulateGame(roster, state.depthChart, oppPower, mom, powerBaseline, state.minutes);
       const oppRank = rankById[g.oppId] || null;
       roster = roster.map((p) => {
         const bx = result.boxByPlayer[p.id];
@@ -3177,7 +3347,7 @@ function DynastyApp({ initial, onExit }) {
         return { ...p, season: { gp: p.season.gp + 1, pts: p.season.pts + bx.pts, reb: p.season.reb + bx.reb, ast: p.season.ast + bx.ast } };
       });
       roster = tickInjuries(roster);
-      roster = maybeInjure(roster, rotationIdsOf(state.depthChart, roster)).roster;
+      roster = maybeInjure(roster, rotationMinutesOf(state.depthChart, roster, state.minutes)).roster;
       const box = boxArray(result.boxByPlayer, roster);
       g.played = true;
       g.result = { win: result.win, myScore: result.myScore, oppScore: result.oppScore, oppRank, box };
@@ -3206,8 +3376,7 @@ function DynastyApp({ initial, onExit }) {
       const opp = TEAM_MAP[g.oppId];
       const oppPower = teamPowerRating(opp, state.strengths, state.year);
       const mom = momentumMod(currentStreak(games.filter((x) => x.played)));
-      const hdc = healthyDepthChart(state.depthChart, roster);
-      const result = simulateGame(roster, hdc, oppPower, mom, powerBaseline);
+      const result = simulateGame(roster, state.depthChart, oppPower, mom, powerBaseline, state.minutes);
       const oppRank = rankById[g.oppId] || null;
       roster = roster.map((p) => {
         const bx = result.boxByPlayer[p.id];
@@ -3215,7 +3384,7 @@ function DynastyApp({ initial, onExit }) {
         return { ...p, season: { gp: p.season.gp + 1, pts: p.season.pts + bx.pts, reb: p.season.reb + bx.reb, ast: p.season.ast + bx.ast } };
       });
       roster = tickInjuries(roster);
-      roster = maybeInjure(roster, rotationIdsOf(state.depthChart, roster)).roster;
+      roster = maybeInjure(roster, rotationMinutesOf(state.depthChart, roster, state.minutes)).roster;
       const box = boxArray(result.boxByPlayer, roster);
       g.played = true;
       g.result = { win: result.win, myScore: result.myScore, oppScore: result.oppScore, oppRank, box };
@@ -3320,6 +3489,7 @@ function DynastyApp({ initial, onExit }) {
     const status = signAttemptStatus(recruit, week);
     if (!status.ok) {
       if (status.reason === "offer") flash("Extend a scholarship offer before you can sign a transfer.");
+      else if (status.reason === "nil") flash(`${recruit.name} won't sign without a real NIL offer closer to their ask — pledge more.`);
       else if (status.reason === "odds") flash(`${recruit.name} must be above 50% to sign — you're at ${Math.round(status.chance * 100)}%. Keep working them.`);
       else if (status.reason === "max") flash(`You've used both sign attempts on ${recruit.name} this cycle.`);
       else if (status.reason === "week") flash(`You can only make one sign attempt per week — try ${recruit.name} again next week.`);
@@ -3417,6 +3587,7 @@ function DynastyApp({ initial, onExit }) {
       userTeamId: state.teamId,
       roster: state.roster,
       depthChart: state.depthChart,
+      minutes: state.minutes,
       strengths: state.strengths,
       year: state.year,
       powerBaseline,
@@ -3499,11 +3670,10 @@ function DynastyApp({ initial, onExit }) {
     const oppId = m.a === state.teamId ? m.b : m.a;
     const opp = TEAM_MAP[oppId];
     const oppPower = teamPowerRating(opp, state.strengths, state.year);
-    const hdc = healthyDepthChart(state.depthChart, state.roster);
     setLivePlay({
       teamId: state.teamId, opp, oppId, oppPower,
       oppRank: rankById[oppId] || null, home: true, momentum: 0,
-      roster: state.roster, dc: hdc, powerBaseline,
+      roster: state.roster, dc: state.depthChart, minutes: state.minutes, powerBaseline,
       isPostseason: true, loc,
     });
   }
@@ -3621,6 +3791,7 @@ function DynastyApp({ initial, onExit }) {
     const status = signAttemptStatus(recruit, week);
     if (!status.ok) {
       if (status.reason === "offer") flash("Extend a scholarship offer before you can sign them.");
+      else if (status.reason === "nil") flash(`${recruit.name} won't sign without a real NIL offer closer to their ask — pledge more.`);
       else if (status.reason === "odds") flash(`${recruit.name} must be above 50% to sign — you're at ${Math.round(status.chance * 100)}%. Keep working them.`);
       else if (status.reason === "max") flash(`You've used both sign attempts on ${recruit.name} this cycle.`);
       else if (status.reason === "week") flash(`You can only make one sign attempt per week — try ${recruit.name} again next week.`);
@@ -3665,12 +3836,16 @@ function DynastyApp({ initial, onExit }) {
 
   // Slot a player into any position group (removing them from wherever they
   // were), so a point guard can be listed at the two, the three, and so on.
+  // Their minutes reset to 0 in the new group — a stale value carried over
+  // from their old position could silently blow past that group's 40-minute
+  // cap, so the coach has to consciously give them run at the new spot.
   function assignPosition(playerId, toPos) {
     setState((s) => {
       const dc = {};
       POSITIONS.forEach((p) => { dc[p] = s.depthChart[p].filter((id) => id !== playerId); });
       dc[toPos] = [...dc[toPos], playerId];
-      return { ...s, depthChart: dc };
+      const minutes = { ...(s.minutes || defaultMinutesFor(s.depthChart)), [playerId]: 0 };
+      return { ...s, depthChart: dc, minutes };
     });
   }
 
@@ -3678,7 +3853,22 @@ function DynastyApp({ initial, onExit }) {
     setState((s) => {
       const dc = {};
       POSITIONS.forEach((p) => { dc[p] = s.depthChart[p].filter((id) => id !== playerId); });
-      return { ...s, depthChart: dc };
+      const minutes = { ...(s.minutes || defaultMinutesFor(s.depthChart)) };
+      delete minutes[playerId];
+      return { ...s, depthChart: dc, minutes };
+    });
+  }
+
+  // Direct per-player minutes assignment from the Depth Chart tab. Clamped to
+  // whatever's left of that position group's 40-minute regulation cap once
+  // every other player currently slotted there is accounted for.
+  function setPlayerMinutes(playerId, pos, value) {
+    setState((s) => {
+      const group = s.depthChart[pos] || [];
+      const current = s.minutes || defaultMinutesFor(s.depthChart);
+      const others = group.filter((id) => id !== playerId).reduce((sum, id) => sum + (current[id] ?? 0), 0);
+      const capped = clamp(Math.round(Number(value) || 0), 0, Math.max(0, 40 - others));
+      return { ...s, minutes: { ...current, [playerId]: capped } };
     });
   }
 
@@ -3821,6 +4011,7 @@ function DynastyApp({ initial, onExit }) {
       nilBudgetAfter: nextNilById[state.teamId],
     };
 
+    const newDepthChart = defaultDepthChart(newRoster);
     setState({
       ...state,
       year: newYear,
@@ -3829,7 +4020,8 @@ function DynastyApp({ initial, onExit }) {
       nilBudgetById: nextNilById,
       nilObjectives: nextNilObjectives,
       roster: newRoster,
-      depthChart: defaultDepthChart(newRoster),
+      depthChart: newDepthChart,
+      minutes: defaultMinutesFor(newDepthChart),
       schedule: (os && os.scheduleDraft) ? os.scheduleDraft : genSchedule(team, newYear),
       recruitingBoard: seedInterest(genRecruitPool(newYear + 1), team),
       incomingCommits: [],
@@ -3894,6 +4086,7 @@ function DynastyApp({ initial, onExit }) {
       state.nilBudgetById || baselineNilBudgetById(), state.teamId, state.nilObjectives, nilCtx, state.year, powerById
     );
 
+    const newDepthChart = defaultDepthChart(roster);
     setState({
       ...state,
       teamId: newTeam.id,
@@ -3903,7 +4096,8 @@ function DynastyApp({ initial, onExit }) {
       nilBudgetById: nextNilById,
       nilObjectives: pickObjectivesFor(nextPrestige[newTeam.id] ?? newTeam.prestige),
       roster,
-      depthChart: defaultDepthChart(roster),
+      depthChart: newDepthChart,
+      minutes: defaultMinutesFor(newDepthChart),
       schedule: genSchedule(newTeam, newYear),
       recruitingBoard: seedInterest(genRecruitPool(newYear + 1), newTeam),
       incomingCommits: [],
@@ -4036,7 +4230,7 @@ function DynastyApp({ initial, onExit }) {
               onViewPlayer={setPlayerViewId} />
           )}
           {tab === "roster" && <RosterTab roster={state.roster} onViewPlayer={setPlayerViewId} />}
-          {tab === "depth" && <DepthChartTab roster={state.roster} depthChart={state.depthChart} onMove={moveInDepthChart} onAssign={assignPosition} onRemove={removeFromDepth} />}
+          {tab === "depth" && <DepthChartTab roster={state.roster} depthChart={state.depthChart} minutes={state.minutes} onMove={moveInDepthChart} onAssign={assignPosition} onRemove={removeFromDepth} onSetMinutes={setPlayerMinutes} />}
           {tab === "recruiting" && (
             <RecruitingTab
               board={state.recruitingBoard}
@@ -4170,12 +4364,13 @@ function DynastyApp({ initial, onExit }) {
 
 /* ---------- Dashboard ---------- */
 function DashboardTab({ state, team, record, nextGame, stage, onSim, onPlay, onSimToConf, onSimSeason, onEnterPostseason, onEnterOffseason, onGoTab, onAdvanceYear, reputation, bracketology, expectation, jobSecurity, rankById, onViewPlayer }) {
-  const overall = Math.round(userTeamOverall(state.roster, state.depthChart));
+  const overall = Math.round(userTeamOverall(state.roster, state.depthChart, state.minutes));
   const topPlayer = [...state.roster].sort((a, b) => b.overall - a.overall)[0];
   const injured = state.roster.filter(isHurt);
   const streak = currentStreak(state.schedule);
   const hasUnplayedNonConf = state.schedule.some((g) => !g.conf && !g.played);
   const nilBudget = (state.nilBudgetById || baselineNilBudgetById())[team.id] ?? nilBudgetForTeam(team);
+  const programHistory = programHistoryFor(team.id, state);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20, maxWidth: 900 }}>
@@ -4352,22 +4547,36 @@ function DashboardTab({ state, team, record, nextGame, stage, onSim, onPlay, onS
         </Panel>
       )}
 
-      {state.history.length > 1 && <SeasonTrendChart history={state.history} />}
+      {programHistory.length > 1 && <SeasonTrendChart history={programHistory} />}
 
-      {state.history.length > 0 && (
+      {programHistory.length > 0 && (
         <Panel style={{ padding: 20 }}>
           <div style={{ fontSize: 11, color: C.dim, letterSpacing: "0.08em", marginBottom: 12 }}>PROGRAM HISTORY</div>
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            {state.history.map((h) => {
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+            {programHistory.map((h, i) => {
               const title = h.postseason === "National Champions";
+              const startsSim = !h.real && (i === 0 || programHistory[i - 1].real);
               return (
-                <div key={h.year} style={{ border: `1px solid ${title ? C.gold : C.line}`, padding: "8px 12px", minWidth: 74 }}>
-                  <div className="cbb-num" style={{ fontSize: 13, color: C.dim }}>{seasonLabel(h.year)}</div>
-                  <div className="cbb-num" style={{ fontSize: 16, fontWeight: 600 }}>{h.wins}-{h.losses}</div>
-                  {h.postseason && (
-                    <div style={{ fontSize: 9.5, color: title ? C.gold : C.wood, marginTop: 3, letterSpacing: "0.03em" }}>{h.postseason}</div>
+                <React.Fragment key={h.year}>
+                  {startsSim && i > 0 && (
+                    <div title="Real history ends here — everything from here on is your dynasty's simulated results."
+                      style={{ display: "flex", alignItems: "center", gap: 6, color: C.wood, fontSize: 10, letterSpacing: "0.05em", alignSelf: "stretch" }}>
+                      <div style={{ width: 1, background: C.wood, flex: 1 }} />
+                      <span style={{ whiteSpace: "nowrap" }}>YOUR DYNASTY →</span>
+                    </div>
                   )}
-                </div>
+                  <div style={{ border: `1px solid ${title ? C.gold : C.line}`, borderStyle: h.real ? "dashed" : "solid", padding: "8px 12px", minWidth: 74, opacity: h.real ? 0.75 : 1 }}
+                    title={h.real ? "Real historical record" : "Simulated result"}>
+                    <div className="cbb-num" style={{ fontSize: 13, color: C.dim }}>{seasonLabel(h.year)}</div>
+                    <div className="cbb-num" style={{ fontSize: 16, fontWeight: 600 }}>{h.wins}-{h.losses}</div>
+                    {h.postseason && (
+                      <div style={{ fontSize: 9.5, color: title ? C.gold : C.wood, marginTop: 3, letterSpacing: "0.03em" }}>{h.postseason}</div>
+                    )}
+                    {h.real && h.rank ? (
+                      <div style={{ fontSize: 9.5, color: C.dimmer, marginTop: 3 }}>#{h.rank}</div>
+                    ) : null}
+                  </div>
+                </React.Fragment>
               );
             })}
           </div>
@@ -4550,24 +4759,67 @@ const th = { padding: "10px 14px" };
 const td = { padding: "10px 14px" };
 
 /* ---------- Depth Chart ---------- */
-function DepthChartTab({ roster, depthChart, onMove, onAssign, onRemove }) {
+// Minutes input for one player at one position. `max` is however much room is
+// left in the position group's 40 including this player's own current
+// minutes, so the field can clamp and redisplay the real committed value
+// immediately on blur — never silently reverting to a stale typed number.
+function MinutesInput({ id, pos, value, max, onSetMinutes }) {
+  const [draft, setDraft] = useState(String(value));
+  useEffect(() => { setDraft(String(value)); }, [value]);
+  const commit = () => {
+    const capped = clamp(Math.round(Number(draft) || 0), 0, max);
+    setDraft(String(capped));
+    onSetMinutes(id, pos, capped);
+  };
+  return (
+    <input
+      type="number" min={0} max={max} step={1}
+      value={draft}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => { if (e.key === "Enter") { commit(); e.currentTarget.blur(); } }}
+      style={{ width: 44, background: C.panel, border: `1px solid ${C.line}`, color: C.cream, fontSize: 12, padding: "3px 4px", textAlign: "center" }}
+    />
+  );
+}
+
+function DepthChartTab({ roster, depthChart, minutes, onMove, onAssign, onRemove, onSetMinutes }) {
   const assignedIds = new Set(POSITIONS.flatMap((p) => depthChart[p]));
   const bench = roster.filter((p) => !assignedIds.has(p.id));
+  const minsOf = (pos) => depthChartMinutes(depthChart[pos], minutes);
+  // The minutes each healthy player would actually get tonight, with anyone
+  // hurt in that group's planned run redistributed to the rest — so the
+  // coach can see the rotation adjust around an absence before it happens.
+  const liveMinsOf = (pos) => {
+    const map = {};
+    positionMinutes(pos, depthChart, roster, minutes).forEach(({ id, minutes: m }) => { map[id] = m; });
+    return map;
+  };
   return (
     <div>
-      <div style={{ fontSize: 11.5, color: C.dimmer, marginBottom: 12, maxWidth: 720 }}>
-        Slot any player at any position — a point guard can back up at the two, three, even the four or five. Playing someone out of position lowers their effective rating (shown in red), since their skills don&apos;t fit that role. Arrows set the rotation order (the top name plays the most minutes), the dropdown moves a player to another spot, and Bench pulls them out of the rotation.
+      <div style={{ fontSize: 11.5, color: C.dimmer, marginBottom: 12, maxWidth: 760 }}>
+        Slot any player at any position — a point guard can back up at the two, three, even the four or five. Playing someone out of position lowers their effective rating (shown in red), since their skills don&apos;t fit that role. Set each player&apos;s minutes directly; each position group has 40 to give out across regulation. Past 34 minutes a player starts losing effectiveness late in games from fatigue (shown in orange) — and heavier minutes on a less durable player raise their injury risk.
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(230px, 1fr))", gap: 14 }}>
-        {POSITIONS.map((pos) => (
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(250px, 1fr))", gap: 14 }}>
+        {POSITIONS.map((pos) => {
+          const mins = minsOf(pos);
+          const total = mins.reduce((a, b) => a + b, 0);
+          const balanced = total === 40;
+          const live = liveMinsOf(pos);
+          return (
           <Panel key={pos} style={{ padding: 14 }}>
-            <div className="cbb-num" style={{ fontWeight: 700, fontSize: 15, marginBottom: 10, color: C.wood }}>{pos}</div>
+            <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 10 }}>
+              <div className="cbb-num" style={{ fontWeight: 700, fontSize: 15, color: C.wood }}>{pos}</div>
+              <div style={{ fontSize: 11, fontWeight: 600, color: balanced ? C.dim : C.gold }}>{total} / 40 min</div>
+            </div>
             {depthChart[pos].length === 0 && <div style={{ fontSize: 12, color: C.dimmer, paddingBottom: 6 }}>No one slotted here.</div>}
             {depthChart[pos].map((id, i) => {
               const p = roster.find((pl) => pl.id === id);
               if (!p) return null;
               const outOfPos = p.pos !== pos;
               const eff = computeOverall(pos, p.attrs);
+              const m = mins[i] ?? 0;
+              const fatigued = m > 34;
               const last = i === depthChart[pos].length - 1;
               return (
                 <div key={id} style={{ padding: "7px 0", borderBottom: last ? "none" : `1px solid ${C.line}` }}>
@@ -4575,10 +4827,11 @@ function DepthChartTab({ roster, depthChart, onMove, onAssign, onRemove }) {
                     <div style={{ minWidth: 0 }}>
                       <div style={{ fontSize: 13, fontWeight: i === 0 ? 700 : 500, color: isHurt(p) ? C.dimmer : C.cream }}>
                         {i === 0 ? "★ " : ""}{p.name}
-                        {isHurt(p) && <span style={{ fontSize: 9, color: C.red, marginLeft: 5 }}>OUT</span>}
+                        {isHurt(p) && <span style={{ fontSize: 9, color: C.red, marginLeft: 5 }}>OUT {p.injuredGames}</span>}
+                        {!isHurt(p) && fatigued && <span style={{ fontSize: 9, color: C.orange || "#d38b2e", marginLeft: 5 }}>FATIGUE</span>}
                       </div>
                       <div style={{ fontSize: 11, color: outOfPos ? C.red : C.dim }}>
-                        {p.class} · OVR {eff}{outOfPos ? ` · natural ${p.pos} ${p.overall}` : ""}
+                        {p.class} · OVR {eff}{outOfPos ? ` · natural ${p.pos} ${p.overall}` : ""} · DUR {p.durability ?? "—"}
                       </div>
                     </div>
                     <div style={{ display: "flex", flexDirection: "column" }}>
@@ -4586,7 +4839,12 @@ function DepthChartTab({ roster, depthChart, onMove, onAssign, onRemove }) {
                       <button onClick={() => onMove(pos, i, 1)} disabled={last} className="cbb-btn" style={{ background: "none", border: "none", color: last ? C.dimmer : C.dim, cursor: last ? "default" : "pointer" }}><ChevronDown size={14} /></button>
                     </div>
                   </div>
-                  <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
+                  <div style={{ display: "flex", gap: 6, marginTop: 4, alignItems: "center" }}>
+                    <span style={{ fontSize: 10.5, color: C.dimmer }}>MIN</span>
+                    <MinutesInput id={id} pos={pos} value={m} max={clamp(40 - (total - m), 0, 40)} onSetMinutes={onSetMinutes} />
+                    {!isHurt(p) && live[id] != null && live[id] !== m && (
+                      <span style={{ fontSize: 10, color: C.green }}>&rarr; {live[id]} tonight</span>
+                    )}
                     <select value={pos} onChange={(e) => onAssign(id, e.target.value)}
                       style={{ background: C.panel, border: `1px solid ${C.line}`, color: C.cream, fontSize: 11, padding: "2px 4px" }}>
                       {POSITIONS.map((pp) => <option key={pp} value={pp}>{pp === pos ? `At ${pp}` : `Move to ${pp}`}</option>)}
@@ -4597,7 +4855,8 @@ function DepthChartTab({ roster, depthChart, onMove, onAssign, onRemove }) {
               );
             })}
           </Panel>
-        ))}
+          );
+        })}
       </div>
 
       {bench.length > 0 && (
@@ -4607,8 +4866,10 @@ function DepthChartTab({ roster, depthChart, onMove, onAssign, onRemove }) {
             {bench.map((p) => (
               <div key={p.id} style={{ border: `1px solid ${C.line}`, padding: "6px 10px", display: "flex", alignItems: "center", gap: 8 }}>
                 <div>
-                  <div style={{ fontSize: 12.5, fontWeight: 600, color: isHurt(p) ? C.dimmer : C.cream }}>{p.name}</div>
-                  <div style={{ fontSize: 10.5, color: C.dim }}>{p.pos} · {p.class} · OVR {p.overall}</div>
+                  <div style={{ fontSize: 12.5, fontWeight: 600, color: isHurt(p) ? C.dimmer : C.cream }}>
+                    {p.name}{isHurt(p) && <span style={{ fontSize: 9, color: C.red, marginLeft: 5 }}>OUT {p.injuredGames}</span>}
+                  </div>
+                  <div style={{ fontSize: 10.5, color: C.dim }}>{p.pos} · {p.class} · OVR {p.overall} · DUR {p.durability ?? "—"}</div>
                 </div>
                 <select value="" onChange={(e) => { if (e.target.value) onAssign(p.id, e.target.value); }}
                   style={{ background: C.panel, border: `1px solid ${C.line}`, color: C.cream, fontSize: 11, padding: "3px 4px" }}>
@@ -4869,13 +5130,14 @@ function RecruitBoard({ board, committedIds, targets, onToggleTarget, points, we
                     const left = MAX_SIGN_ATTEMPTS - (r.signAttempts || 0);
                     let label;
                     if (status.reason === "offer") label = "Offer required to sign";
+                    else if (status.reason === "nil") label = "NIL offer required to sign";
                     else if (status.reason === "max") label = "No sign attempts left";
                     else if (status.reason === "week") label = `Already tried this week (${left} left)`;
                     else if (status.reason === "odds") label = `Need >50% to sign (${Math.round(chance * 100)}%)`;
                     else label = `Attempt to Sign (${Math.round(chance * 100)}%) · ${left} left`;
                     return (
                       <button onClick={() => onSign(r)} disabled={!status.ok} className="cbb-btn"
-                        title={status.ok ? undefined : "You can attempt to sign once a recruit is above 50%, once per week, up to twice overall."}
+                        title={status.ok ? undefined : "You can attempt to sign once a recruit is above 50%, has a real NIL offer on the table, once per week, up to twice overall."}
                         style={{ ...btnStyle(status.ok ? C.wood : C.line), fontSize: 12, padding: "7px 12px", cursor: status.ok ? "pointer" : "not-allowed" }}>
                         {label}
                       </button>
@@ -5279,18 +5541,16 @@ const TEMPO_POSS = { slow: 58, balanced: 65, fast: 73 };
 
 // Minute-weighted lean toward interior vs perimeter play, used to reward a game
 // plan that fits the roster you actually field.
-function liveTendencies(roster, depthChart) {
+function liveTendencies(roster, depthChart, minutesMap) {
   let inside = 0, perim = 0, mins = 0;
   POSITIONS.forEach((pos) => {
-    const order = (depthChart[pos] || []).filter((id) => roster.find((p) => p.id === id));
-    const m = depthChartMinutes(order);
-    order.forEach((id, i) => {
+    positionMinutes(pos, depthChart, roster, minutesMap).forEach(({ id, minutes: m }) => {
       const p = roster.find((x) => x.id === id);
-      if (!p || !m[i]) return;
+      if (!p || !m) return;
       const a = p.attrs;
-      inside += ((a.rebounding + a.postDefense + a.blocks) / 3) * m[i];
-      perim += ((a.threePoint + a.ballHandling + a.scoring) / 3) * m[i];
-      mins += m[i];
+      inside += ((a.rebounding + a.postDefense + a.blocks) / 3) * m;
+      perim += ((a.threePoint + a.ballHandling + a.scoring) / 3) * m;
+      mins += m;
     });
   });
   if (!mins) return { inside: 50, perimeter: 50 };
@@ -5299,15 +5559,13 @@ function liveTendencies(roster, depthChart) {
 
 // Pick the scorer on a made bucket, weighted by minutes and scoring rating so
 // the box score reads like the rotation you're actually running.
-function pickScorer(roster, depthChart) {
+function pickScorer(roster, depthChart, minutesMap) {
   const weighted = [];
   POSITIONS.forEach((pos) => {
-    const order = (depthChart[pos] || []).filter((id) => roster.find((p) => p.id === id));
-    const mins = depthChartMinutes(order);
-    order.forEach((id, i) => {
+    positionMinutes(pos, depthChart, roster, minutesMap).forEach(({ id, minutes: m }) => {
       const p = roster.find((x) => x.id === id);
-      if (!p || !mins[i]) return;
-      weighted.push({ name: p.name, w: mins[i] * (0.4 + p.attrs.scoring / 99) });
+      if (!p || !m) return;
+      weighted.push({ name: p.name, w: m * (0.4 + p.attrs.scoring / 99) });
     });
   });
   if (!weighted.length) return "The offense";
@@ -5349,7 +5607,7 @@ function stepLive(g, ctx) {
   let { my, opp } = g;
   let text;
   if (offMe) {
-    if (res.made) { my += res.pts; const who = pickScorer(ctx.roster, ctx.dc); text = res.three ? `${who} drains a three` : `${who} scores${res.pts === 2 ? "" : ""} inside`; }
+    if (res.made) { my += res.pts; const who = pickScorer(ctx.roster, ctx.dc, ctx.minutes); text = res.three ? `${who} drains a three` : `${who} scores${res.pts === 2 ? "" : ""} inside`; }
     else text = pick(["Shot rims out", "Turnover", "Contested miss", "Shot clock violation"]);
   } else {
     if (res.made) { opp += res.pts; text = `${ctx.oppName} ${res.three ? "hits from deep" : "answers with a bucket"}`; }
@@ -5370,19 +5628,17 @@ function stepLive(g, ctx) {
 
 // Box score for a completed played game, normalized so points sum to the score
 // the user actually watched pile up.
-function genLiveBox(roster, depthChart, teamPts) {
+function genLiveBox(roster, depthChart, teamPts, minutesMap) {
   const box = {};
   POSITIONS.forEach((pos) => {
-    const order = (depthChart[pos] || []).filter((id) => roster.find((p) => p.id === id));
-    const mins = depthChartMinutes(order);
-    order.forEach((id, i) => {
-      const m = mins[i];
+    positionMinutes(pos, depthChart, roster, minutesMap).forEach(({ id, minutes: m }) => {
       if (!m) return;
       const p = roster.find((x) => x.id === id);
+      const fat = fatigueMultiplier(m);
       box[id] = {
-        pts: Math.max(0, Math.round((m / 30) * (p.attrs.scoring / 99) * 24 * rand(0.7, 1.3))),
-        reb: Math.max(0, Math.round((m / 30) * (p.attrs.rebounding / 99) * 11 * rand(0.6, 1.4))),
-        ast: Math.max(0, Math.round((m / 30) * (p.attrs.passing / 99) * 7 * rand(0.5, 1.5))),
+        pts: Math.max(0, Math.round((m / 30) * (p.attrs.scoring / 99) * fat * 24 * rand(0.7, 1.3))),
+        reb: Math.max(0, Math.round((m / 30) * (p.attrs.rebounding / 99) * fat * 11 * rand(0.6, 1.4))),
+        ast: Math.max(0, Math.round((m / 30) * (p.attrs.passing / 99) * fat * 7 * rand(0.5, 1.5))),
         min: m,
       };
     });
@@ -5598,10 +5854,10 @@ function VisitExperience({ recruit, actionKey, team, onClose, onFinish }) {
 function LiveGame({ ctxInit, onFinish, onClose }) {
   const T = TEMPO_POSS.balanced; // possessions per team are locked at tip from tempo
   const [ctx] = useState(() => {
-    const myPower = userGamePower(ctxInit.roster, ctxInit.dc, ctxInit.powerBaseline) + ctxInit.momentum;
+    const myPower = userGamePower(ctxInit.roster, ctxInit.dc, ctxInit.powerBaseline, ctxInit.minutes) + ctxInit.momentum;
     return {
-      roster: ctxInit.roster, dc: ctxInit.dc, oppName: ctxInit.opp.name,
-      oppPower: ctxInit.oppPower, myPower, tend: liveTendencies(ctxInit.roster, ctxInit.dc),
+      roster: ctxInit.roster, dc: ctxInit.dc, minutes: ctxInit.minutes, oppName: ctxInit.opp.name,
+      oppPower: ctxInit.oppPower, myPower, tend: liveTendencies(ctxInit.roster, ctxInit.dc, ctxInit.minutes),
     };
   });
   const [tempo, setTempo] = useState("balanced");
@@ -5647,7 +5903,7 @@ function LiveGame({ ctxInit, onFinish, onClose }) {
 
   function finish() {
     const win = g.my > g.opp;
-    onFinish({ win, myScore: g.my, oppScore: g.opp, boxByPlayer: genLiveBox(ctx.roster, ctx.dc, g.my) });
+    onFinish({ win, myScore: g.my, oppScore: g.opp, boxByPlayer: genLiveBox(ctx.roster, ctx.dc, g.my, ctx.minutes) });
   }
 
   return (
@@ -6245,33 +6501,57 @@ function ProgramTab({ state, team, record, reputation, rivalIds, rankById }) {
         </Panel>
       )}
 
-      {state.history.length > 0 && (
-        <Panel style={{ padding: 20 }}>
-          <div style={{ fontSize: 11, color: C.dim, letterSpacing: "0.08em", marginBottom: 12 }}>SEASON BY SEASON</div>
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
-            <thead>
-              <tr style={{ borderBottom: `1px solid ${C.line}`, color: C.dim, fontSize: 11, textAlign: "left" }}>
-                <th style={th}>Season</th><th style={th}>Program</th><th style={th}>Record</th><th style={th}>Postseason</th><th style={th}>Team POY</th>
-              </tr>
-            </thead>
-            <tbody>
-              {[...state.history].reverse().map((h) => {
-                const title = h.postseason === "National Champions";
-                const poy = h.awards && h.awards.poy && h.awards.poy.isUser ? h.awards.poy.name : null;
-                return (
-                  <tr key={h.year} style={{ borderBottom: `1px solid ${C.line}` }}>
-                    <td className="cbb-num" style={td}>{seasonLabel(h.year)}</td>
-                    <td style={td}>{TEAM_MAP[h.teamId]?.name || "—"}</td>
-                    <td className="cbb-num" style={td}>{h.wins}-{h.losses}</td>
-                    <td style={{ ...td, color: title ? C.gold : h.postseason ? C.wood : C.dimmer }}>{h.postseason || "—"}</td>
-                    <td style={{ ...td, color: poy ? C.gold : C.dimmer }}>{poy || "—"}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </Panel>
-      )}
+      {(() => {
+        // Real backfill here uses the TRUE career start (earliest year across
+        // every team this coach has run), not per-program, so it can never
+        // overlap a simulated row already logged for a different job.
+        const careerStartYear = state.history.length ? Math.min(...state.history.map((h) => h.year)) : state.year;
+        const realRec = teamRecordsRaw[team.id] || {};
+        const realRows = Object.keys(realRec)
+          .map(Number)
+          .filter((y) => y < careerStartYear && realRec[y] && (realRec[y].w + realRec[y].l) > 0)
+          .sort((a, b) => a - b)
+          .map((y) => ({ year: y, teamId: team.id, wins: realRec[y].w, losses: realRec[y].l, real: true }));
+        const rows = [...realRows, ...state.history.map((h) => ({ ...h, real: false }))];
+        if (rows.length === 0) return null;
+        return (
+          <Panel style={{ padding: 20 }}>
+            <div style={{ fontSize: 11, color: C.dim, letterSpacing: "0.08em", marginBottom: 12 }}>SEASON BY SEASON</div>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+              <thead>
+                <tr style={{ borderBottom: `1px solid ${C.line}`, color: C.dim, fontSize: 11, textAlign: "left" }}>
+                  <th style={th}>Season</th><th style={th}>Program</th><th style={th}>Record</th><th style={th}>Postseason</th><th style={th}>Team POY</th>
+                </tr>
+              </thead>
+              <tbody>
+                {[...rows].reverse().map((h, i, arr) => {
+                  const title = h.postseason === "National Champions";
+                  const poy = h.awards && h.awards.poy && h.awards.poy.isUser ? h.awards.poy.name : null;
+                  const endsSim = !h.real && (i === arr.length - 1 || arr[i + 1].real);
+                  return (
+                    <React.Fragment key={`${h.teamId}-${h.year}`}>
+                      <tr style={{ borderBottom: `1px solid ${C.line}`, opacity: h.real ? 0.75 : 1 }} title={h.real ? "Real historical record" : "Simulated result"}>
+                        <td className="cbb-num" style={td}>{seasonLabel(h.year)}{h.real && <span style={{ fontSize: 9.5, color: C.dimmer, marginLeft: 6 }}>REAL</span>}</td>
+                        <td style={td}>{TEAM_MAP[h.teamId]?.name || "—"}</td>
+                        <td className="cbb-num" style={td}>{h.wins}-{h.losses}</td>
+                        <td style={{ ...td, color: title ? C.gold : h.postseason ? C.wood : C.dimmer }}>{h.postseason || "—"}</td>
+                        <td style={{ ...td, color: poy ? C.gold : C.dimmer }}>{poy || "—"}</td>
+                      </tr>
+                      {endsSim && (
+                        <tr>
+                          <td colSpan={5} style={{ padding: "4px 14px", fontSize: 10, color: C.wood, letterSpacing: "0.05em", borderBottom: `1px solid ${C.line}` }}>
+                            ↑ YOUR DYNASTY — SIMULATED FROM HERE · REAL HISTORY BELOW ↓
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+          </Panel>
+        );
+      })()}
 
       {awardsHistory.length > 0 && (
         <Panel style={{ padding: 20 }}>
@@ -6949,6 +7229,7 @@ export default function CBBDynasty() {
     const prestigeById = baselinePrestigeById();
     applyLivePrestige(prestigeById);
     const roster = buildInitialRoster(team, year);
+    const initialDepthChart = defaultDepthChart(roster);
     const state = {
       slot,
       teamId: team.id,
@@ -6958,7 +7239,8 @@ export default function CBBDynasty() {
       nilBudgetById: baselineNilBudgetById(),
       nilObjectives: pickObjectivesFor(team.prestige),
       roster,
-      depthChart: defaultDepthChart(roster),
+      depthChart: initialDepthChart,
+      minutes: defaultMinutesFor(initialDepthChart),
       schedule: genSchedule(team, year),
       recruitingBoard: seedInterest(genRecruitPool(year + 1), team), // board is always for the NEXT season's incoming class
       incomingCommits: [],
