@@ -6118,6 +6118,7 @@ function StandingsTab({ team, ranked, rankById, userRecord, onViewTeam }) {
           {confOptions.map((c) => <option key={c} value={c}>{c}</option>)}
         </select>
       </div>
+      {gamesPlayed > 0 && <StandingsBarChart rows={rows} onViewTeam={onViewTeam} />}
       <Panel style={{ overflow: "hidden" }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13.5 }}>
           <thead>
@@ -6142,6 +6143,46 @@ function StandingsTab({ team, ranked, rankById, userRecord, onViewTeam }) {
         </table>
       </Panel>
     </div>
+  );
+}
+
+// Horizontal win% bars for the current standings view (national or
+// conference-filtered) — reads the same sorted `rows` the table renders,
+// so the chart and table never disagree. Bars use the same track/fill
+// pattern as the job-security and interest meters elsewhere in the app,
+// with the user's team called out in the "you" accent color.
+function StandingsBarChart({ rows, onViewTeam }) {
+  const shown = rows.slice(0, 15);
+  return (
+    <Panel style={{ padding: 20, marginBottom: 14 }}>
+      <div style={{ fontSize: 11, color: C.dim, letterSpacing: "0.08em", marginBottom: 12 }}>WIN% COMPARISON</div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+        {shown.map((t) => {
+          const gp = t.wins + t.losses;
+          const pct = gp > 0 ? t.wins / gp : 0;
+          return (
+            <div key={t.id} className="cbb-row" onClick={() => onViewTeam(t.id)}
+              style={{ display: "flex", alignItems: "center", gap: 10, padding: "5px 6px", cursor: "pointer" }}>
+              <div style={{
+                width: 130, flexShrink: 0, fontSize: 12, fontWeight: t.isUser ? 700 : 500,
+                color: t.isUser ? C.cream : C.dim, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+              }}>
+                {t.name}{t.isUser ? " (you)" : ""}
+              </div>
+              <div style={{ flex: 1, height: 16, background: C.bg, border: `1px solid ${C.line}` }}>
+                <div style={{ height: "100%", width: `${Math.max(pct * 100, 1.5)}%`, background: t.isUser ? C.wood : C.dimmer, borderRadius: "0 3px 3px 0" }} />
+              </div>
+              <div className="cbb-num" style={{ width: 78, flexShrink: 0, fontSize: 11.5, color: C.dim, textAlign: "right" }}>
+                {t.wins}-{t.losses} · {Math.round(pct * 100)}%
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      {rows.length > shown.length && (
+        <div style={{ color: C.dimmer, fontSize: 11, marginTop: 10 }}>Top {shown.length} of {rows.length} — full list in the table below.</div>
+      )}
+    </Panel>
   );
 }
 
