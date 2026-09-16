@@ -3273,6 +3273,10 @@ function DynastyApp({ initial, onExit }) {
   const [toast, setToast] = useState(null);
   const [viewTeamId, setViewTeamId] = useState(null);
   const [jobPickerOpen, setJobPickerOpen] = useState(false);
+  // True when the job picker was opened BECAUSE the coach was just fired
+  // (jobSecurity bottomed out), not a voluntary "Coaching Offers" browse —
+  // gates the unclosable modal + "start a new dynasty instead" escape hatch.
+  const [firedFlow, setFiredFlow] = useState(false);
   const [playerViewId, setPlayerViewId] = useState(null);
   const [boxViewId, setBoxViewId] = useState(null);
   const [recap, setRecap] = useState(null);
@@ -4168,6 +4172,7 @@ function DynastyApp({ initial, onExit }) {
     if (fired) {
       setTimeout(() => {
         flash(`${team.name} has parted ways with you after missing expectations. Find a new job.`);
+        setFiredFlow(true);
         setJobPickerOpen(true);
       }, 300);
     }
@@ -4237,6 +4242,7 @@ function DynastyApp({ initial, onExit }) {
       history: [...state.history, { year: state.year, wins: record.w, losses: record.l, teamId: state.teamId, postseason: psSummary, awards }],
     });
     setJobPickerOpen(false);
+    setFiredFlow(false);
     setTab("dashboard");
     flash(`New job accepted — you're now the head coach at ${newTeam.name}.`);
   }
@@ -4437,8 +4443,10 @@ function DynastyApp({ initial, onExit }) {
           currentTeamId={state.teamId}
           nextYear={state.year + 1}
           reputation={reputation}
+          firedFlow={firedFlow}
           onPick={changeJob}
-          onClose={() => setJobPickerOpen(false)}
+          onRestart={onExit}
+          onClose={() => { setJobPickerOpen(false); setFiredFlow(false); }}
         />
       )}
       {playerViewId && (
@@ -5717,6 +5725,23 @@ function livePossession({ offMe, myPower, oppPower, gp, tend, boost, fatigue }) 
   return { pts: 0, three: false, made: false };
 }
 
+// A 5-minute OT period at the same pace as regulation: regulation is T
+// events per 20-minute half (2*T total), so 5 minutes at that same tempo is
+// T/4 events.
+function otPeriodLength(T) {
+  return Math.max(2, Math.round(T / 4));
+}
+
+// Which period `event` falls in (0 = regulation, 1/2/3... = repeating OT
+// periods) and the event count where that period ends.
+function periodFor(event, T) {
+  const regEnd = 2 * T;
+  if (event <= regEnd) return { period: 0, periodEnd: regEnd };
+  const otLen = otPeriodLength(T);
+  const otPeriod = Math.ceil((event - regEnd) / otLen);
+  return { period: otPeriod, periodEnd: regEnd + otPeriod * otLen };
+}
+
 // Advance the game one possession, returning the next immutable game state.
 function stepLive(g, ctx) {
   if (g.finished) return g;
@@ -5734,16 +5759,20 @@ function stepLive(g, ctx) {
     else text = pick([`${ctx.oppName} misses`, `Stop! ${ctx.oppName} turns it over`, `${ctx.oppName} bricks it`]);
   }
   const event = e + 1;
-  const inOT = event > 2 * ctx.T;
+  const { period, periodEnd } = periodFor(event, ctx.T);
+  const inOT = period > 0;
   const fatigue = clamp(g.fatigue + 0.02 + (g.gp.defScheme === "press" ? 0.05 : 0) + (g.gp.tempo === "fast" ? 0.03 : 0), 0, 4);
   const boostPoss = offMe && g.boostPoss > 0 ? g.boostPoss - 1 : g.boostPoss;
   const oppRun = offMe ? (res.made ? 0 : g.oppRun) : (res.made ? g.oppRun + res.pts : g.oppRun);
-  const half = event > ctx.T ? 2 : 1;
-  const log = [{ id: event, my, opp, offMe, text, half, ot: inOT }, ...g.log].slice(0, 80);
-  // Regulation ends after 2*T possessions; a tie forces sudden extra possessions.
-  const reachedEnd = event >= 2 * ctx.T;
-  const finished = reachedEnd && my !== opp;
-  return { ...g, my, opp, event, fatigue, boostPoss, oppRun, log, finished, inOT: reachedEnd };
+  const half = inOT ? 2 : (event > ctx.T ? 2 : 1);
+  const log = [{ id: event, my, opp, offMe, text, half, ot: inOT, otPeriod: period }, ...g.log].slice(0, 80);
+  // A period — regulation half or OT — always plays out in full; the game
+  // only ends once that period's last possession is in the books AND the
+  // score has actually separated, exactly like the end of regulation. A tie
+  // at a period's end starts the next 5-minute OT period, repeating for as
+  // long as it takes, never sudden death mid-period.
+  const finished = event === periodEnd && my !== opp;
+  return { ...g, my, opp, event, fatigue, boostPoss, oppRun, log, finished, inOT, otPeriod: period };
 }
 
 // Box score for a completed played game, normalized so points sum to the score
@@ -5775,13 +5804,28 @@ function genLiveBox(roster, depthChart, teamPts, minutesMap) {
   return box;
 }
 
+// Clock + period label for the current game state — regulation halves (20
+// game-minutes each) and, once in overtime, 5-minute OT periods at the same
+// pace, numbered OT1, OT2, ... for as many as it takes to break the tie.
 function fmtClock(g, T) {
-  const half = g.event > T ? 2 : 1;
-  const eventsThisHalf = half === 1 ? g.event : g.event - T;
-  const perEvent = 1200 / T;
-  const remain = Math.max(0, Math.round(1200 - eventsThisHalf * perEvent));
+  const perEvent = 1200 / T; // seconds per possession, regulation pace
+  if (g.event <= T) {
+    const remain = Math.max(0, Math.round(1200 - g.event * perEvent));
+    const mm = Math.floor(remain / 60), ss = remain % 60;
+    return { half: 1, otPeriod: 0, periodLabel: "1ST HALF", label: `${mm}:${ss.toString().padStart(2, "0")}` };
+  }
+  if (g.event <= 2 * T) {
+    const eventsThisHalf = g.event - T;
+    const remain = Math.max(0, Math.round(1200 - eventsThisHalf * perEvent));
+    const mm = Math.floor(remain / 60), ss = remain % 60;
+    return { half: 2, otPeriod: 0, periodLabel: "2ND HALF", label: `${mm}:${ss.toString().padStart(2, "0")}` };
+  }
+  const otLen = otPeriodLength(T);
+  const { period } = periodFor(g.event, T);
+  const eventsThisOT = g.event - (2 * T + (period - 1) * otLen);
+  const remain = Math.max(0, Math.round(300 - eventsThisOT * perEvent));
   const mm = Math.floor(remain / 60), ss = remain % 60;
-  return { half, label: `${mm}:${ss.toString().padStart(2, "0")}` };
+  return { half: 2, otPeriod: period, periodLabel: `OT${period > 1 ? period : ""}`, label: `${mm}:${ss.toString().padStart(2, "0")}` };
 }
 
 function PlanButton({ active, onClick, children }) {
@@ -5973,22 +6017,44 @@ function VisitExperience({ recruit, actionKey, team, onClose, onFinish }) {
 
 function LiveGame({ ctxInit, onFinish, onClose }) {
   const T = TEMPO_POSS.balanced; // possessions per team are locked at tip from tempo
-  const [ctx] = useState(() => {
-    const myPower = userGamePower(ctxInit.roster, ctxInit.dc, ctxInit.powerBaseline, ctxInit.minutes) + ctxInit.momentum;
-    return {
-      roster: ctxInit.roster, dc: ctxInit.dc, minutes: ctxInit.minutes, oppName: ctxInit.opp.name,
-      oppPower: ctxInit.oppPower, myPower, tend: liveTendencies(ctxInit.roster, ctxInit.dc, ctxInit.minutes),
-    };
-  });
+  // The depth chart and minutes you set pregame — but live, not frozen: a
+  // substitution during the game reassigns who's actually on the floor for
+  // every possession from that point on, so it feeds tendencies, scoring
+  // credit, team strength, and the final box score exactly like the pregame
+  // assignment does.
+  const [liveDc, setLiveDc] = useState(ctxInit.dc);
+  const [liveMinutes, setLiveMinutes] = useState(ctxInit.minutes);
   const [tempo, setTempo] = useState("balanced");
   const [started, setStarted] = useState(false);
   const [g, setG] = useState(() => ({
     my: 0, opp: 0, event: 0, fatigue: 0, boostPoss: 0, oppRun: 0,
-    timeouts: 5, log: [], finished: false, inOT: false,
+    timeouts: 5, log: [], finished: false, inOT: false, otPeriod: 0,
     gp: { tempo: "balanced", offFocus: "balanced", defScheme: "balanced" },
   }));
   const totalPoss = TEMPO_POSS[tempo];
+  const tend = useMemo(() => liveTendencies(ctxInit.roster, liveDc, liveMinutes), [ctxInit.roster, liveDc, liveMinutes]);
+  const myPower = useMemo(
+    () => userGamePower(ctxInit.roster, liveDc, ctxInit.powerBaseline, liveMinutes) + ctxInit.momentum,
+    [ctxInit.roster, liveDc, ctxInit.powerBaseline, liveMinutes, ctxInit.momentum]
+  );
+  const ctx = useMemo(() => ({
+    roster: ctxInit.roster, dc: liveDc, minutes: liveMinutes, oppName: ctxInit.opp.name,
+    oppPower: ctxInit.oppPower, myPower, tend,
+  }), [ctxInit.roster, liveDc, liveMinutes, ctxInit.opp.name, ctxInit.oppPower, myPower, tend]);
   const gctx = useMemo(() => ({ ...ctx, T: totalPoss }), [ctx, totalPoss]);
+
+  // Swap `outId` for `inId` at `pos`: the incoming player takes over the
+  // outgoing player's spot AND their remaining-game minutes share; the
+  // outgoing player heads to the bench (0 minutes) for the rest of the game.
+  function subPlayer(pos, outId, inId) {
+    setLiveDc((dc) => {
+      const next = {};
+      POSITIONS.forEach((p) => { next[p] = dc[p].filter((id) => id !== inId); });
+      next[pos] = next[pos].map((id) => (id === outId ? inId : id));
+      return next;
+    });
+    setLiveMinutes((m) => ({ ...m, [inId]: m[outId] ?? 0, [outId]: 0 }));
+  }
 
   function tip() {
     setG((s) => ({ ...s, gp: { ...s.gp, tempo } }));
@@ -6035,8 +6101,8 @@ function LiveGame({ ctxInit, onFinish, onClose }) {
           <div className="cbb-num" style={{ fontSize: 44, fontWeight: 700, color: leading ? C.gold : C.cream, lineHeight: 1 }}>{g.my}</div>
         </div>
         <div style={{ textAlign: "center" }}>
-          <div className="cbb-num" style={{ fontSize: 13, color: C.wood, fontWeight: 700 }}>{g.inOT ? "OT" : `${clock.half === 1 ? "1ST" : "2ND"} HALF`}</div>
-          <div className="cbb-num" style={{ fontSize: 20, fontWeight: 700, display: "flex", alignItems: "center", gap: 5, justifyContent: "center" }}><Clock size={14} color={C.dim} />{g.inOT ? "0:00" : clock.label}</div>
+          <div className="cbb-num" style={{ fontSize: 13, color: C.wood, fontWeight: 700 }}>{clock.periodLabel}</div>
+          <div className="cbb-num" style={{ fontSize: 20, fontWeight: 700, display: "flex", alignItems: "center", gap: 5, justifyContent: "center" }}><Clock size={14} color={C.dim} />{clock.label}</div>
           <div style={{ fontSize: 10.5, color: C.dimmer, marginTop: 3 }}>TO left: {g.timeouts}</div>
         </div>
         <div style={{ textAlign: "center", minWidth: 120 }}>
@@ -6092,6 +6158,55 @@ function LiveGame({ ctxInit, onFinish, onClose }) {
               <Flame size={13} /> {ctx.oppName} is on a {g.oppRun}-0 run — consider a timeout.
             </div>
           )}
+
+          {/* Substitutions — available any time you're setting the game plan,
+              including right after calling a timeout; swapping a player in
+              hands them the outgoing player's remaining-game minutes and
+              takes effect starting the next possession. */}
+          <div style={{ marginBottom: 14 }}>
+            <div style={{ fontSize: 10.5, color: C.dim, letterSpacing: "0.06em", marginBottom: 5, display: "flex", alignItems: "center", gap: 5 }}>
+              <Users size={12} /> SUBSTITUTIONS
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 8 }}>
+              {(() => {
+                // The one healthy player actually on the floor at each
+                // position — whoever's carrying the most live minutes there.
+                // Everyone else on the roster (backups included) is a valid
+                // sub at any position; only the 5 currently on the floor are
+                // off the table.
+                const onFloorByPos = {};
+                POSITIONS.forEach((pos) => {
+                  const healthyIds = (liveDc[pos] || []).filter((id) => {
+                    const p = ctx.roster.find((x) => x.id === id);
+                    return p && !isHurt(p);
+                  });
+                  onFloorByPos[pos] = [...healthyIds].sort((a, b) => (liveMinutes[b] ?? 0) - (liveMinutes[a] ?? 0))[0];
+                });
+                const onFloorSet = new Set(Object.values(onFloorByPos).filter(Boolean));
+                return POSITIONS.map((pos) => {
+                const onFloorId = onFloorByPos[pos];
+                const onFloor = ctx.roster.find((p) => p.id === onFloorId);
+                if (!onFloor) return null;
+                const bench = ctx.roster.filter((p) => !onFloorSet.has(p.id) && !isHurt(p));
+                return (
+                  <div key={pos} style={{ border: `1px solid ${C.line}`, padding: "6px 8px" }}>
+                    <div style={{ fontSize: 10, color: C.dimmer }}>{pos}</div>
+                    <div style={{ fontSize: 12, color: C.cream, fontWeight: 600 }}>{onFloor.name}</div>
+                    <select
+                      value=""
+                      onChange={(e) => { if (e.target.value) subPlayer(pos, onFloorId, e.target.value); }}
+                      disabled={!bench.length}
+                      style={{ width: "100%", marginTop: 4, background: C.panel, border: `1px solid ${C.line}`, color: C.cream, fontSize: 11, padding: "3px 4px" }}
+                    >
+                      <option value="">{bench.length ? "Sub in…" : "No one available"}</option>
+                      {bench.map((p) => <option key={p.id} value={p.id}>{p.name} · OVR {p.overall}</option>)}
+                    </select>
+                  </div>
+                );
+                });
+              })()}
+            </div>
+          </div>
 
           {/* Controls */}
           {!g.finished ? (
@@ -6286,19 +6401,55 @@ function TeamRosterModal({ teamId, year, strengths, rank, poached = [], onClose 
 }
 
 /* ---------- Coaching Job Change ---------- */
-function JobChangeModal({ currentTeamId, nextYear, reputation = 0, onPick, onClose }) {
+// Doubles as the post-firing flow: `firedFlow` swaps in a "you were let go"
+// framing, makes the modal unclosable (a fired coach can't just dismiss it
+// and be left nominally coaching a job they no longer have), and surfaces a
+// second, clearly separated path — retire this career and start an entirely
+// new dynasty — behind its own confirm step, since it deletes the save.
+function JobChangeModal({ currentTeamId, nextYear, reputation = 0, firedFlow = false, onPick, onRestart, onClose }) {
   const [q, setQ] = useState("");
+  const [confirmingRestart, setConfirmingRestart] = useState(false);
   const filtered = TEAMS
     .filter((t) => t.id !== currentTeamId && t.name.toLowerCase().includes(q.toLowerCase()))
     .sort((a, b) => b.prestige - a.prestige || a.name.localeCompare(b.name));
+  const currentTeamName = TEAM_MAP[currentTeamId]?.name || "Your program";
 
   return (
     <Modal
-      title="Take another job"
-      subtitle={`Leave your program to coach a new team starting in ${seasonLabel(nextYear)}. Bigger programs only hire coaches with the reputation to match — you have ${reputation} (${reputationTier(reputation)}). Your current roster stays behind.`}
-      onClose={onClose}
+      title={firedFlow ? "You've been fired" : "Take another job"}
+      subtitle={firedFlow
+        ? `${currentTeamName} has let you go. Take a job at a program that meets your reputation below, or retire this career and start a brand new dynasty. You have ${reputation} reputation (${reputationTier(reputation)}).`
+        : `Leave your program to coach a new team starting in ${seasonLabel(nextYear)}. Bigger programs only hire coaches with the reputation to match — you have ${reputation} (${reputationTier(reputation)}). Your current roster stays behind.`}
+      onClose={firedFlow ? () => {} : onClose}
       maxWidth={860}
     >
+      {firedFlow && (
+        <Panel style={{ padding: 14, marginBottom: 16, borderLeft: `3px solid ${C.red}` }}>
+          {!confirmingRestart ? (
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 14, flexWrap: "wrap" }}>
+              <div style={{ fontSize: 12.5, color: C.dim }}>Don&apos;t want to rebuild at a smaller program? Walk away and start a completely new dynasty instead.</div>
+              <button onClick={() => setConfirmingRestart(true)} className="cbb-btn"
+                style={{ fontSize: 12.5, padding: "8px 14px", border: `1px solid ${C.red}`, background: "transparent", color: C.red, cursor: "pointer", whiteSpace: "nowrap" }}>
+                Retire &amp; start a new dynasty
+              </button>
+            </div>
+          ) : (
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 14, flexWrap: "wrap" }}>
+              <div style={{ fontSize: 12.5, color: C.red }}>This permanently deletes your current save. This can&apos;t be undone.</div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button onClick={() => setConfirmingRestart(false)} className="cbb-btn"
+                  style={{ fontSize: 12.5, padding: "8px 14px", border: `1px solid ${C.line}`, background: "transparent", color: C.dim, cursor: "pointer" }}>
+                  Cancel
+                </button>
+                <button onClick={onRestart} className="cbb-btn"
+                  style={{ fontSize: 12.5, padding: "8px 14px", border: `1px solid ${C.red}`, background: C.red, color: C.cream, cursor: "pointer", whiteSpace: "nowrap" }}>
+                  Yes, delete and start over
+                </button>
+              </div>
+            </div>
+          )}
+        </Panel>
+      )}
       <input
         value={q}
         onChange={(e) => setQ(e.target.value)}
