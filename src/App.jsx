@@ -1335,9 +1335,13 @@ function canTakeAction(recruit, actionKey, pointsLeft, weekIndex = 0, team = nul
   return false;
 }
 
+// Every interest gain (calls, offers, visits) is scaled down 30% so warming a
+// recruit up is meaningfully harder to do.
+const INTEREST_GAIN_MULT = 0.7;
+
 function applyRecruitAction(recruit, actionKey, weekIndex = 0) {
   const action = RECRUIT_ACTIONS[actionKey];
-  const gain = rand(action.gain[0], action.gain[1]);
+  const gain = Math.max(1, Math.round(rand(action.gain[0], action.gain[1]) * INTEREST_GAIN_MULT));
   const next = { ...recruit, interest: clamp(recruit.interest + gain, 0, 100) };
   if (actionKey === "OFFER") next.offerExtended = true;
   if (actionKey === "CALL") { next.callsUsed = (next.callsUsed || 0) + 1; next.callsThisWeek = (next.callsThisWeek || 0) + 1; }
@@ -1346,14 +1350,14 @@ function applyRecruitAction(recruit, actionKey, weekIndex = 0) {
   return next;
 }
 
-// Landing prospects was too easy, so the raw interest-share odds are made 33%
-// harder to convert (divide the base probability by 1.33).
-const RECRUIT_DIFFICULTY = 1.33;
+// Chance to sign IS the recruit's interest, read 1:1 — the board never shows a
+// prospect at high interest but low odds anymore. Rival pressure no longer
+// suppresses this number; instead it drives whether a recruit commits elsewhere
+// before you can close (see tickRecruitingWeek), preserving urgency without the
+// interest/odds mismatch.
 function signChance(recruit) {
   if (!recruit.offerExtended) return 0;
-  const total = recruit.interest + recruit.rivalPressure;
-  const base = total <= 0 ? 0.5 : recruit.interest / total;
-  return clamp(base / RECRUIT_DIFFICULTY, 0.02, 0.97);
+  return clamp(recruit.interest / 100, 0, 1);
 }
 
 // A sign attempt is only allowed when the recruit is better than a coin flip
@@ -2100,12 +2104,16 @@ function userTeamOverall(roster, depthChart) {
 // derived power CPU teams use, so grading the user by raw OVR let weak real
 // programs (e.g. Chicago State) steamroll their schedule. `baseline` pegs the
 // SEASON-START real roster to the school's real barthag strength: hold the real
-// roster and you play exactly like the real team (year one is true to history);
-// out-recruit that roster and you rise above it, fall behind and you drop below.
+// roster and you play exactly like the real team (year one is true to history).
+// From there, ROSTER_SENSITIVITY controls how fast the roster you actually build
+// moves you off that historical anchor. At 1.8, a ~40-point OVR spread maps
+// across nearly the full power scale, so recruiting — not the school's history —
+// is what determines your strength once you reshape the team.
+const ROSTER_SENSITIVITY = 1.8;
 function userGamePower(roster, depthChart, baseline) {
   const raw = userTeamOverall(roster, depthChart);
   if (!baseline) return raw;
-  return clamp(baseline.barthagPower + (raw - baseline.realOverall), 25, 95);
+  return clamp(baseline.barthagPower + (raw - baseline.realOverall) * ROSTER_SENSITIVITY, 25, 95);
 }
 
 function simulateGame(roster, depthChart, oppPower, momentum = 0, baseline = null) {
@@ -3259,11 +3267,19 @@ function DynastyApp({ initial, onExit }) {
     if (actionKey === "VISIT" || actionKey === "HOME") { setVisit({ recruit, actionKey }); return; }
     const cost = actionCostFor(actionKey, recruit, team);
     const updated = applyRecruitAction(recruit, actionKey, week);
-    setState((s) => ({
-      ...s,
-      recruitingPoints: s.recruitingPoints - cost,
-      recruitingBoard: s.recruitingBoard.map((r) => (r.id === recruit.id ? updated : r)),
-    }));
+    setState((s) => {
+      // Extending an offer commits you to the prospect, so pin them as a target
+      // automatically — no separate click to track who you've offered.
+      const targets = s.recruitTargets || [];
+      const nextTargets =
+        actionKey === "OFFER" && !targets.includes(recruit.id) ? [...targets, recruit.id] : targets;
+      return {
+        ...s,
+        recruitingPoints: s.recruitingPoints - cost,
+        recruitingBoard: s.recruitingBoard.map((r) => (r.id === recruit.id ? updated : r)),
+        recruitTargets: nextTargets,
+      };
+    });
   }
 
   // Apply the outcome of an interactive visit: deduct its distance-priced cost,
@@ -4912,7 +4928,7 @@ function rollVisitGain(tone, base) {
   if (tone === "bold") mult = rand(0.45, 1.75);
   else if (tone === "safe") mult = rand(0.8, 1.05);
   else mult = rand(0.9, 1.3);
-  return Math.max(1, Math.round(base * mult));
+  return Math.max(1, Math.round(base * mult * INTEREST_GAIN_MULT));
 }
 function visitOutcomeBlurb(tone, gain, expected) {
   const ratio = gain / expected;
