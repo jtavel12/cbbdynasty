@@ -2607,19 +2607,89 @@ function GlobalStyle() {
       .cbb-scroll::-webkit-scrollbar { width: 8px; height: 8px; }
       .cbb-scroll::-webkit-scrollbar-thumb { background: ${C.line}; border-radius: 0; }
       .cbb-scroll::-webkit-scrollbar-track { background: transparent; }
+      .cbb-row { transition: background .15s ease, transform .15s ease; }
       .cbb-row:hover { background: ${C.panelAlt}; }
-      .cbb-btn { transition: transform .08s ease, background .15s ease; }
-      .cbb-btn:active { transform: scale(0.97); }
+      .cbb-btn { transition: transform .08s ease, background .15s ease, filter .15s ease, box-shadow .15s ease; }
+      .cbb-btn:hover { filter: brightness(1.1); box-shadow: 0 2px 0 rgba(0,0,0,0.25); }
+      .cbb-btn:active { transform: scale(0.97); filter: brightness(0.96); }
+      .cbb-card { transition: border-color .15s ease, transform .15s ease, box-shadow .15s ease; }
+      .cbb-card-hover:hover { border-color: ${C.wood}; transform: translateY(-2px); box-shadow: 0 4px 10px rgba(0,0,0,0.28); }
       @keyframes cbbSlideIn { from { opacity: 0; transform: translateX(14px); } to { opacity: 1; transform: translateX(0); } }
       @keyframes cbbFadeUp { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+      @keyframes cbbTabFade { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
       @keyframes cbbScorePop { 0% { transform: scale(1); } 35% { transform: scale(1.5); color: ${C.gold}; } 100% { transform: scale(1); } }
+      @keyframes cbbValuePop { 0% { transform: scale(1); color: inherit; } 30% { transform: scale(1.14); color: ${C.gold}; } 100% { transform: scale(1); color: inherit; } }
       @keyframes cbbWinPulse { 0% { background: rgba(216,168,58,0.45); } 100% { background: transparent; } }
       @keyframes cbbCrownPop { 0% { opacity: 0; transform: scale(0.6) rotate(-8deg); } 60% { transform: scale(1.15) rotate(3deg); } 100% { opacity: 1; transform: scale(1) rotate(0); } }
+      @keyframes cbbToastIn { from { opacity: 0; transform: translateY(-6px) scale(0.98); } to { opacity: 1; transform: translateY(0) scale(1); } }
+      @keyframes cbbToastOut { from { opacity: 1; transform: translateY(0) scale(1); } to { opacity: 0; transform: translateY(-6px) scale(0.98); } }
       .cbb-slide-in { animation: cbbSlideIn .38s cubic-bezier(.2,.8,.3,1) both; }
+      .cbb-tab-fade { animation: cbbTabFade .28s cubic-bezier(.2,.8,.3,1) both; }
       .cbb-score-pop { display: inline-block; animation: cbbScorePop .6s ease both; }
+      .cbb-value-pop { display: inline-block; animation: cbbValuePop .5s ease both; }
       .cbb-win-pulse { animation: cbbWinPulse 1.1s ease-out both; }
       .cbb-crown-pop { animation: cbbCrownPop .6s cubic-bezier(.2,.9,.3,1.4) both; }
+      .cbb-toast-in { animation: cbbToastIn .25s cubic-bezier(.2,.8,.3,1) both; }
+      .cbb-toast-out { animation: cbbToastOut .25s ease both; }
     `}</style>
+  );
+}
+
+// Reads the same flash() message strings already used across the app and
+// picks a color/icon for them by matching the phrasing those call sites
+// already use ("Beat ", "Lost to ", "committed", "transferring in",
+// "injured") — purely presentational, no call site had to change.
+function toastKind(msg) {
+  if (/^Beat /.test(msg)) return "win";
+  if (/^Lost to /.test(msg)) return "loss";
+  if (/has committed!|is transferring in!/.test(msg)) return "sign";
+  if (/injured/i.test(msg)) return "warn";
+  return "info";
+}
+const TOAST_STYLES = {
+  win: { border: C.green, Icon: TrendingUp },
+  loss: { border: C.red, Icon: TrendingDown },
+  sign: { border: C.gold, Icon: Star },
+  warn: { border: C.red, Icon: HeartPulse },
+  info: { border: C.line, Icon: Check },
+};
+
+// Toast keeps rendering for one extra animation cycle after the message
+// clears to `null` so it can play its exit fade instead of snapping away.
+function Toast({ message }) {
+  const [shown, setShown] = useState(message);
+  const [leaving, setLeaving] = useState(false);
+  const timerRef = useRef(null);
+
+  useEffect(() => {
+    if (message) {
+      clearTimeout(timerRef.current);
+      setShown(message);
+      setLeaving(false);
+    } else if (shown) {
+      setLeaving(true);
+      timerRef.current = setTimeout(() => setShown(null), 240);
+    }
+    return () => clearTimeout(timerRef.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [message]);
+
+  if (!shown) return null;
+  const kind = toastKind(shown);
+  const { border, Icon } = TOAST_STYLES[kind];
+  return (
+    <div
+      className={leaving ? "cbb-toast-out" : "cbb-toast-in"}
+      style={{
+        display: "flex", alignItems: "center", gap: 8, fontSize: 13,
+        background: C.panelAlt, borderLeft: `3px solid ${border}`,
+        border: `1px solid ${C.line}`, borderLeftWidth: 3, borderLeftColor: border,
+        padding: "7px 14px", color: C.cream, maxWidth: 420,
+      }}
+    >
+      <Icon size={14} color={border} style={{ flexShrink: 0 }} />
+      <span>{shown}</span>
+    </div>
   );
 }
 
@@ -3672,12 +3742,10 @@ function DynastyApp({ initial, onExit }) {
               <div className="cbb-num" style={{ fontSize: 22, fontWeight: 700 }}>{record.w}-{record.l}</div>
             </div>
           </div>
-          {toast && (
-            <div style={{ fontSize: 13, background: C.panelAlt, border: `1px solid ${C.line}`, padding: "7px 14px", color: C.cream }}>{toast}</div>
-          )}
+          <Toast message={toast} />
         </div>
 
-        <div className="cbb-scroll" style={{ flex: 1, overflowY: "auto", padding: 28 }}>
+        <div key={tab} className="cbb-scroll cbb-tab-fade" style={{ flex: 1, overflowY: "auto", padding: 28 }}>
           {tab === "dashboard" && (
             <DashboardTab state={state} team={team} record={record} nextGame={nextGame}
               stage={stage}
@@ -3826,13 +3894,13 @@ function DashboardTab({ state, team, record, nextGame, stage, onSim, onPlay, onS
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20, maxWidth: 900 }}>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 14 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 14 }}>
         <StatBlock label="Team Overall" value={overall} />
         <StatBlock label="Record" value={`${record.w}-${record.l}`} />
         <StatBlock label="Roster Size" value={state.roster.length} />
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 14 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 14 }}>
         <Panel style={{ padding: "14px 18px" }}>
           <div style={{ fontSize: 11, color: C.dim, letterSpacing: "0.08em" }}>BRACKETOLOGY</div>
           <div className="cbb-num" style={{ fontSize: 20, fontWeight: 700, marginTop: 4, color: bracketology?.inField ? C.gold : C.cream }}>
@@ -3965,6 +4033,8 @@ function DashboardTab({ state, team, record, nextGame, stage, onSim, onPlay, onS
         </Panel>
       )}
 
+      {state.history.length > 1 && <SeasonTrendChart history={state.history} />}
+
       {state.history.length > 0 && (
         <Panel style={{ padding: 20 }}>
           <div style={{ fontSize: 11, color: C.dim, letterSpacing: "0.08em", marginBottom: 12 }}>PROGRAM HISTORY</div>
@@ -3988,14 +4058,119 @@ function DashboardTab({ state, team, record, nextGame, stage, onSim, onPlay, onS
   );
 }
 
+// Win% by season — the one metric every history entry already carries
+// (wins/losses), so this reads the existing state.history array as-is
+// rather than adding a new field just for the chart.
+const CHART_W = 640;
+const CHART_H = 150;
+const CHART_PAD = { top: 14, right: 16, bottom: 22, left: 36 };
+function SeasonTrendChart({ history }) {
+  const wrapRef = useRef(null);
+  const [hover, setHover] = useState(null); // index into points, or null
+
+  const points = useMemo(() => {
+    const sorted = [...history].sort((a, b) => a.year - b.year);
+    const plotW = CHART_W - CHART_PAD.left - CHART_PAD.right;
+    const plotH = CHART_H - CHART_PAD.top - CHART_PAD.bottom;
+    return sorted.map((h, i) => {
+      const gp = h.wins + h.losses;
+      const pct = gp > 0 ? h.wins / gp : 0;
+      const x = sorted.length === 1 ? CHART_PAD.left : CHART_PAD.left + (i / (sorted.length - 1)) * plotW;
+      const y = CHART_PAD.top + (1 - pct) * plotH;
+      return { ...h, pct, x, y };
+    });
+  }, [history]);
+
+  const linePath = points.map((p, i) => `${i === 0 ? "M" : "L"} ${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(" ");
+  const baseY = CHART_H - CHART_PAD.bottom;
+  const areaPath = `${linePath} L ${points[points.length - 1].x.toFixed(1)} ${baseY} L ${points[0].x.toFixed(1)} ${baseY} Z`;
+
+  // Show at most ~6 year labels along the x-axis so they never crowd a long career.
+  const labelEvery = Math.max(1, Math.ceil(points.length / 6));
+
+  function handleMove(e) {
+    const rect = wrapRef.current.getBoundingClientRect();
+    const relX = ((e.clientX - rect.left) / rect.width) * CHART_W;
+    let nearest = 0;
+    let best = Infinity;
+    points.forEach((p, i) => {
+      const d = Math.abs(p.x - relX);
+      if (d < best) { best = d; nearest = i; }
+    });
+    setHover(nearest);
+  }
+
+  const hp = hover != null ? points[hover] : null;
+
+  return (
+    <Panel style={{ padding: 20 }}>
+      <div style={{ fontSize: 11, color: C.dim, letterSpacing: "0.08em", marginBottom: 12 }}>WIN% BY SEASON</div>
+      <div ref={wrapRef} style={{ position: "relative" }}
+        onMouseMove={handleMove} onMouseLeave={() => setHover(null)}>
+        <svg viewBox={`0 0 ${CHART_W} ${CHART_H}`} style={{ width: "100%", height: "auto", display: "block", overflow: "visible" }}>
+          {[0, 0.5, 1].map((f) => {
+            const y = CHART_PAD.top + (1 - f) * (CHART_H - CHART_PAD.top - CHART_PAD.bottom);
+            return (
+              <g key={f}>
+                <line x1={CHART_PAD.left} x2={CHART_W - CHART_PAD.right} y1={y} y2={y} stroke={C.line} strokeWidth={1} />
+                <text x={CHART_PAD.left - 8} y={y + 3} textAnchor="end" fontSize={9} fill={C.dimmer}>{Math.round(f * 100)}%</text>
+              </g>
+            );
+          })}
+          {points.map((p, i) => (
+            (i % labelEvery === 0 || i === points.length - 1) && (
+              <text key={p.year} x={p.x} y={CHART_H - 6} textAnchor="middle" fontSize={9} fill={C.dimmer}>{seasonLabel(p.year)}</text>
+            )
+          ))}
+          <path d={areaPath} fill={C.gold} opacity={0.1} stroke="none" />
+          <path d={linePath} fill="none" stroke={C.gold} strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
+          {hover != null && (
+            <line x1={hp.x} x2={hp.x} y1={CHART_PAD.top} y2={baseY} stroke={C.dim} strokeWidth={1} strokeDasharray="2,3" />
+          )}
+          {points.map((p, i) => {
+            const isLast = i === points.length - 1;
+            const isHover = i === hover;
+            if (!isLast && !isHover) return null;
+            return <circle key={p.year} cx={p.x} cy={p.y} r={5} fill={C.gold} stroke={C.panel} strokeWidth={2} />;
+          })}
+          <text x={points[points.length - 1].x} y={points[points.length - 1].y - 10} textAnchor="middle" fontSize={11} fontWeight={700} fill={C.cream}>
+            {Math.round(points[points.length - 1].pct * 100)}%
+          </text>
+        </svg>
+        {hp && (
+          <div style={{
+            position: "absolute", pointerEvents: "none", top: 0, left: `${(hp.x / CHART_W) * 100}%`,
+            transform: `translate(${hp.x > CHART_W * 0.7 ? "-100%" : "8px"}, 0)`,
+            background: C.bgRail, border: `1px solid ${C.line}`, padding: "6px 10px", fontSize: 11.5,
+            color: C.cream, whiteSpace: "nowrap",
+          }}>
+            <div style={{ fontWeight: 700 }}>{seasonLabel(hp.year)}</div>
+            <div style={{ color: C.dim }}>{hp.wins}-{hp.losses} · {Math.round(hp.pct * 100)}%{hp.postseason ? ` · ${hp.postseason}` : ""}</div>
+          </div>
+        )}
+      </div>
+    </Panel>
+  );
+}
+
 function btnStyle(bg, color = "#fff") {
   return { display: "flex", alignItems: "center", gap: 6, background: bg, color, border: "none", padding: "9px 14px", fontSize: 13, cursor: "pointer", fontWeight: 600 };
 }
 function StatBlock({ label, value }) {
+  const prevRef = useRef(value);
+  const [pop, setPop] = useState(false);
+  useEffect(() => {
+    if (prevRef.current !== value) {
+      prevRef.current = value;
+      setPop(true);
+      const t = setTimeout(() => setPop(false), 500);
+      return () => clearTimeout(t);
+    }
+  }, [value]);
   return (
     <Panel style={{ padding: "16px 18px" }}>
       <div style={{ fontSize: 11, color: C.dim, letterSpacing: "0.08em" }}>{label.toUpperCase()}</div>
-      <div className="cbb-num" style={{ fontSize: 28, fontWeight: 700, marginTop: 4 }}>{value}</div>
+      <div className={`cbb-num${pop ? " cbb-value-pop" : ""}`} style={{ fontSize: 28, fontWeight: 700, marginTop: 4 }}>{value}</div>
     </Panel>
   );
 }
