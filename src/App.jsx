@@ -1746,7 +1746,15 @@ function recruitToPlayer(recruit, team) {
 // the user's own team is overlaid with the stats their players ACTUALLY put up
 // in the dynasty being played — so the coach's guys compete on the same board
 // as the rest of the country.
-function buildLeaderboard(year, userTeamId, userRoster) {
+// Real box scores seed a CPU player's identity and baseline production, but
+// showing that production verbatim would just be reprinting history \u2014 no
+// different from any other season, and no tie to how THIS dynasty's sim is
+// actually playing out. So each CPU player's line gets run through the same
+// deterministic per-team-season RNG that drives their team's emergent
+// win/loss record, giving them their own year that moves with the save
+// (stable across re-renders, different across playthroughs) instead of a
+// copy-paste of the real stat sheet.
+function buildLeaderboard(year, userTeamId, userRoster, seasonSeed) {
   const rows = torvikPlayers[String(year)] || [];
   // O(1) torvik-team-name -> our team lookup (mirrors findOurTeamByRealName).
   const teamByKey = new Map();
@@ -1762,10 +1770,12 @@ function buildLeaderboard(year, userTeamId, userRoster) {
     const key = `${r.player}|${team.id}`;
     if (seen.has(key)) continue;
     seen.add(key);
+    const rng = seasonRngFor(seasonSeed, `${team.id}:${r.player}`, year);
+    const mult = 0.82 + rng() * 0.36; // this dynasty's version of their season, not a rerun of history
     out.push({
       id: key, name: r.player, teamId: team.id, teamName: team.name,
       pos: resolvePosition(r) || "\u2014", gp,
-      ppg: perGame(r.ppg, gp), rpg: perGame(r.rpg, gp), apg: perGame(r.apg, gp),
+      ppg: perGame(r.ppg, gp) * mult, rpg: perGame(r.rpg, gp) * mult, apg: perGame(r.apg, gp) * mult,
       isUser: false,
     });
   }
@@ -3548,8 +3558,8 @@ function DynastyApp({ initial, onExit }) {
   const reputation = reputationOf(state.coach);
   const nilBudget = (state.nilBudgetById || baselineNilBudgetById())[state.teamId] ?? nilBudgetForTeam(team);
   const leaders = useMemo(
-    () => buildLeaderboard(state.year, state.teamId, state.roster),
-    [state.year, state.teamId, state.roster]
+    () => buildLeaderboard(state.year, state.teamId, state.roster, state.seasonSeed),
+    [state.year, state.teamId, state.roster, state.seasonSeed]
   );
   const rivalIds = useMemo(() => rivalTeamIds(state.teamId), [state.teamId]);
   const needs = useMemo(() => positionNeeds(state.roster), [state.roster]);
@@ -7576,7 +7586,7 @@ function LeaderboardTab({ leaders, userTeamId, year, onViewTeam }) {
   return (
     <div>
       <SectionIntro>
-        National per-game leaders across every Division I program for the {seasonLabel(year)} season. Rival programs post their real production; your own players carry the stats they&apos;ve actually put up in your dynasty so far — so your guys rise up the board as you play.
+        National per-game leaders across every Division I program for the {seasonLabel(year)} season — real rosters, but every team's production is this dynasty's own emergent season, not a replay of history. Your own players carry the stats they&apos;ve actually put up in your dynasty so far, so your guys rise up the board as you play.
       </SectionIntro>
 
       <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
