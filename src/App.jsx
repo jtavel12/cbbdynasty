@@ -3192,9 +3192,29 @@ async function deleteSlot(slot) {
 function GlobalStyle() {
   return (
     <style>{`
-      @import url('https://fonts.googleapis.com/css2?family=Oswald:wght@400;500;600;700&family=Inter:wght@400;500;600&display=swap');
+      @import url('https://fonts.googleapis.com/css2?family=Oswald:wght@400;500;600;700&family=Inter:wght@400;500;600&family=Anton&display=swap');
       .cbb-root { font-family: 'Inter', system-ui, sans-serif; }
       .cbb-num { font-family: 'Oswald', system-ui, sans-serif; letter-spacing: 0.01em; }
+      .cbb-display {
+        font-family: 'Anton', 'Oswald', system-ui, sans-serif;
+        text-transform: uppercase;
+        letter-spacing: 0.01em;
+        line-height: 0.88;
+      }
+      .cbb-gradient-text {
+        background: linear-gradient(115deg, ${C.gold} 0%, ${C.wood} 65%, ${C.woodDim} 100%);
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+      }
+      @keyframes cbbGlowPulse { 0%, 100% { opacity: 0.55; } 50% { opacity: 0.9; } }
+      .cbb-hero-glow { animation: cbbGlowPulse 5s ease-in-out infinite; }
+      @keyframes cbbHeroIn { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: translateY(0); } }
+      .cbb-hero-in { animation: cbbHeroIn .6s cubic-bezier(.16,.8,.24,1) both; }
+      .cbb-input-glow { transition: border-color .15s ease, box-shadow .15s ease; }
+      .cbb-input-glow:focus { border-color: ${C.wood} !important; box-shadow: 0 0 0 3px rgba(193,101,47,0.18); }
+      .cbb-year-pill { transition: transform .12s ease, border-color .15s ease, box-shadow .15s ease; }
+      .cbb-year-pill:hover { transform: translateY(-1px); border-color: ${C.wood}; }
       .cbb-scroll::-webkit-scrollbar { width: 8px; height: 8px; }
       .cbb-scroll::-webkit-scrollbar-thumb { background: ${C.line}; border-radius: 0; }
       .cbb-scroll::-webkit-scrollbar-track { background: transparent; }
@@ -3333,15 +3353,37 @@ function TeamSelect({ onPick }) {
     .sort((a, b) => b.prestige - a.prestige || a.name.localeCompare(b.name));
 
   return (
-    <div className="cbb-root cbb-scroll" style={{ minHeight: "100vh", background: C.bg, color: C.cream, padding: "40px 24px", overflowY: "auto" }}>
-      <div style={{ maxWidth: 980, margin: "0 auto" }}>
-        <div style={{ borderBottom: `2px solid ${C.wood}`, paddingBottom: 18, marginBottom: 28 }}>
-          <div className="cbb-num" style={{ fontSize: 13, letterSpacing: "0.14em", color: C.wood, fontWeight: 600 }}>DYNASTY MODE · TIP-OFF {seasonLabel(year)}</div>
-          <h1 className="cbb-num" style={{ fontSize: 40, fontWeight: 700, margin: "6px 0 8px" }}>Pick your program.</h1>
-          <p style={{ color: C.dim, fontSize: 15, maxWidth: 620 }}>
-            Choose your starting season, then build the roster, sign your classes, and coach every
-            season forward from there — your save carries the program year after year.
+    <div className="cbb-root cbb-scroll" style={{ minHeight: "100vh", background: C.bg, color: C.cream, padding: "40px 24px", overflowY: "auto", position: "relative", overflowX: "hidden" }}>
+      <GlobalStyle />
+      <div
+        className="cbb-hero-glow"
+        style={{
+          position: "absolute", top: -180, left: "50%", transform: "translateX(-50%)",
+          width: 900, height: 500, pointerEvents: "none",
+          background: `radial-gradient(closest-side, rgba(216,168,58,0.16), rgba(193,101,47,0.08) 55%, transparent 75%)`,
+        }}
+      />
+      <div style={{ maxWidth: 980, margin: "0 auto", position: "relative" }}>
+        <div style={{ paddingBottom: 22, marginBottom: 28 }}>
+          <div className="cbb-num cbb-hero-in" style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, letterSpacing: "0.22em", color: C.wood, fontWeight: 600 }}>
+            <Flame size={14} color={C.gold} />
+            DYNASTY MODE <span style={{ color: C.dimmer }}>·</span> <span style={{ color: C.gold }}>TIP-OFF {seasonLabel(year)}</span>
+          </div>
+          <h1
+            className="cbb-display cbb-hero-in"
+            style={{ fontSize: "clamp(42px, 6.4vw, 74px)", margin: "12px 0 14px", animationDelay: ".08s" }}
+          >
+            <span style={{ color: C.cream }}>Pick your </span>
+            <span className="cbb-gradient-text">program.</span>
+          </h1>
+          <p className="cbb-hero-in" style={{ color: C.dim, fontSize: 15.5, lineHeight: 1.6, maxWidth: 560, margin: 0, animationDelay: ".16s" }}>
+            Every save is a new era: build the roster, sign your classes, and coach it forward
+            one season at a time — from an opening tip-off to a program only you could have built.
           </p>
+          <div
+            className="cbb-hero-in"
+            style={{ marginTop: 22, height: 3, maxWidth: 560, background: `linear-gradient(90deg, ${C.gold}, ${C.wood} 55%, transparent)`, boxShadow: `0 0 14px 1px rgba(216,168,58,0.35)`, animationDelay: ".22s" }}
+          />
         </div>
 
         <div style={{ marginBottom: 20 }}>
@@ -3351,11 +3393,12 @@ function TeamSelect({ onPick }) {
               <button
                 key={y}
                 onClick={() => setYear(y)}
-                className="cbb-btn"
+                className="cbb-btn cbb-year-pill"
                 style={{
                   cursor: "pointer", padding: "7px 12px", fontSize: 13, fontWeight: 600,
-                  background: y === year ? C.wood : C.panel,
+                  background: y === year ? `linear-gradient(135deg, ${C.gold}, ${C.wood})` : C.panel,
                   border: `1px solid ${y === year ? C.wood : C.line}`,
+                  boxShadow: y === year ? "0 2px 10px rgba(193,101,47,0.35)" : "none",
                   color: y === year ? "#1a1206" : C.cream,
                 }}
               >
@@ -3369,6 +3412,7 @@ function TeamSelect({ onPick }) {
           value={q}
           onChange={(e) => setQ(e.target.value)}
           placeholder="Search programs…"
+          className="cbb-input-glow"
           style={{ width: "100%", background: C.panel, border: `1px solid ${C.line}`, color: C.cream, padding: "10px 14px", fontSize: 14, marginBottom: 20, outline: "none" }}
         />
 
@@ -3377,7 +3421,7 @@ function TeamSelect({ onPick }) {
             <button
               key={t.id}
               onClick={() => onPick(t, year)}
-              className="cbb-btn"
+              className="cbb-btn cbb-card-hover"
               style={{
                 textAlign: "left", cursor: "pointer", padding: "16px 14px",
                 background: C.panel, border: `1px solid ${C.line}`, borderLeft: `4px solid ${t.primary}`,
