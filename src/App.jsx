@@ -8,7 +8,7 @@ import {
   Save, RotateCcw, ChevronUp, ChevronDown, Play, FastForward, Star,
   ShieldCheck, X, Check, TrendingUp, TrendingDown, Award, Crown,
   Medal, HeartPulse, Swords, Flame, GraduationCap, Landmark, Lock,
-  Clock, Gauge, Zap, Minus, Timer, DollarSign
+  Clock, Gauge, Zap, Minus, Timer, DollarSign, AlertTriangle
 } from "lucide-react";
 
 /* =========================================================================
@@ -5235,6 +5235,16 @@ function InterestBar({ value, colorHigh }) {
   );
 }
 
+// Buckets for the "desired NIL" filter, keyed off each recruit's public ask
+// (nilTarget) — never the hidden nilFloor.
+const NIL_FILTER_BUCKETS = [
+  { value: "under25", label: "Under $25K", min: 0, max: 25_000 },
+  { value: "25to75", label: "$25K – $75K", min: 25_000, max: 75_000 },
+  { value: "75to200", label: "$75K – $200K", min: 75_000, max: 200_000 },
+  { value: "200to500", label: "$200K – $500K", min: 200_000, max: 500_000 },
+  { value: "over500", label: "$500K+", min: 500_000, max: Infinity },
+];
+
 // NIL offer control for one recruit row: a dollar input the coach proposes,
 // bounded by what's actually still available (this recruit's own current
 // pledge plus whatever isn't already reserved on other recruits), guided by
@@ -5246,13 +5256,19 @@ function NilOfferRow({ recruit, nilBudget, nilPending, onNilOffer }) {
   const available = Math.max(0, Math.round((nilBudget || 0) - nilPending + own));
   const [draft, setDraft] = useState(own);
   const clampedDraft = clamp(Math.round(Number(draft) || 0), 0, Math.max(available, own));
+  // nilFloor itself stays hidden (see computeNilAsk) — this only signals
+  // whether the CURRENT pledge clears it, never the number itself.
+  const belowFloor = own > 0 && own < (recruit.nilFloor ?? 0);
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", width: "100%", paddingTop: 6, borderTop: `1px dashed ${C.line}`, marginTop: 2 }}>
       <DollarSign size={13} color={C.gold} />
       <input
-        type="number" min={0} max={available} step={1000}
-        value={draft}
-        onChange={(e) => setDraft(e.target.value)}
+        type="text" inputMode="numeric"
+        value={draft === "" ? "" : Number(draft).toLocaleString("en-US")}
+        onChange={(e) => {
+          const digits = e.target.value.replace(/[^0-9]/g, "");
+          setDraft(digits === "" ? "" : Number(digits));
+        }}
         style={{ width: 110, background: C.panel, border: `1px solid ${C.line}`, color: C.cream, padding: "6px 8px", fontSize: 12 }}
       />
       <button onClick={() => { onNilOffer(recruit, clampedDraft); setDraft(clampedDraft); }} className="cbb-btn"
@@ -5262,6 +5278,11 @@ function NilOfferRow({ recruit, nilBudget, nilPending, onNilOffer }) {
       <span style={{ fontSize: 11, color: C.dimmer }}>
         Ask: ~{formatNil(recruit.nilTarget)} · Available: {formatNil(available)}{own > 0 ? ` · Pledged: ${formatNil(own)}` : ""}
       </span>
+      {belowFloor && (
+        <span style={{ fontSize: 11, color: C.red, display: "flex", alignItems: "center", gap: 3 }}>
+          <AlertTriangle size={11} /> Not enough NIL on the table yet — raise your pledge to have a real shot.
+        </span>
+      )}
     </div>
   );
 }
@@ -5274,6 +5295,7 @@ function RecruitBoard({ board, committedIds, targets, onToggleTarget, points, we
   const [posFilter, setPosFilter] = useState("ALL");
   const [starFilter, setStarFilter] = useState(0);
   const [stateFilter, setStateFilter] = useState("ALL");
+  const [nilFilter, setNilFilter] = useState("ALL");
   const [sortBy, setSortBy] = useState("interest"); // interest | stars | rank
   const [query, setQuery] = useState("");
   const [openId, setOpenId] = useState(null);
@@ -5314,6 +5336,10 @@ function RecruitBoard({ board, committedIds, targets, onToggleTarget, points, we
     if (posFilter !== "ALL" && r.pos !== posFilter) return false;
     if (starFilter && (r.stars || 0) < starFilter) return false;
     if (stateFilter !== "ALL" && r.state !== stateFilter) return false;
+    if (nilFilter !== "ALL") {
+      const bucket = NIL_FILTER_BUCKETS.find((b) => b.value === nilFilter);
+      if (bucket && ((r.nilTarget || 0) < bucket.min || (r.nilTarget || 0) > bucket.max)) return false;
+    }
     if (q && !`${r.name} ${r.state} ${r.hometown || ""} ${r.pos}`.toLowerCase().includes(q)) return false;
     return true;
   });
@@ -5365,6 +5391,11 @@ function RecruitBoard({ board, committedIds, targets, onToggleTarget, points, we
           style={{ background: C.panel, border: `1px solid ${C.line}`, color: C.cream, padding: "6px 10px", fontSize: 13 }}>
           <option value="ALL">All states</option>
           {stateOptions.map((s) => <option key={s} value={s}>{s === "INTL" ? "International" : s}</option>)}
+        </select>
+        <select value={nilFilter} onChange={(e) => setNilFilter(e.target.value)}
+          style={{ background: C.panel, border: `1px solid ${C.line}`, color: C.cream, padding: "6px 10px", fontSize: 13 }}>
+          <option value="ALL">Any desired NIL</option>
+          {NIL_FILTER_BUCKETS.map((b) => <option key={b.value} value={b.value}>{b.label}</option>)}
         </select>
         <select value={sortBy} onChange={(e) => setSortBy(e.target.value)}
           style={{ background: C.panel, border: `1px solid ${C.line}`, color: C.cream, padding: "6px 10px", fontSize: 13 }}>
@@ -5471,7 +5502,7 @@ function RecruitBoard({ board, committedIds, targets, onToggleTarget, points, we
                     const left = MAX_SIGN_ATTEMPTS - (r.signAttempts || 0);
                     let label;
                     if (status.reason === "offer") label = "Offer required to sign";
-                    else if (status.reason === "nil") label = "NIL offer required to sign";
+                    else if (status.reason === "nil") label = (r.nilOffer || 0) > 0 ? "NIL offer too low — raise your pledge" : "NIL offer required to sign";
                     else if (status.reason === "max") label = "No sign attempts left";
                     else if (status.reason === "week") label = `Already tried this week (${left} left)`;
                     else if (status.reason === "odds") label = `Need >50% to sign (${Math.round(chance * 100)}%)`;
@@ -5503,10 +5534,15 @@ function RecruitBoard({ board, committedIds, targets, onToggleTarget, points, we
 function RecruitingTab({ board, committedIds, targets, onToggleTarget, points, budget, weekIndex, totalWeeks, onAction, onSign, onNilOffer, nilBudget, team, needs = [], scholarshipInfo }) {
   const pct = Math.round(clamp((weekIndex - 1) / totalWeeks, 0, 1) * 100);
   const open = scholarshipInfo?.open ?? 0;
+  const nilPending = board.reduce((sum, r) => sum + (!r.committedTo ? (r.nilOffer || 0) : 0), 0);
+  const nilAvailable = Math.max(0, (nilBudget || 0) - nilPending);
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
         <div style={{ display: "flex", gap: 18, flexWrap: "wrap" }}>
+          <div style={{ fontSize: 13, color: C.dim }}>
+            NIL available: <strong style={{ color: C.gold }}>{formatNil(nilAvailable)}</strong> / {formatNil(nilBudget)}
+          </div>
           <div style={{ fontSize: 13, color: C.dim }}>Open scholarships: <strong style={{ color: open > 0 ? C.gold : C.red }}>{open}</strong> / {SCHOLARSHIP_LIMIT}</div>
           <div style={{ fontSize: 13, color: C.dim }}>Committed: <strong style={{ color: C.cream }}>{committedIds.length}</strong></div>
           <div style={{ fontSize: 13, color: C.dim }}>Points this week: <strong style={{ color: C.gold }}>{points}</strong> / {budget}</div>
@@ -5650,6 +5686,8 @@ function CutsPanel({ roster, scholarshipInfo, onCut, onViewPlayer }) {
 // same portal board as the Offseason tab so either entry point stays in sync.
 function TransferPortalTab({ offseason, team, scholarshipInfo, committedFreshmen, onAction, onSign, onNilOffer, nilBudget, onAdvanceWeek }) {
   const committed = offseason.committedTransfers || [];
+  const nilPending = offseason.transferBoard.reduce((sum, r) => sum + (!r.committedTo ? (r.nilOffer || 0) : 0), 0);
+  const nilAvailable = Math.max(0, (nilBudget || 0) - nilPending);
   return (
     <div>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12, marginBottom: 16 }}>
@@ -5665,6 +5703,7 @@ function TransferPortalTab({ offseason, team, scholarshipInfo, committedFreshmen
       </div>
 
       <div style={{ display: "flex", gap: 18, flexWrap: "wrap", marginBottom: 14, fontSize: 13, color: C.dim }}>
+        <div>NIL available: <strong style={{ color: C.gold }}>{formatNil(nilAvailable)}</strong> / {formatNil(nilBudget)}</div>
         <div>Open scholarships: <strong style={{ color: (scholarshipInfo?.open ?? 0) > 0 ? C.gold : C.red }}>{scholarshipInfo?.open ?? 0}</strong> / {SCHOLARSHIP_LIMIT}</div>
         <div>Portal points this week: <strong style={{ color: C.gold }}>{offseason.points}</strong></div>
         <div>Transfers committed: <strong style={{ color: C.cream }}>{committed.length}</strong></div>
