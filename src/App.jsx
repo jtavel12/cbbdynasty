@@ -1234,20 +1234,66 @@ function freshTrailState() {
   };
 }
 
+// A transfer's true per-game rate and average level of competition across
+// their WHOLE real career (every real season they logged real minutes in,
+// strictly before `uptoYear`) — not just their debut season. Each season's
+// raw per-game numbers and competition tier are averaged together, weighted
+// by that season's own strength of competition (a high-major season counts
+// far more than the same box score at a mid/low-major) and a mild lean
+// toward more recent seasons, since that's the truest read on where their
+// game is today. Returns totals shaped to plug straight into the existing
+// single-season pipeline (perGame(total, 30) recovers the true weighted
+// per-game rate; gp is pinned at 30 so sampleReliability gives full credit —
+// appropriate since this is already an aggregate of real, filtered seasons).
+function careerWeightedLine(name, uptoYear) {
+  const rows = (CAREER_INDEX[name] || []).filter((r) => r.year < uptoYear && (Number(r.gp) || 0) >= 5);
+  if (!rows.length) return null;
+  let wPpg = 0, wRpg = 0, wApg = 0, wTier = 0, weightTotal = 0, gpTotal = 0;
+  rows.forEach((r, i) => {
+    const gp = Number(r.gp) || 0;
+    const seasonTeam = findOurTeamByRealName(r.team);
+    const seasonTier = clamp(((seasonTeam?.prestige ?? 2) - 1) / 4, 0, 1);
+    const competitionWeight = competitionMultiplier(seasonTier); // 0.65..1.45
+    const recencyWeight = 1 + (rows.length > 1 ? (i / (rows.length - 1)) * 0.6 : 0);
+    const w = competitionWeight * recencyWeight;
+    wPpg += perGame(r.ppg, gp) * w;
+    wRpg += perGame(r.rpg, gp) * w;
+    wApg += perGame(r.apg, gp) * w;
+    wTier += seasonTier * w;
+    weightTotal += w;
+    gpTotal += gp;
+  });
+  if (!weightTotal) return null;
+  return {
+    ppg: (wPpg / weightTotal) * 30, rpg: (wRpg / weightTotal) * 30, apg: (wApg / weightTotal) * 30, gp: 30,
+    tier: wTier / weightTotal,
+    seasons: rows.length,
+    // Real average games played per season across the seasons counted — kept
+    // separate from the pinned gp:30 above (a perGame() plumbing trick), so
+    // durability still reflects genuine per-season availability rather than
+    // reading every career-weighted transfer as a 30-game iron man.
+    avgGp: Math.round(gpTotal / rows.length),
+  };
+}
+
 // Build one board entry from a real newcomer row for `year`.
 function buildRealNewcomer(r, year) {
   const ourTeam = findOurTeamByRealName(r.team);
   const originalPrestige = ourTeam?.prestige ?? 2;
-  const tier = clamp((originalPrestige - 1) / 4, 0, 1);
   const transfer = isTransferName(r.player, year);
   const classYear = transfer ? (realClassForName(r.player, year, r.startSeason) || "SO") : "FR";
-  // Grade off the debut season so scouts rate a prospect the way they would
-  // coming out of high school, regardless of how the career later develops.
+  // True freshmen are graded off their only real season (r itself). Transfers
+  // are graded off their WHOLE real career — see careerWeightedLine — so a
+  // player who broke out in year three of a four-year college career isn't
+  // rated as if they were still the player they were as a debut-season
+  // freshman; falls back to the single-season read if no career line exists.
+  const career = transfer ? careerWeightedLine(r.player, year) : null;
   const firstRow = transfer ? (realStatRowForName(r.player, careerStartYear(r.player, r.startSeason)) || r) : r;
-  const frGp = Number(firstRow.gp) || 0;
-  const frPpg = perGame(firstRow.ppg, firstRow.gp);
-  const frRpg = perGame(firstRow.rpg, firstRow.gp);
-  const frApg = perGame(firstRow.apg, firstRow.gp);
+  const tier = career ? career.tier : clamp((originalPrestige - 1) / 4, 0, 1);
+  const frGp = career ? career.gp : (Number(firstRow.gp) || 0);
+  const frPpg = career ? perGame(career.ppg, career.gp) : perGame(firstRow.ppg, firstRow.gp);
+  const frRpg = career ? perGame(career.rpg, career.gp) : perGame(firstRow.rpg, firstRow.gp);
+  const frApg = career ? perGame(career.apg, career.gp) : perGame(firstRow.apg, firstRow.gp);
   // Composite production (points + boards + assists), scaled by strength of
   // competition, then nudged by a career-arc credit so proven talents from
   // small schools still grade like the stars they became.
@@ -1272,7 +1318,9 @@ function buildRealNewcomer(r, year) {
     stars,
     rating: Math.round(rating * 10000) / 10000,
     real: true,
-    realStats: { ppg: firstRow.ppg, rpg: firstRow.rpg, apg: firstRow.apg, gp: firstRow.gp },
+    realStats: career ? { ppg: career.ppg, rpg: career.rpg, apg: career.apg, gp: career.gp } : { ppg: firstRow.ppg, rpg: firstRow.rpg, apg: firstRow.apg, gp: firstRow.gp },
+    careerTier: career ? career.tier : null,
+    careerGp: career ? career.avgGp : null,
     originalTeam: r.team,
     originalPrestige,
     signedPrestige: originalPrestige, // caliber of program they actually chose
@@ -1568,8 +1616,11 @@ function recruitToPlayer(recruit, team) {
   if (recruit.real) {
     // Use the tier they actually earned their stats against, not the
     // signing team's — a recruit's proven talent shouldn't change just
-    // because they land somewhere different than where they played.
-    const originalTier = clamp(((recruit.originalPrestige ?? team.prestige) - 1) / 4, 0, 1);
+    // because they land somewhere different than where they played. For a
+    // transfer, `careerTier` is the competition-weighted average across
+    // their WHOLE real career (matching the realStats line it pairs with,
+    // see careerWeightedLine) rather than just their most recent team.
+    const originalTier = recruit.careerTier ?? clamp(((recruit.originalPrestige ?? team.prestige) - 1) / 4, 0, 1);
     const attrs = genAttrsFromRealStats(recruit.realStats, originalTier, careerOutlierBonus(recruit.name), recruit.pos);
     const overall = computeOverall(recruit.pos, attrs);
     return {
@@ -1587,7 +1638,7 @@ function recruitToPlayer(recruit, team) {
       height: `6'${randInt(0, 11)}"`,
       attrs,
       overall,
-      durability: computeDurability(recruit.realStats?.gp, recruit.classYear || "FR"),
+      durability: computeDurability(recruit.careerGp ?? recruit.realStats?.gp, recruit.classYear || "FR"),
       starsAtSigning: recruit.stars,
       ratingAtSigning: recruit.rating,
       season: { gp: 0, pts: 0, reb: 0, ast: 0 },
@@ -1995,26 +2046,57 @@ function seasonRngFor(seasonSeed, teamId, year) {
   return mulberry32(h >>> 0);
 }
 
+// Deterministic Fisher-Yates using the team's own seeded RNG (never
+// Math.random) so a CPU team's opponent slate — and therefore its emergent
+// record — stays IDENTICAL across re-renders for a given seed, exactly like
+// its win/loss sequence already has to be.
+function seededShuffle(arr, rng) {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
 // One CPU team's emergent season as a per-game win/loss sequence. Each game is
-// a Bernoulli trial at the team's PROJECTED win rate off its own simulated
-// power rating (conference-strength-adjusted, see projectedRecord) — never a
-// real historical win rate. Once a dynasty is running, nothing about a CPU
-// team's season is anchored to what actually happened in reality; only the
+// simulated against its OWN specific opponent's power (real conference peers,
+// and a shuffled cross-section of the rest of the country for non-conference —
+// mirroring genSchedule's real slate for the user), never a single blended
+// "vs. average" probability. That per-opponent variance is what a real
+// season actually looks like: a handful of near-certain non-conference wins,
+// several genuinely competitive games against strong conference peers, and
+// everything in between — rather than 30 games at one flattened win rate,
+// which pushed dozens of merely-good teams to run the table purely off
+// binomial chance. Never anchored to real historical results; only the
 // team's simulated power (prestige + season drift, or its year-one barthag
-// seed) decides how good it plays. Binomial variance still swings the total
-// a few games either way, so seasons aren't a fixed foregone conclusion. A
-// team's real historical rank (when available) is passed through separately
-// purely as a fading PRESEASON poll prior (see rankingScore) — that's the
-// one place real data is allowed to seed, not override, the simulation.
+// seed) decides how good it plays. A team's real historical rank (when
+// available) is passed through separately purely as a fading PRESEASON poll
+// prior (see rankingScore) — that's the one place real data is allowed to
+// seed, not override, the simulation.
 function cpuSeasonSeq(team, year, powerById, seasonSeed) {
   const real = teamRecordsRaw[team.id] && teamRecordsRaw[team.id][String(year)];
-  const pr = projectedRecord(team, powerById);
-  const G = pr.wins + pr.losses;
-  const p = G ? pr.wins / G : 0.5;
   const rng = seasonRngFor(seasonSeed, team.id, year);
-  const seq = new Array(G);
-  for (let i = 0; i < G; i++) seq[i] = rng() < p ? 1 : 0;
-  return { G, seq, realRank: real ? (real.rank || null) : null };
+  const power = powerById[team.id];
+
+  const confPeers = TEAMS.filter((t) => t.conf === team.conf && t.id !== team.id);
+  const confPool = confPeers.length ? confPeers : TEAMS.filter((t) => t.id !== team.id);
+  const nonConfPool = TEAMS.filter((t) => t.conf !== team.conf && t.id !== team.id);
+  const nonConfSlate = seededShuffle(nonConfPool.length ? nonConfPool : confPool, rng);
+  const confSlate = seededShuffle(confPool, rng);
+
+  const seq = [];
+  // Non-conference first, conference second — same week ordering genSchedule
+  // uses for the user, so a "through week N" snapshot compares like for like.
+  for (let i = 0; i < NONCONF_GAMES; i++) {
+    const oppPower = powerById[nonConfSlate[i % nonConfSlate.length].id] ?? LEAGUE_AVG_POWER;
+    seq.push(rng() < gameWinProb(power, oppPower) ? 1 : 0);
+  }
+  for (let i = 0; i < CONF_GAMES; i++) {
+    const oppPower = powerById[confSlate[i % confSlate.length].id] ?? LEAGUE_AVG_POWER;
+    seq.push(rng() < gameWinProb(power, oppPower) ? 1 : 0);
+  }
+  return { G: seq.length, seq, realRank: real ? (real.rank || null) : null };
 }
 
 // Records THROUGH the games played so far. The user's row is their real played
@@ -2688,10 +2770,21 @@ const PERSUADE_PITCHES = [
   "Scouts have told us you won't be drafted",
 ];
 
+// This season's per-game production (points + a rebound/assist weighting),
+// used as a "stock is rising" signal on top of raw overall — a player who
+// just had a breakout year is more inclined to test the draft than their
+// overall rating alone would suggest, same as real draft-declaration logic.
+function seasonProductionScore(p) {
+  const gp = p.season?.gp || 0;
+  if (!gp) return 0;
+  return (p.season.pts / gp) + (p.season.reb / gp) * 0.7 + (p.season.ast / gp) * 0.85;
+}
+
 // Decide which underclassmen declare for the draft this offseason. Only players
-// at/above their class's overall floor are eligible; among those, better players
-// are likelier to go. Each declaration carries a randomly-assigned correct pitch
-// and its persuasion state so the coach gets one attempt to talk them back.
+// at/above their class's overall floor are eligible; among those, better and
+// more productive players are likelier to go. Each declaration carries a
+// randomly-assigned correct pitch and its persuasion state so the coach gets
+// one attempt to talk them back.
 function decideEarlyDeclarations(roster) {
   const out = [];
   roster.forEach((p) => {
@@ -2701,7 +2794,8 @@ function decideEarlyDeclarations(roster) {
     const o = p.overall;
     let chance = o >= 90 ? 0.9 : o >= 86 ? 0.65 : o >= 83 ? 0.45 : 0.3;
     if (p.class === "JR") chance += 0.08;
-    if (Math.random() < chance) {
+    chance += clamp((seasonProductionScore(p) - 14) / 40, 0, 0.15);
+    if (Math.random() < clamp(chance, 0, 0.97)) {
       out.push({
         id: p.id, name: p.name, pos: p.pos, class: p.class, overall: o,
         correctPitch: randInt(0, PERSUADE_PITCHES.length - 1),
@@ -3262,10 +3356,17 @@ function DynastyApp({ initial, onExit }) {
   const bracketology = projectedSeed(rankById[state.teamId]);
 
   // Scholarship accounting drives recruiting: 13 total, minus scholarship
-  // players returning next season (non-seniors) and anyone already committed
-  // this cycle. When this hits zero the coach must cut a player to sign more.
+  // players returning next season (non-seniors, and not a declared early
+  // entrant who hasn't been talked back — draft declarations are the first
+  // thing resolved each offseason, so a departure opens a real slot for
+  // recruiting immediately, not only once advanceYear finalizes the roster)
+  // and anyone already committed this cycle. When this hits zero the coach
+  // must cut a player to sign more.
   const scholarshipInfo = useMemo(() => {
-    const returning = state.roster.filter((p) => p.scholarship && p.class !== "SR").length;
+    const leavingEarly = new Set(
+      (state.offseason?.draftDeclarations || []).filter((d) => !d.kept).map((d) => d.id)
+    );
+    const returning = state.roster.filter((p) => p.scholarship && p.class !== "SR" && !leavingEarly.has(p.id)).length;
     const committed = state.incomingCommits.length + (state.offseason?.committedTransfers?.length || 0);
     const used = returning + committed;
     return { returning, committed, used, open: Math.max(0, SCHOLARSHIP_LIMIT - used) };
@@ -3427,10 +3528,14 @@ function DynastyApp({ initial, onExit }) {
     flash("Offseason underway — work the transfer portal, set your schedule, or take a new job.");
   }
 
+  // Mirrors doRecruitAction exactly — calls/offers apply immediately, visits
+  // and home visits open the same interactive VisitExperience a high-school
+  // recruit gets, so a transfer target is pitched with full consistency.
   function doTransferAction(recruit, actionKey) {
     const os = state.offseason;
     if (!os) return;
     if (!canTakeAction(recruit, actionKey, os.points, os.week, team)) return;
+    if (actionKey === "VISIT" || actionKey === "HOME") { setVisit({ recruit, actionKey, source: "transfer" }); return; }
     const cost = actionCostFor(actionKey, recruit, team);
     const updated = applyRecruitAction(recruit, actionKey, os.week);
     setState((s) => ({
@@ -3722,7 +3827,7 @@ function DynastyApp({ initial, onExit }) {
     if (!canTakeAction(recruit, actionKey, state.recruitingPoints, week, team)) return;
     // Visits aren't a one-click point spend anymore — they open an interactive
     // trip where the coach's pitch choices decide how much interest is gained.
-    if (actionKey === "VISIT" || actionKey === "HOME") { setVisit({ recruit, actionKey }); return; }
+    if (actionKey === "VISIT" || actionKey === "HOME") { setVisit({ recruit, actionKey, source: "recruit" }); return; }
     const cost = actionCostFor(actionKey, recruit, team);
     const updated = applyRecruitAction(recruit, actionKey, week);
     setState((s) => {
@@ -3757,17 +3862,32 @@ function DynastyApp({ initial, onExit }) {
 
   // Apply the outcome of an interactive visit: deduct its distance-priced cost,
   // add the interest the coach's choices earned, and mark the visit used.
+  // Shared by both high-school recruiting (recruitingBoard/recruitingPoints)
+  // and the transfer portal (offseason.transferBoard/offseason.points), keyed
+  // off visit.source so the two pools stay fully consistent.
   function finishVisit(totalGain) {
     if (!visit) return;
-    const { recruit, actionKey } = visit;
-    const week = state.recruitingWeekIndex;
+    const { recruit, actionKey, source } = visit;
+    const isTransfer = source === "transfer";
+    const week = isTransfer ? state.offseason?.week : state.recruitingWeekIndex;
     const cost = actionCostFor(actionKey, recruit, team);
     setState((s) => {
-      const r0 = s.recruitingBoard.find((r) => r.id === recruit.id);
+      const board = isTransfer ? s.offseason?.transferBoard : s.recruitingBoard;
+      const r0 = board && board.find((r) => r.id === recruit.id);
       if (!r0 || r0.committedTo) return s;
       const next = { ...r0, interest: clamp(r0.interest + totalGain, 0, 100) };
       if (actionKey === "VISIT") next.visitsUsed = (next.visitsUsed || 0) + 1;
       if (actionKey === "HOME") { next.homeVisitsUsed = (next.homeVisitsUsed || 0) + 1; next.homeVisitWeek = week; }
+      if (isTransfer) {
+        return {
+          ...s,
+          offseason: {
+            ...s.offseason,
+            points: s.offseason.points - cost,
+            transferBoard: s.offseason.transferBoard.map((r) => (r.id === recruit.id ? next : r)),
+          },
+        };
+      }
       return {
         ...s,
         recruitingPoints: s.recruitingPoints - cost,
