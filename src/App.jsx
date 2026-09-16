@@ -4694,7 +4694,7 @@ function DynastyApp({ initial, onExit }) {
       </div>
 
       {viewTeamId && (
-        <TeamRosterModal teamId={viewTeamId} year={state.year} strengths={state.strengths} rank={rankById[viewTeamId]} poached={state.poachedPlayers || []} onClose={() => setViewTeamId(null)} />
+        <TeamRosterModal teamId={viewTeamId} year={state.year} strengths={state.strengths} rank={rankById[viewTeamId]} poached={state.poachedPlayers || []} history={state.history} onClose={() => setViewTeamId(null)} />
       )}
       {jobPickerOpen && (
         // Voluntary "Coaching Offers" browse only — a firing is handled by
@@ -6526,7 +6526,7 @@ function LiveGame({ ctxInit, onFinish, onClose }) {
 }
 
 /* ---------- Opponent Roster Viewer ---------- */
-function TeamRosterModal({ teamId, year, strengths, rank, poached = [], onClose }) {
+function TeamRosterModal({ teamId, year, strengths, rank, poached = [], history: dynastyHistory = [], onClose }) {
   const team = TEAM_MAP[teamId];
   const [view, setView] = useState("roster");
   // Any real player the user has signed away from THIS team no longer appears
@@ -6542,13 +6542,13 @@ function TeamRosterModal({ teamId, year, strengths, rank, poached = [], onClose 
   const schedule = useMemo(() => genSchedule(team, year), [teamId, year]);
   const teamPower = useMemo(() => teamPowerRating(team, strengths, year, { noise: false }), [teamId, year, strengths]);
   const realCount = roster.filter((p) => p.realName).length;
-  // Real season-by-season records (Barttorvik), newest first.
-  const history = useMemo(() => {
-    const rec = teamRecordsRaw[teamId] || {};
-    return Object.keys(rec)
-      .map((y) => ({ year: +y, ...rec[y] }))
-      .sort((a, b) => b.year - a.year);
-  }, [teamId]);
+  // Seasons THIS dynasty actually simulated while coaching this program (a
+  // prior job, if the user has moved on since) — never real-world records,
+  // newest first.
+  const history = useMemo(
+    () => dynastyHistory.filter((h) => h.teamId === teamId).sort((a, b) => b.year - a.year),
+    [dynastyHistory, teamId]
+  );
 
   const tabBtn = (id, label) => (
     <button
@@ -6588,7 +6588,7 @@ function TeamRosterModal({ teamId, year, strengths, rank, poached = [], onClose 
       <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
         {tabBtn("roster", "Roster")}
         {tabBtn("schedule", "Schedule")}
-        {history.length > 0 && tabBtn("history", "Program History")}
+        {history.length > 0 && tabBtn("history", "History")}
       </div>
 
       {view === "roster" && (
@@ -6655,24 +6655,20 @@ function TeamRosterModal({ teamId, year, strengths, rank, poached = [], onClose 
       {view === "history" && (
         <Panel style={{ overflow: "hidden" }}>
           <div style={{ fontSize: 11, color: C.dimmer, padding: "8px 10px 0" }}>
-            Real season results from Torvik data. Rk = end-of-season national rating rank.
+            This dynasty's own simulated results from when this program was under your control.
           </div>
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13.5 }}>
             <thead>
               <tr style={{ borderBottom: `1px solid ${C.line}`, color: C.dim, fontSize: 11, textAlign: "left" }}>
-                <th style={th}>Season</th><th style={th}>Overall</th><th style={th}>Conf</th><th style={th}>Conf W-L</th><th style={th}>Rk</th>
+                <th style={th}>Season</th><th style={th}>Record</th><th style={th}>Postseason</th>
               </tr>
             </thead>
             <tbody>
               {history.map((h) => (
                 <tr key={h.year} className="cbb-row" style={{ borderBottom: `1px solid ${C.line}` }}>
                   <td style={{ ...td, fontWeight: 600 }} className="cbb-num">{seasonLabel(h.year)}</td>
-                  <td style={{ ...td, fontWeight: 700 }} className="cbb-num">{h.wl}</td>
-                  <td style={td}>{h.conf}</td>
-                  <td style={td} className="cbb-num">{h.confWL || "—"}</td>
-                  <td style={{ ...td, color: h.rank <= 25 ? C.wood : C.dim, fontWeight: h.rank <= 25 ? 700 : 400 }} className="cbb-num">
-                    {h.rank <= 25 ? `#${h.rank}` : h.rank}
-                  </td>
+                  <td style={{ ...td, fontWeight: 700 }} className="cbb-num">{h.wins}-{h.losses}</td>
+                  <td style={{ ...td, color: h.postseason === "National Champions" ? C.gold : h.postseason ? C.wood : C.dimmer }}>{h.postseason || "—"}</td>
                 </tr>
               ))}
             </tbody>
