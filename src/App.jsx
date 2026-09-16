@@ -2167,19 +2167,45 @@ function cpuSeasonSeq(team, year, powerById, seasonSeed) {
 // emergent sequence (capped at its own schedule length). This is the single
 // source both the poll and the standings read, so they always agree — and nothing
 // posts a win before that game has actually been played.
-function accruedRecordTable(powerById, userTeamId, userRecord, year, seasonSeed, gamesPlayed) {
+// Streak (signed, positive = winning) and last-10 record off the trailing
+// end of a 0/1 win sequence, shared by both the user's real schedule (via
+// currentStreak/record above) and every CPU team's emergent one below.
+function streakAndLast10(seq) {
+  let streak = 0;
+  for (let i = seq.length - 1; i >= 0; i--) {
+    const win = !!seq[i];
+    if (streak === 0) { streak = win ? 1 : -1; continue; }
+    if ((win && streak > 0) || (!win && streak < 0)) streak += win ? 1 : -1;
+    else break;
+  }
+  const last10 = seq.slice(-10);
+  const last10W = last10.reduce((s, x) => s + x, 0);
+  return { streak, last10W, last10G: last10.length };
+}
+
+function accruedRecordTable(powerById, userTeamId, userRecord, year, seasonSeed, gamesPlayed, userStreak = 0) {
   const seed = seasonSeed == null ? (Math.imul(year, 2654435761) >>> 0) : seasonSeed;
   const rec = {};
   for (const t of TEAMS) {
     if (t.id === userTeamId) {
-      rec[t.id] = { wins: userRecord.w, losses: userRecord.l, realRank: null };
+      rec[t.id] = {
+        wins: userRecord.w, losses: userRecord.l,
+        confWins: userRecord.confW ?? 0, confLosses: userRecord.confL ?? 0,
+        streak: userStreak, last10W: userRecord.last10W ?? 0, last10G: userRecord.last10G ?? 0,
+        realRank: null,
+      };
       continue;
     }
     const { G, seq, realRank } = cpuSeasonSeq(t, year, powerById, seed);
     const k = Math.min(Math.max(0, gamesPlayed), G);
+    const played = seq.slice(0, k);
     let w = 0;
     for (let i = 0; i < k; i++) w += seq[i];
-    rec[t.id] = { wins: w, losses: k - w, realRank };
+    const confStart = Math.min(NONCONF_GAMES, k);
+    let confW = 0, confL = 0;
+    for (let i = confStart; i < k; i++) { if (seq[i]) confW++; else confL++; }
+    const { streak, last10W, last10G } = streakAndLast10(played);
+    rec[t.id] = { wins: w, losses: k - w, confWins: confW, confLosses: confL, streak, last10W, last10G, realRank };
   }
   return rec;
 }
@@ -2224,7 +2250,12 @@ function rankingScore(wins, losses, power, realRank, isUser = false, gamesPlayed
 function computeRankings(powerById, recordById, userTeamId, gamesPlayed = 0) {
   const ranked = TEAMS.map((t) => {
     const r = recordById[t.id];
-    return { team: t, wins: r.wins, losses: r.losses, power: powerById[t.id], score: rankingScore(r.wins, r.losses, powerById[t.id], r.realRank, t.id === userTeamId, gamesPlayed) };
+    return {
+      team: t, wins: r.wins, losses: r.losses,
+      confWins: r.confWins ?? 0, confLosses: r.confLosses ?? 0,
+      streak: r.streak ?? 0, last10W: r.last10W ?? 0, last10G: r.last10G ?? 0,
+      power: powerById[t.id], score: rankingScore(r.wins, r.losses, powerById[t.id], r.realRank, t.id === userTeamId, gamesPlayed),
+    };
   }).sort((a, b) => b.score - a.score || b.wins - a.wins || a.losses - b.losses || b.power - a.power);
   const rankById = {};
   ranked.forEach((row, i) => { rankById[row.team.id] = i + 1; });
@@ -2362,6 +2393,10 @@ function findUserPendingMatchup(ps, userTeamId) {
         if (loc) return { where: "region", regionIndex: ri, ...loc };
       }
     }
+    if (ps.nit && ps.nit.bracket && !ps.nit.bracket.done) {
+      const loc = scan(ps.nit.bracket);
+      if (loc) return { where: "nit", ...loc };
+    }
   }
   return null;
 }
@@ -2412,7 +2447,20 @@ function buildMadness(confChampions, rankById) {
     name: REGION_NAMES[i],
     bracket: buildSingleElim(ids),
   }));
-  return { regions, finalFour: null, champion: null };
+  return { regions, finalFour: null, champion: null, field };
+}
+
+// NIT: a 32-team consolation field for teams that missed the Madness field
+// (the highest-ranked teams left over), so a season that falls short of the
+// NCAA Tournament still has something to play for instead of just ending.
+function buildNit(madnessField, rankById) {
+  const excluded = new Set(madnessField);
+  const pool = TEAMS
+    .filter((t) => !excluded.has(t.id))
+    .sort((a, b) => rankById[a.id] - rankById[b.id])
+    .map((t) => t.id);
+  const field = pool.slice(0, 32);
+  return { bracket: buildSingleElim(field) };
 }
 
 // True once all four regions have crowned a champion.
@@ -2434,6 +2482,10 @@ function postseasonSummary(ps, userTeamId) {
     }
     const inField = md.regions.some((r) => r.bracket.seeds.includes(userTeamId));
     if (inField) return "NCAA Tournament";
+  }
+  if (ps.nit && ps.nit.bracket.seeds.includes(userTeamId)) {
+    if (ps.nit.bracket.champion === userTeamId) return "NIT Champions";
+    return "NIT";
   }
   const myConf = TEAM_MAP[userTeamId]?.conf;
   if (myConf && ps.confChampions?.[myConf] === userTeamId) return "Conference Champions";
@@ -2723,6 +2775,14 @@ function awardScore(ppg, rpg, apg, rank) {
   return prod + teamBonus;
 }
 
+// No steals/blocks data exists in the real dataset, so rebounds + assists
+// (the two "activity" stats we do have) stand in as a defensive-value proxy.
+function defenseScore(rpg, apg, rank) {
+  const prod = rpg * 1.1 + apg * 0.5;
+  const teamBonus = clamp((70 - (rank || 70)) / 70, 0, 1) * 5;
+  return prod + teamBonus;
+}
+
 // Best real player line (per-game) for a team in a given season, or null.
 function bestRealLine(team, year) {
   const rows = realPlayersFor(team, year);
@@ -2792,19 +2852,27 @@ function computeAwards(state, rankById, ranked, powerById) {
 
   cands.sort((a, b) => b.score - a.score);
   const allAmerica = cands.slice(0, 5);
+  const allAmericaSecond = cands.slice(5, 10);
   const poy = allAmerica[0] || null;
   const allFreshman = cands.filter((c) => c.class === "FR").slice(0, 5);
   const allConference = cands
     .filter((c) => TEAM_MAP[c.teamId] && TEAM_MAP[c.teamId].conf === userConf)
     .slice(0, 5);
 
+  const defCands = cands
+    .map((c) => ({ ...c, defScore: defenseScore(c.rpg, c.apg, c.rank) }))
+    .sort((a, b) => b.defScore - a.defScore);
+  const allDefensive = defCands.slice(0, 5);
+
   const userHonors = [];
   state.roster.forEach((p) => {
     const honors = [];
     if (poy && poy.id === p.id) honors.push("National Player of the Year");
     else if (allAmerica.find((c) => c.id === p.id)) honors.push("All-America");
+    else if (allAmericaSecond.find((c) => c.id === p.id)) honors.push("All-America 2nd Team");
     if (allConference.find((c) => c.id === p.id)) honors.push(`All-${userConf}`);
     if (allFreshman.find((c) => c.id === p.id)) honors.push("All-Freshman");
+    if (allDefensive.find((c) => c.id === p.id)) honors.push("All-Defensive Team");
     if (honors.length) userHonors.push({ name: p.name, pos: p.pos, honors });
   });
 
@@ -2812,8 +2880,10 @@ function computeAwards(state, rankById, ranked, powerById) {
     year, userConf,
     poy: poy ? { name: poy.name, teamName: poy.teamName, pos: poy.pos, isUser: poy.isUser } : null,
     allAmerica: allAmerica.map((c) => ({ name: c.name, teamName: c.teamName, pos: c.pos, ppg: c.ppg, rpg: c.rpg, apg: c.apg, isUser: c.isUser })),
+    allAmericaSecond: allAmericaSecond.map((c) => ({ name: c.name, teamName: c.teamName, pos: c.pos, ppg: c.ppg, rpg: c.rpg, apg: c.apg, isUser: c.isUser })),
     allFreshman: allFreshman.map((c) => ({ name: c.name, teamName: c.teamName, pos: c.pos, isUser: c.isUser })),
     allConference: allConference.map((c) => ({ name: c.name, teamName: c.teamName, pos: c.pos, isUser: c.isUser })),
+    allDefensive: allDefensive.map((c) => ({ name: c.name, teamName: c.teamName, pos: c.pos, rpg: c.rpg, apg: c.apg, isUser: c.isUser })),
     userHonors,
   };
 }
@@ -2878,7 +2948,7 @@ function draftBoard(early, seniors) {
 /* =========================================================================
    COACH CAREER + REPUTATION
    ========================================================================= */
-const EMPTY_COACH = { wins: 0, losses: 0, seasons: 0, tourneyApps: 0, confTourneyTitles: 0, finalFours: 0, natTitles: 0, jobSecurity: 60 };
+const EMPTY_COACH = { wins: 0, losses: 0, seasons: 0, tourneyApps: 0, confTourneyTitles: 0, finalFours: 0, natTitles: 0, coyAwards: 0, jobSecurity: 60, repPenalty: 0 };
 const JOB_REP_REQ = { 5: 120, 4: 70, 3: 35, 2: 12, 1: 0 };
 
 /* =========================================================================
@@ -2915,6 +2985,19 @@ function evaluateSeason(exp, record, psSummary) {
   if (psSummary === "National Champions") sec += 20;
   const met = record.w >= exp.winTarget && psv >= goalv;
   return { securityDelta: Math.round(sec), met, winMargin: record.w - exp.winTarget };
+}
+
+// A real Coach of the Year season isn't just clearing the bar — it's
+// clearing it by enough that it's actually a story: a team picked to finish
+// mid-pack winning the league, or a modest expectation turning into a real
+// tournament run. There's no simulated field of rival coaches to vote
+// against, so this reads as "this season was good enough to have won it"
+// rather than a real ballot.
+function coachOfYear(evalRes, psSummary) {
+  if (!evalRes.met) return false;
+  if (evalRes.winMargin >= 6) return true;
+  if (psValue(psSummary) >= psValue("Sweet 16") && evalRes.winMargin >= 2) return true;
+  return false;
 }
 
 /* =========================================================================
@@ -3006,10 +3089,22 @@ function hotSeatTier(sec) {
 
 function reputationOf(coach) {
   if (!coach) return 0;
-  return Math.round(
-    coach.seasons * 3 + coach.wins * 0.15 + coach.tourneyApps * 5 +
-    coach.confTourneyTitles * 9 + coach.finalFours * 14 + coach.natTitles * 30
-  );
+  const built = coach.seasons * 3 + coach.wins * 0.15 + coach.tourneyApps * 5 +
+    coach.confTourneyTitles * 9 + coach.finalFours * 14 + coach.natTitles * 30 +
+    (coach.coyAwards || 0) * 7;
+  return Math.max(0, Math.round(built - (coach.repPenalty || 0)));
+}
+
+// A blown-expectations season or an outright firing should cost a coach
+// something, not just stall their climb — otherwise reputation only ever
+// goes up regardless of how a tenure actually goes.
+function reputationErosion(evalRes, fired) {
+  let penalty = 0;
+  if (!evalRes.met && evalRes.winMargin < 0) {
+    penalty += clamp(Math.round(-evalRes.winMargin * 0.6), 1, 10);
+  }
+  if (fired) penalty += 15;
+  return penalty;
 }
 
 function reputationTier(rep) {
@@ -3389,10 +3484,17 @@ function DynastyApp({ initial, onExit }) {
 
   const nextGame = state.schedule.find((g) => !g.played);
   const record = useMemo(() => {
-    const w = state.schedule.filter((g) => g.played && g.result.win).length;
-    const l = state.schedule.filter((g) => g.played && !g.result.win).length;
-    return { w, l };
+    const played = state.schedule.filter((g) => g.played);
+    const w = played.filter((g) => g.result.win).length;
+    const l = played.length - w;
+    const confPlayed = played.filter((g) => g.conf);
+    const confW = confPlayed.filter((g) => g.result.win).length;
+    const confL = confPlayed.length - confW;
+    const last10 = played.slice(-10);
+    const last10W = last10.filter((g) => g.result.win).length;
+    return { w, l, confW, confL, last10W, last10G: last10.length };
   }, [state.schedule]);
+  const streak = useMemo(() => currentStreak(state.schedule), [state.schedule]);
 
   // National rankings, recomputed as results change. Shared by the Rankings
   // tab, schedule/standings rank badges, and postseason seeding.
@@ -3404,9 +3506,9 @@ function DynastyApp({ initial, onExit }) {
     // there (rather than the raw OVR average, which over-ranked weak programs).
     powerById[state.teamId] = userGamePower(state.roster, state.depthChart, powerBaseline, state.minutes);
     const gamesPlayed = record.w + record.l;
-    const recordById = accruedRecordTable(powerById, state.teamId, record, state.year, state.seasonSeed, gamesPlayed);
+    const recordById = accruedRecordTable(powerById, state.teamId, record, state.year, state.seasonSeed, gamesPlayed, streak);
     return computeRankings(powerById, recordById, state.teamId, gamesPlayed);
-  }, [state.strengths, state.year, state.teamId, record, state.roster, state.depthChart, state.minutes, powerBaseline, state.seasonSeed]);
+  }, [state.strengths, state.year, state.teamId, record, streak, state.roster, state.depthChart, state.minutes, powerBaseline, state.seasonSeed]);
 
   const reputation = reputationOf(state.coach);
   const nilBudget = (state.nilBudgetById || baselineNilBudgetById())[state.teamId] ?? nilBudgetForTeam(team);
@@ -3763,6 +3865,7 @@ function DynastyApp({ initial, onExit }) {
         confBrackets: buildConfBrackets(rankById),
         confChampions: {},
         madness: null,
+        nit: null,
         champion: null,
         seedRankById: rankById,
       },
@@ -3813,8 +3916,14 @@ function DynastyApp({ initial, onExit }) {
         if (allDone) {
           next.phase = "madness";
           next.madness = buildMadness(confChampions, next.seedRankById);
+          next.nit = buildNit(next.madness.field, next.seedRankById);
         }
       } else if (next.phase === "madness") {
+        if (next.nit && !next.nit.bracket.done) {
+          const after = advanceBracketRound(next.nit.bracket, ctx);
+          captureBox(after);
+          next.nit = { ...next.nit, bracket: after };
+        }
         const md = { ...next.madness };
         if (!regionsComplete(md)) {
           md.regions = md.regions.map((r) => {
@@ -3900,6 +4009,8 @@ function DynastyApp({ initial, onExit }) {
         ps.madness = { ...ps.madness, regions: ps.madness.regions.map((r, i) => i === loc.regionIndex ? { ...r, bracket: applyToBracket(r.bracket) } : r) };
       } else if (loc.where === "finalFour") {
         ps.madness = { ...ps.madness, finalFour: applyToBracket(ps.madness.finalFour) };
+      } else if (loc.where === "nit") {
+        ps.nit = { ...ps.nit, bracket: applyToBracket(ps.nit.bracket) };
       }
       const roster = s.roster.map((p) => {
         const box = result.boxByPlayer[p.id];
@@ -4186,6 +4297,9 @@ function DynastyApp({ initial, onExit }) {
     coach.jobSecurity = secAfter;
     const nextExp = seasonExpectation(nextPrestige[state.teamId] ?? team.prestige);
     const fired = secAfter <= 8;
+    const wonCoy = coachOfYear(evalRes, psSummary);
+    if (wonCoy) coach.coyAwards = (coach.coyAwards || 0) + 1;
+    coach.repPenalty = (coach.repPenalty || 0) + reputationErosion(evalRes, fired);
 
     // NIL: grade this season's 3 objectives, compound the budget, and pick
     // next season's 3 off the program's drifted prestige.
@@ -4220,6 +4334,7 @@ function DynastyApp({ initial, onExit }) {
       nilBoostPct: nilBoost,
       nilBudgetBefore: (state.nilBudgetById || baselineNilBudgetById())[state.teamId] ?? nilBudgetForTeam(team),
       nilBudgetAfter: nextNilById[state.teamId],
+      coyAwarded: wonCoy,
     };
 
     const newDepthChart = defaultDepthChart(newRoster);
@@ -4289,6 +4404,15 @@ function DynastyApp({ initial, onExit }) {
     // its budget off this season, same as a normal advanceYear — it just
     // won't be the budget you're spending from next year.
     const psSummary = postseasonSummary(state.postseason, state.teamId);
+    // The season you're leaving behind can still have been a Coach of the
+    // Year year — a great season at your old job doesn't stop counting just
+    // because you're moving on to a bigger one.
+    const leavingExp = state.expectation || seasonExpectation(team.prestige);
+    const leavingEvalRes = evaluateSeason(leavingExp, record, psSummary);
+    if (coachOfYear(leavingEvalRes, psSummary)) {
+      coach.coyAwards = (coach.coyAwards || 0) + 1;
+    }
+    coach.repPenalty = (coach.repPenalty || 0) + reputationErosion(leavingEvalRes, false);
     const confChampionId = state.postseason?.confChampions?.[team.conf] ?? null;
     const beatRanked = state.schedule.some((g) => g.played && g.result?.win && g.result.oppRank && g.result.oppRank <= 25);
     const prevHistoryEntry = [...state.history].reverse().find((h) => h.teamId === state.teamId);
@@ -6712,6 +6836,7 @@ function SeasonRecapModal({ recap, onClose }) {
           <RecapChip label="Postseason" value={recap.postseason || "None"} gold={recap.postseason === "National Champions"} />
           <RecapChip label="Reputation" value={`${recap.repAfter}${repDelta ? ` (+${repDelta})` : ""}`} />
           <RecapChip label="Incoming class" value={`${recap.incomingCount} signed`} />
+          {recap.coyAwarded && <RecapChip label="Coach of the Year" value="Won" gold />}
         </div>
 
         {recap.nilObjectivesMet != null && (
@@ -6755,6 +6880,28 @@ function SeasonRecapModal({ recap, onClose }) {
             {a.allAmerica.map((c, i) => (
               <div key={i} style={{ fontSize: 12.5, marginBottom: 2, color: c.isUser ? C.gold : C.cream }}>
                 {c.name} <span style={{ color: C.dim }}>{c.pos} · {c.teamName} · {c.ppg.toFixed(1)} / {c.rpg.toFixed(1)} / {c.apg.toFixed(1)}</span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {a.allAmericaSecond && a.allAmericaSecond.length > 0 && (
+          <div>
+            <div style={{ fontSize: 11, color: C.dim, letterSpacing: "0.08em", marginBottom: 8 }}>ALL-AMERICA SECOND TEAM</div>
+            {a.allAmericaSecond.map((c, i) => (
+              <div key={i} style={{ fontSize: 12.5, marginBottom: 2, color: c.isUser ? C.gold : C.cream }}>
+                {c.name} <span style={{ color: C.dim }}>{c.pos} · {c.teamName} · {c.ppg.toFixed(1)} / {c.rpg.toFixed(1)} / {c.apg.toFixed(1)}</span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {a.allDefensive && a.allDefensive.length > 0 && (
+          <div>
+            <div style={{ fontSize: 11, color: C.dim, letterSpacing: "0.08em", marginBottom: 8 }}>ALL-DEFENSIVE TEAM</div>
+            {a.allDefensive.map((c, i) => (
+              <div key={i} style={{ fontSize: 12.5, marginBottom: 2, color: c.isUser ? C.gold : C.cream }}>
+                {c.name} <span style={{ color: C.dim }}>{c.pos} · {c.teamName} · {c.rpg.toFixed(1)} reb / {c.apg.toFixed(1)} ast</span>
               </div>
             ))}
           </div>
@@ -6833,6 +6980,7 @@ function ProgramTab({ state, team, record, reputation, rivalIds, rankById }) {
           <TrophyBadge count={coach.finalFours} label="Final Fours" />
           <TrophyBadge count={coach.confTourneyTitles} label="Conf. Tournament Titles" />
           <TrophyBadge count={coach.tourneyApps} label="NCAA Appearances" />
+          <TrophyBadge count={coach.coyAwards || 0} label="Coach of the Year" gold />
         </div>
         <div style={{ fontSize: 11.5, color: C.dimmer, marginTop: 12 }}>
           {reputationTier(reputation)} — {reputation} reputation. Win games, make deep tournament runs, and cut down nets to unlock jobs at blue-blood programs.
@@ -7093,6 +7241,12 @@ function ScheduleTab({ schedule, teamConf, rankById, rivalIds, onViewTeam, onEdi
 }
 
 /* ---------- Standings ---------- */
+// "W4" / "L2" / "-" for a signed streak (0 = no games played yet).
+function fmtStreak(streak) {
+  if (!streak) return "—";
+  return `${streak > 0 ? "W" : "L"}${Math.abs(streak)}`;
+}
+
 function StandingsTab({ team, ranked, rankById, userRecord, onViewTeam }) {
   // Standings read the SAME accrued records the poll uses: each CPU team's record
   // is the running result of its emergent season through the games played so far
@@ -7101,17 +7255,27 @@ function StandingsTab({ team, ranked, rankById, userRecord, onViewTeam }) {
   const gamesPlayed = Math.max(0, (userRecord.w || 0) + (userRecord.l || 0));
 
   // Conference filter: "All" shows the national table; picking a league narrows
-  // it to that conference's members and re-numbers them as a standalone standing.
+  // it to that conference's members and re-numbers them as a standalone standing,
+  // sorted and displayed by CONFERENCE record — the way a real conference
+  // standings page reads — with overall record shown alongside it.
   const [confFilter, setConfFilter] = useState("All");
   const confOptions = useMemo(
     () => [...new Set(ranked.map((r) => r.team.conf))].sort((a, b) => a.localeCompare(b)),
     [ranked]
   );
+  const inConf = confFilter !== "All";
 
   const rows = ranked
-    .map((r) => ({ ...r.team, wins: r.wins, losses: r.losses, isUser: r.team.id === team.id }))
+    .map((r) => ({
+      ...r.team, wins: r.wins, losses: r.losses,
+      confWins: r.confWins, confLosses: r.confLosses,
+      streak: r.streak, last10W: r.last10W, last10G: r.last10G,
+      isUser: r.team.id === team.id,
+    }))
     .filter((t) => confFilter === "All" || t.conf === confFilter)
-    .sort((a, b) => b.wins - a.wins || a.losses - b.losses || b.prestige - a.prestige);
+    .sort((a, b) => (inConf
+      ? (b.confWins - a.confWins || a.confLosses - b.confLosses || b.wins - a.wins)
+      : (b.wins - a.wins || a.losses - b.losses)) || b.prestige - a.prestige);
 
   return (
     <div>
@@ -7119,7 +7283,7 @@ function StandingsTab({ team, ranked, rankById, userRecord, onViewTeam }) {
         <span style={{ fontSize: 11.5, color: C.dimmer, flex: "1 1 240px" }}>
           {confFilter === "All"
             ? <>National standings through the games played so far — every team shows the same {gamesPlayed} game{gamesPlayed === 1 ? "" : "s"} you&apos;ve played, and each season plays out fresh, so records and the poll shift week to week. Click any team to preview their roster.</>
-            : <><strong>{confFilter}</strong> standings through {gamesPlayed} game{gamesPlayed === 1 ? "" : "s"} — live results from each team&apos;s emergent season. Click any team to preview their roster.</>}
+            : <><strong>{confFilter}</strong> standings, sorted by conference record, through {gamesPlayed} game{gamesPlayed === 1 ? "" : "s"} — live results from each team&apos;s emergent season. Click any team to preview their roster.</>}
         </span>
         <select value={confFilter} onChange={(e) => setConfFilter(e.target.value)}
           style={{ background: C.panel, border: `1px solid ${C.line}`, color: C.cream, padding: "6px 10px", fontSize: 13 }}>
@@ -7127,12 +7291,16 @@ function StandingsTab({ team, ranked, rankById, userRecord, onViewTeam }) {
           {confOptions.map((c) => <option key={c} value={c}>{c}</option>)}
         </select>
       </div>
-      {gamesPlayed > 0 && <StandingsBarChart rows={rows} onViewTeam={onViewTeam} />}
+      {gamesPlayed > 0 && <StandingsBarChart rows={rows} onViewTeam={onViewTeam} inConf={inConf} />}
       <Panel style={{ overflow: "hidden" }}>
+        <div className="cbb-scroll" style={{ overflowX: "auto" }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13.5 }}>
           <thead>
             <tr style={{ borderBottom: `1px solid ${C.line}`, color: C.dim, fontSize: 11, textAlign: "left" }}>
-              <th style={th}>#</th><th style={th}>Team</th><th style={th}>Conf</th><th style={th}>W</th><th style={th}>L</th>
+              <th style={th}>#</th><th style={th}>Team</th><th style={th}>Conf</th>
+              {inConf ? <th style={th}>Conf W-L</th> : null}
+              {inConf ? <th style={th}>Overall</th> : <><th style={th}>W</th><th style={th}>L</th></>}
+              <th style={th}>Strk</th><th style={th}>L10</th>
             </tr>
           </thead>
           <tbody>
@@ -7144,12 +7312,24 @@ function StandingsTab({ team, ranked, rankById, userRecord, onViewTeam }) {
                   <span style={{ borderBottom: t.isUser ? "none" : `1px dotted ${C.dim}` }}>{t.name}</span>{t.isUser ? " (you)" : ""}
                 </td>
                 <td style={td}>{t.conf}</td>
-                <td style={td} className="cbb-num">{t.wins}</td>
-                <td style={td} className="cbb-num">{t.losses}</td>
+                {inConf ? (
+                  <td style={td} className="cbb-num">{t.confWins}-{t.confLosses}</td>
+                ) : null}
+                {inConf ? (
+                  <td style={{ ...td, color: C.dim }} className="cbb-num">{t.wins}-{t.losses}</td>
+                ) : (
+                  <>
+                    <td style={td} className="cbb-num">{t.wins}</td>
+                    <td style={td} className="cbb-num">{t.losses}</td>
+                  </>
+                )}
+                <td style={{ ...td, color: t.streak > 0 ? C.green : t.streak < 0 ? C.red : C.dimmer }} className="cbb-num">{fmtStreak(t.streak)}</td>
+                <td style={td} className="cbb-num">{t.last10G ? `${t.last10W}-${t.last10G - t.last10W}` : "—"}</td>
               </tr>
             ))}
           </tbody>
         </table>
+        </div>
       </Panel>
     </div>
   );
@@ -7160,15 +7340,17 @@ function StandingsTab({ team, ranked, rankById, userRecord, onViewTeam }) {
 // so the chart and table never disagree. Bars use the same track/fill
 // pattern as the job-security and interest meters elsewhere in the app,
 // with the user's team called out in the "you" accent color.
-function StandingsBarChart({ rows, onViewTeam }) {
+function StandingsBarChart({ rows, onViewTeam, inConf = false }) {
   const shown = rows.slice(0, 15);
   return (
     <Panel style={{ padding: 20, marginBottom: 14 }}>
-      <div style={{ fontSize: 11, color: C.dim, letterSpacing: "0.08em", marginBottom: 12 }}>WIN% COMPARISON</div>
+      <div style={{ fontSize: 11, color: C.dim, letterSpacing: "0.08em", marginBottom: 12 }}>{inConf ? "CONFERENCE WIN% COMPARISON" : "WIN% COMPARISON"}</div>
       <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
         {shown.map((t) => {
-          const gp = t.wins + t.losses;
-          const pct = gp > 0 ? t.wins / gp : 0;
+          const w = inConf ? t.confWins : t.wins;
+          const l = inConf ? t.confLosses : t.losses;
+          const gp = w + l;
+          const pct = gp > 0 ? w / gp : 0;
           return (
             <div key={t.id} className="cbb-row" onClick={() => onViewTeam(t.id)}
               style={{ display: "flex", alignItems: "center", gap: 10, padding: "5px 6px", cursor: "pointer" }}>
@@ -7182,7 +7364,7 @@ function StandingsBarChart({ rows, onViewTeam }) {
                 <div style={{ height: "100%", width: `${Math.max(pct * 100, 1.5)}%`, background: t.isUser ? C.wood : C.dimmer, borderRadius: "0 3px 3px 0" }} />
               </div>
               <div className="cbb-num" style={{ width: 78, flexShrink: 0, fontSize: 11.5, color: C.dim, textAlign: "right" }}>
-                {t.wins}-{t.losses} · {Math.round(pct * 100)}%
+                {w}-{l} · {Math.round(pct * 100)}%
               </div>
             </div>
           );
@@ -7232,6 +7414,7 @@ function RankingsTab({ ranked, userTeamId, onViewTeam }) {
         </td>
         <td style={{ ...td, color: C.dim }}>{r.team.conf}</td>
         <td style={td} className="cbb-num">{r.wins}-{r.losses}</td>
+        <td style={{ ...td, color: r.streak > 0 ? C.green : r.streak < 0 ? C.red : C.dimmer }} className="cbb-num">{fmtStreak(r.streak)}</td>
       </tr>
     );
   };
@@ -7245,7 +7428,7 @@ function RankingsTab({ ranked, userTeamId, onViewTeam }) {
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13.5 }}>
           <thead>
             <tr style={{ borderBottom: `1px solid ${C.line}`, color: C.dim, fontSize: 11, textAlign: "left" }}>
-              <th style={{ ...th, width: 44 }}>Rk</th><th style={th}>Team</th><th style={th}>Conf</th><th style={th}>Record</th>
+              <th style={{ ...th, width: 44 }}>Rk</th><th style={th}>Team</th><th style={th}>Conf</th><th style={th}>Record</th><th style={th}>Strk</th>
             </tr>
           </thead>
           <tbody>
@@ -7565,10 +7748,20 @@ function PostseasonTab({ postseason, userTeamId, seasonOver, rankById, onStart, 
             ))}
           </div>
           {ps.madness.finalFour && (
-            <div>
+            <div style={{ marginBottom: 18 }}>
               <div style={{ fontSize: 12, color: C.gold, fontWeight: 600, letterSpacing: "0.06em", marginBottom: 8 }}>FINAL FOUR</div>
               <Panel style={{ padding: 14 }}>
                 <BracketView bracket={ps.madness.finalFour} userTeamId={userTeamId} onViewTeam={onViewTeam} />
+              </Panel>
+            </div>
+          )}
+          {ps.nit && (
+            <div>
+              <div style={{ fontSize: 12, color: C.wood, fontWeight: 600, letterSpacing: "0.06em", marginBottom: 8 }}>
+                NIT {ps.nit.bracket.champion ? `— Champions: ${TEAM_MAP[ps.nit.bracket.champion].name}` : "(consolation field for teams that missed March Madness)"}
+              </div>
+              <Panel style={{ padding: 14 }}>
+                <BracketView bracket={ps.nit.bracket} userTeamId={userTeamId} onViewTeam={onViewTeam} />
               </Panel>
             </div>
           )}
