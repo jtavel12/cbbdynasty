@@ -6,8 +6,9 @@ import teamRecordsRaw from "./data/team-records.json";
 import {
   LayoutDashboard, Users, ListOrdered, Search, CalendarDays, Trophy,
   Save, RotateCcw, ChevronUp, ChevronDown, Play, FastForward, Star,
-  ShieldCheck, X, Check, TrendingUp, Award, Crown,
-  Medal, HeartPulse, Swords, Flame, GraduationCap, Landmark, Lock
+  ShieldCheck, X, Check, TrendingUp, TrendingDown, Award, Crown,
+  Medal, HeartPulse, Swords, Flame, GraduationCap, Landmark, Lock,
+  Clock, Gauge, Zap, Minus, Timer
 } from "lucide-react";
 
 /* =========================================================================
@@ -2224,8 +2225,52 @@ function draftBoard(early, seniors) {
 /* =========================================================================
    COACH CAREER + REPUTATION
    ========================================================================= */
-const EMPTY_COACH = { wins: 0, losses: 0, seasons: 0, tourneyApps: 0, confTourneyTitles: 0, finalFours: 0, natTitles: 0 };
+const EMPTY_COACH = { wins: 0, losses: 0, seasons: 0, tourneyApps: 0, confTourneyTitles: 0, finalFours: 0, natTitles: 0, jobSecurity: 60 };
 const JOB_REP_REQ = { 5: 120, 4: 70, 3: 35, 2: 12, 1: 0 };
+
+/* =========================================================================
+   SEASON EXPECTATIONS + HOT SEAT
+   The athletic director sets a bar each season based on the program's current
+   (fluid) prestige. Beating it builds job security; falling short erodes it, and
+   a coach who bottoms out gets shown the door.
+   ========================================================================= */
+function seasonExpectation(prestige) {
+  const p = Math.round(prestige || 2);
+  if (p >= 5) return { label: "Reach the Final Four", winTarget: 26, psGoal: "Final Four", tier: 5 };
+  if (p === 4) return { label: "Win 24 and make a deep tournament run", winTarget: 24, psGoal: "NCAA Tournament", tier: 4 };
+  if (p === 3) return { label: "Make the NCAA Tournament", winTarget: 20, psGoal: "NCAA Tournament", tier: 3 };
+  if (p === 2) return { label: "Finish with a winning record", winTarget: 17, psGoal: null, tier: 2 };
+  return { label: "Show progress — win 12 games", winTarget: 12, psGoal: null, tier: 1 };
+}
+
+// Rank a postseason finish so results can be compared to a goal.
+function psValue(s) {
+  if (s === "National Champions") return 6;
+  if (s === "Runner-up") return 5;
+  if (s === "Final Four") return 4;
+  if (s === "Elite Eight") return 3;
+  if (s === "Sweet 16") return 2;
+  if (s === "NCAA Tournament") return 1;
+  return 0;
+}
+
+// How the season measured up: a job-security swing and whether the bar was met.
+function evaluateSeason(exp, record, psSummary) {
+  const psv = psValue(psSummary);
+  const goalv = exp.psGoal ? psValue(exp.psGoal) : 0;
+  let sec = clamp(record.w - exp.winTarget, -12, 12) * 1.4 + (psv - goalv) * 6;
+  if (psSummary === "National Champions") sec += 20;
+  const met = record.w >= exp.winTarget && psv >= goalv;
+  return { securityDelta: Math.round(sec), met, winMargin: record.w - exp.winTarget };
+}
+
+function hotSeatTier(sec) {
+  if (sec >= 75) return { label: "Untouchable", color: C.green };
+  if (sec >= 45) return { label: "Secure", color: C.green };
+  if (sec >= 25) return { label: "Warm Seat", color: C.gold };
+  if (sec >= 12) return { label: "Hot Seat", color: C.wood };
+  return { label: "Win or Be Fired", color: C.red };
+}
 
 function reputationOf(coach) {
   if (!coach) return 0;
@@ -2462,6 +2507,7 @@ function DynastyApp({ initial, onExit }) {
   const [playerViewId, setPlayerViewId] = useState(null);
   const [boxViewId, setBoxViewId] = useState(null);
   const [recap, setRecap] = useState(null);
+  const [livePlay, setLivePlay] = useState(null);
   const saveTimer = useRef(null);
 
   useEffect(() => {
@@ -2527,15 +2573,11 @@ function DynastyApp({ initial, onExit }) {
     return { returning, committed, used, open: Math.max(0, SCHOLARSHIP_LIMIT - used) };
   }, [state.roster, state.incomingCommits, state.offseason]);
 
-  function simOneGame() {
+  // Shared finish path for both the instant sim and Coach Mode: applies a
+  // { win, myScore, oppScore, boxByPlayer } result to season stats, injuries,
+  // the schedule, recruiting cadence, and the rivalry ledger.
+  function commitGameResult(result, opp, oppRank) {
     if (!nextGame) return;
-    const opp = TEAM_MAP[nextGame.oppId];
-    const oppPower = teamPowerRating(opp, state.strengths, state.year);
-    const hdc = healthyDepthChart(state.depthChart, state.roster);
-    const mom = momentumMod(currentStreak(state.schedule));
-    const result = simulateGame(state.roster, hdc, oppPower, mom);
-    const oppRank = rankById[nextGame.oppId] || null;
-
     let roster = state.roster.map((p) => {
       const box = result.boxByPlayer[p.id];
       if (!box) return p;
@@ -2554,7 +2596,14 @@ function DynastyApp({ initial, onExit }) {
     const recruitingBoard = weeksElapsed > 0 ? advanceRecruitingWeeks(state.recruitingBoard, state.recruitingWeekIndex, weeksElapsed, TOTAL_SEASON_WEEKS) : state.recruitingBoard;
     const recruitingPoints = weeksElapsed > 0 ? weeklyRecruitingBudget(team) : state.recruitingPoints;
 
-    setState((s) => ({ ...s, roster, schedule, recruitingBoard, recruitingPoints, recruitingWeekIndex: newWeekIndex }));
+    // Head-to-head record vs conference rivals persists across seasons.
+    let rivalryLedger = state.rivalryLedger || {};
+    if (rivalIds.has(nextGame.oppId)) {
+      const prev = rivalryLedger[nextGame.oppId] || { w: 0, l: 0 };
+      rivalryLedger = { ...rivalryLedger, [nextGame.oppId]: { w: prev.w + (result.win ? 1 : 0), l: prev.l + (result.win ? 0 : 1) } };
+    }
+
+    setState((s) => ({ ...s, roster, schedule, recruitingBoard, recruitingPoints, recruitingWeekIndex: newWeekIndex, rivalryLedger }));
 
     const sig = result.win && oppRank && oppRank <= 25;
     let msg = result.win
@@ -2562,6 +2611,26 @@ function DynastyApp({ initial, onExit }) {
       : `Lost to ${opp.name} ${result.oppScore}-${result.myScore}`;
     if (inj.injured) msg += ` ${inj.injured.name} injured (out ${inj.injured.games}).`;
     flash(msg);
+  }
+
+  function simOneGame() {
+    if (!nextGame) return;
+    const opp = TEAM_MAP[nextGame.oppId];
+    const oppPower = teamPowerRating(opp, state.strengths, state.year);
+    const hdc = healthyDepthChart(state.depthChart, state.roster);
+    const mom = momentumMod(currentStreak(state.schedule));
+    const result = simulateGame(state.roster, hdc, oppPower, mom);
+    commitGameResult(result, opp, rankById[nextGame.oppId] || null);
+  }
+
+  // Open the interactive Coach Mode game for the next matchup.
+  function playOneGame() {
+    if (!nextGame) return;
+    const opp = TEAM_MAP[nextGame.oppId];
+    const oppPower = teamPowerRating(opp, state.strengths, state.year);
+    const hdc = healthyDepthChart(state.depthChart, state.roster);
+    const mom = momentumMod(currentStreak(state.schedule));
+    setLivePlay({ teamId: state.teamId, opp, oppId: nextGame.oppId, oppPower, oppRank: rankById[nextGame.oppId] || null, home: nextGame.home, momentum: mom, roster: state.roster, dc: hdc });
   }
 
   function simToEndOfSeason() {
@@ -3026,6 +3095,24 @@ function DynastyApp({ initial, onExit }) {
     const newStrengths = genSeasonStrengths();
     const psSummary = postseasonSummary(state.postseason, state.teamId);
 
+    // Hot seat: grade the season against the AD's bar, swing job security, and
+    // set next season's expectation off the program's drifted prestige.
+    const exp = state.expectation || seasonExpectation(team.prestige);
+    const evalRes = evaluateSeason(exp, record, psSummary);
+    const secBefore = state.coach?.jobSecurity ?? 60;
+    const secAfter = clamp(secBefore + evalRes.securityDelta, 0, 100);
+    coach.jobSecurity = secAfter;
+    const nextExp = seasonExpectation(nextPrestige[state.teamId] ?? team.prestige);
+    const fired = secAfter <= 8;
+
+    // Prestige movement since last season, for trend indicators.
+    const prevP = state.prestigeById || baselinePrestigeById();
+    const prestigeTrendById = {};
+    Object.keys(nextPrestige).forEach((id) => {
+      const d = nextPrestige[id] - (prevP[id] ?? nextPrestige[id]);
+      prestigeTrendById[id] = d > 0.02 ? 1 : d < -0.02 ? -1 : 0;
+    });
+
     const recapData = {
       year: state.year, teamName: team.name,
       record: { ...record }, postseason: psSummary, awards, draft,
@@ -3060,8 +3147,16 @@ function DynastyApp({ initial, onExit }) {
         ...(draft.length ? [{ year: state.year, teamName: team.name, picks: draft }] : []),
       ],
       history: [...state.history, { year: state.year, wins: record.w, losses: record.l, teamId: state.teamId, postseason: psSummary, awards, draft }],
+      expectation: nextExp,
+      prestigeTrendById,
     });
     setRecap(recapData);
+    if (fired) {
+      setTimeout(() => {
+        flash(`${team.name} has parted ways with you after missing expectations. Find a new job.`);
+        setJobPickerOpen(true);
+      }, 300);
+    }
   }
 
   function changeJob(newTeam) {
@@ -3080,6 +3175,7 @@ function DynastyApp({ initial, onExit }) {
     );
     const newYear = state.year + 1;
     const roster = buildInitialRoster(newTeam, newYear);
+    coach.jobSecurity = 55; // new job, fresh honeymoon with the administration
     setState({
       ...state,
       teamId: newTeam.id,
@@ -3097,6 +3193,8 @@ function DynastyApp({ initial, onExit }) {
       postseason: null,
       offseason: null,
       coach,
+      expectation: seasonExpectation(newTeam.prestige),
+      rivalryLedger: {},
       awardsHistory: [
         ...(state.awardsHistory || []),
         ...(awards.userHonors.length ? [{ year: state.year, teamName: team.name, honors: awards.userHonors }] : []),
@@ -3208,10 +3306,12 @@ function DynastyApp({ initial, onExit }) {
           {tab === "dashboard" && (
             <DashboardTab state={state} team={team} record={record} nextGame={nextGame}
               stage={stage}
-              onSim={simOneGame} onSimToConf={simToConferencePlay} onSimSeason={simToEndOfSeason}
+              onSim={simOneGame} onPlay={playOneGame} onSimToConf={simToConferencePlay} onSimSeason={simToEndOfSeason}
               onEnterPostseason={startPostseason} onEnterOffseason={enterOffseason}
               onGoTab={setTab} onAdvanceYear={advanceYear}
               reputation={reputation} bracketology={bracketology}
+              expectation={state.expectation || seasonExpectation(team.prestige)}
+              jobSecurity={state.coach?.jobSecurity ?? 60}
               onViewPlayer={setPlayerViewId} />
           )}
           {tab === "roster" && <RosterTab roster={state.roster} onViewPlayer={setPlayerViewId} />}
@@ -3313,12 +3413,23 @@ function DynastyApp({ initial, onExit }) {
       {recap && (
         <SeasonRecapModal recap={recap} onClose={() => setRecap(null)} />
       )}
+      {livePlay && (
+        <LiveGame
+          ctxInit={livePlay}
+          onClose={() => setLivePlay(null)}
+          onFinish={(result) => {
+            const lp = livePlay;
+            setLivePlay(null);
+            commitGameResult(result, lp.opp, lp.oppRank);
+          }}
+        />
+      )}
     </div>
   );
 }
 
 /* ---------- Dashboard ---------- */
-function DashboardTab({ state, team, record, nextGame, stage, onSim, onSimToConf, onSimSeason, onEnterPostseason, onEnterOffseason, onGoTab, onAdvanceYear, reputation, bracketology, onViewPlayer }) {
+function DashboardTab({ state, team, record, nextGame, stage, onSim, onPlay, onSimToConf, onSimSeason, onEnterPostseason, onEnterOffseason, onGoTab, onAdvanceYear, reputation, bracketology, expectation, jobSecurity, onViewPlayer }) {
   const overall = Math.round(userTeamOverall(state.roster, state.depthChart));
   const topPlayer = [...state.roster].sort((a, b) => b.overall - a.overall)[0];
   const injured = state.roster.filter(isHurt);
@@ -3354,6 +3465,29 @@ function DashboardTab({ state, team, record, nextGame, stage, onSim, onSimToConf
         </Panel>
       </div>
 
+      {expectation && (() => {
+        const hs = hotSeatTier(jobSecurity);
+        return (
+          <Panel style={{ padding: "16px 20px", borderLeft: `3px solid ${hs.color}` }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 14, flexWrap: "wrap" }}>
+              <div style={{ minWidth: 220, flex: 1 }}>
+                <div style={{ fontSize: 11, color: C.dim, letterSpacing: "0.08em", marginBottom: 4 }}>{"ATHLETIC DIRECTOR'S EXPECTATION"}</div>
+                <div style={{ fontSize: 15, fontWeight: 600, color: C.cream }}>{expectation.label}</div>
+                <div style={{ fontSize: 12, color: C.dim, marginTop: 2 }}>{record.w}-{record.l} · target {expectation.winTarget} wins</div>
+              </div>
+              <div style={{ minWidth: 150 }}>
+                <div style={{ fontSize: 11, color: C.dim, letterSpacing: "0.08em", marginBottom: 5, display: "flex", justifyContent: "space-between" }}>
+                  <span>JOB SECURITY</span><span style={{ color: hs.color, fontWeight: 700 }}>{hs.label}</span>
+                </div>
+                <div style={{ height: 8, background: C.bg, border: `1px solid ${C.line}` }}>
+                  <div style={{ height: "100%", width: `${jobSecurity}%`, background: hs.color }} />
+                </div>
+              </div>
+            </div>
+          </Panel>
+        );
+      })()}
+
       <Panel style={{ padding: 20 }}>
         {stage === "regular" && nextGame && (
           <>
@@ -3368,6 +3502,7 @@ function DashboardTab({ state, team, record, nextGame, stage, onSim, onSimToConf
                 </div>
               </div>
               <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                <button onClick={onPlay} className="cbb-btn" style={btnStyle(C.gold, "#221a00")}><Gauge size={13} /> Play Game</button>
                 <button onClick={onSim} className="cbb-btn" style={btnStyle(C.wood)}><Play size={13} /> Sim Game</button>
                 {hasUnplayedNonConf && (
                   <button onClick={onSimToConf} className="cbb-btn" style={btnStyle(C.panelAlt, C.cream)}><FastForward size={13} /> Sim to Conference Play</button>
@@ -4179,6 +4314,314 @@ function Modal({ title, subtitle, onClose, children, maxWidth = 760 }) {
   );
 }
 
+/* =========================================================================
+   COACH MODE — interactive, playable game
+   The user tips off a game, sets a game plan, calls timeouts, and plays it out
+   possession by possession. Coaching choices apply a small, bounded edge on top
+   of the same talent-driven model the auto-sim uses, so decisions matter but the
+   better team still wins most nights. The final result is emitted in the exact
+   { win, myScore, oppScore, boxByPlayer } shape simulateGame returns, so every
+   downstream system (stats, streaks, recruiting cadence) behaves identically.
+   ========================================================================= */
+const TEMPO_POSS = { slow: 58, balanced: 65, fast: 73 };
+
+// Minute-weighted lean toward interior vs perimeter play, used to reward a game
+// plan that fits the roster you actually field.
+function liveTendencies(roster, depthChart) {
+  let inside = 0, perim = 0, mins = 0;
+  POSITIONS.forEach((pos) => {
+    const order = (depthChart[pos] || []).filter((id) => roster.find((p) => p.id === id));
+    const m = depthChartMinutes(order);
+    order.forEach((id, i) => {
+      const p = roster.find((x) => x.id === id);
+      if (!p || !m[i]) return;
+      const a = p.attrs;
+      inside += ((a.rebounding + a.postDefense + a.blocks) / 3) * m[i];
+      perim += ((a.threePoint + a.ballHandling + a.scoring) / 3) * m[i];
+      mins += m[i];
+    });
+  });
+  if (!mins) return { inside: 50, perimeter: 50 };
+  return { inside: inside / mins, perimeter: perim / mins };
+}
+
+// Pick the scorer on a made bucket, weighted by minutes and scoring rating so
+// the box score reads like the rotation you're actually running.
+function pickScorer(roster, depthChart) {
+  const weighted = [];
+  POSITIONS.forEach((pos) => {
+    const order = (depthChart[pos] || []).filter((id) => roster.find((p) => p.id === id));
+    const mins = depthChartMinutes(order);
+    order.forEach((id, i) => {
+      const p = roster.find((x) => x.id === id);
+      if (!p || !mins[i]) return;
+      weighted.push({ name: p.name, w: mins[i] * (0.4 + p.attrs.scoring / 99) });
+    });
+  });
+  if (!weighted.length) return "The offense";
+  const total = weighted.reduce((s, x) => s + x.w, 0);
+  let r = Math.random() * total;
+  for (const x of weighted) { r -= x.w; if (r <= 0) return x.name; }
+  return weighted[0].name;
+}
+
+// One possession. Returns { pts, three, made }.
+function livePossession({ offMe, myPower, oppPower, gp, tend, boost, fatigue }) {
+  let net, threeBias;
+  if (offMe) {
+    net = myPower - oppPower + boost;
+    if (gp.offFocus === "inside") net += tend.inside > tend.perimeter ? 2 : -1.5;
+    if (gp.offFocus === "perimeter") net += tend.perimeter > tend.inside ? 2 : -1.5;
+    threeBias = gp.offFocus === "perimeter" ? 0.42 : gp.offFocus === "inside" ? 0.18 : 0.33;
+  } else {
+    net = oppPower - myPower + fatigue;
+    if (gp.defScheme === "press") net -= 2.4;
+    if (gp.defScheme === "pack") net -= 1.0;
+    threeBias = gp.defScheme === "pack" ? 0.22 : 0.33;
+  }
+  const scoreProb = clamp(0.47 + net * 0.0028, 0.28, 0.7);
+  if (Math.random() < scoreProb) {
+    const three = Math.random() < threeBias;
+    return { pts: three ? 3 : 2, three, made: true };
+  }
+  return { pts: 0, three: false, made: false };
+}
+
+// Advance the game one possession, returning the next immutable game state.
+function stepLive(g, ctx) {
+  if (g.finished) return g;
+  const e = g.event;
+  const offMe = e % 2 === 0;
+  const boost = offMe && g.boostPoss > 0 ? 3 : 0;
+  const res = livePossession({ offMe, myPower: ctx.myPower, oppPower: ctx.oppPower, gp: g.gp, tend: ctx.tend, boost, fatigue: g.fatigue });
+  let { my, opp } = g;
+  let text;
+  if (offMe) {
+    if (res.made) { my += res.pts; const who = pickScorer(ctx.roster, ctx.dc); text = res.three ? `${who} drains a three` : `${who} scores${res.pts === 2 ? "" : ""} inside`; }
+    else text = pick(["Shot rims out", "Turnover", "Contested miss", "Shot clock violation"]);
+  } else {
+    if (res.made) { opp += res.pts; text = `${ctx.oppName} ${res.three ? "hits from deep" : "answers with a bucket"}`; }
+    else text = pick([`${ctx.oppName} misses`, `Stop! ${ctx.oppName} turns it over`, `${ctx.oppName} bricks it`]);
+  }
+  const event = e + 1;
+  const inOT = event > 2 * ctx.T;
+  const fatigue = clamp(g.fatigue + 0.02 + (g.gp.defScheme === "press" ? 0.05 : 0) + (g.gp.tempo === "fast" ? 0.03 : 0), 0, 4);
+  const boostPoss = offMe && g.boostPoss > 0 ? g.boostPoss - 1 : g.boostPoss;
+  const oppRun = offMe ? (res.made ? 0 : g.oppRun) : (res.made ? g.oppRun + res.pts : g.oppRun);
+  const half = event > ctx.T ? 2 : 1;
+  const log = [{ id: event, my, opp, offMe, text, half, ot: inOT }, ...g.log].slice(0, 80);
+  // Regulation ends after 2*T possessions; a tie forces sudden extra possessions.
+  const reachedEnd = event >= 2 * ctx.T;
+  const finished = reachedEnd && my !== opp;
+  return { ...g, my, opp, event, fatigue, boostPoss, oppRun, log, finished, inOT: reachedEnd };
+}
+
+// Box score for a completed played game, normalized so points sum to the score
+// the user actually watched pile up.
+function genLiveBox(roster, depthChart, teamPts) {
+  const box = {};
+  POSITIONS.forEach((pos) => {
+    const order = (depthChart[pos] || []).filter((id) => roster.find((p) => p.id === id));
+    const mins = depthChartMinutes(order);
+    order.forEach((id, i) => {
+      const m = mins[i];
+      if (!m) return;
+      const p = roster.find((x) => x.id === id);
+      box[id] = {
+        pts: Math.max(0, Math.round((m / 30) * (p.attrs.scoring / 99) * 24 * rand(0.7, 1.3))),
+        reb: Math.max(0, Math.round((m / 30) * (p.attrs.rebounding / 99) * 11 * rand(0.6, 1.4))),
+        ast: Math.max(0, Math.round((m / 30) * (p.attrs.passing / 99) * 7 * rand(0.5, 1.5))),
+        min: m,
+      };
+    });
+  });
+  const ids = Object.keys(box);
+  const sum = ids.reduce((s, id) => s + box[id].pts, 0) || 1;
+  const scale = teamPts / sum;
+  ids.forEach((id) => { box[id].pts = Math.max(0, Math.round(box[id].pts * scale)); });
+  let drift = teamPts - ids.reduce((s, id) => s + box[id].pts, 0);
+  if (drift !== 0 && ids.length) {
+    const top = [...ids].sort((a, b) => box[b].pts - box[a].pts)[0];
+    box[top].pts = Math.max(0, box[top].pts + drift);
+  }
+  return box;
+}
+
+function fmtClock(g, T) {
+  const half = g.event > T ? 2 : 1;
+  const eventsThisHalf = half === 1 ? g.event : g.event - T;
+  const perEvent = 1200 / T;
+  const remain = Math.max(0, Math.round(1200 - eventsThisHalf * perEvent));
+  const mm = Math.floor(remain / 60), ss = remain % 60;
+  return { half, label: `${mm}:${ss.toString().padStart(2, "0")}` };
+}
+
+function PlanButton({ active, onClick, children }) {
+  return (
+    <button onClick={onClick} className="cbb-btn" style={{
+      flex: 1, padding: "7px 6px", fontSize: 11.5, fontWeight: 600, cursor: "pointer",
+      background: active ? C.wood : C.panelAlt, color: active ? "#fff" : C.dim,
+      border: `1px solid ${active ? C.wood : C.line}`,
+    }}>{children}</button>
+  );
+}
+
+function LiveGame({ ctxInit, onFinish, onClose }) {
+  const T = TEMPO_POSS.balanced; // possessions per team are locked at tip from tempo
+  const [ctx] = useState(() => {
+    const myPower = userTeamOverall(ctxInit.roster, ctxInit.dc) + ctxInit.momentum;
+    return {
+      roster: ctxInit.roster, dc: ctxInit.dc, oppName: ctxInit.opp.name,
+      oppPower: ctxInit.oppPower, myPower, tend: liveTendencies(ctxInit.roster, ctxInit.dc),
+    };
+  });
+  const [tempo, setTempo] = useState("balanced");
+  const [started, setStarted] = useState(false);
+  const [g, setG] = useState(() => ({
+    my: 0, opp: 0, event: 0, fatigue: 0, boostPoss: 0, oppRun: 0,
+    timeouts: 5, log: [], finished: false, inOT: false,
+    gp: { tempo: "balanced", offFocus: "balanced", defScheme: "balanced" },
+  }));
+  const totalPoss = TEMPO_POSS[tempo];
+  const gctx = useMemo(() => ({ ...ctx, T: totalPoss }), [ctx, totalPoss]);
+
+  function tip() {
+    setG((s) => ({ ...s, gp: { ...s.gp, tempo } }));
+    setStarted(true);
+  }
+  function runN(n) {
+    setG((s) => {
+      let next = s;
+      for (let i = 0; i < n && !next.finished; i++) next = stepLive(next, gctx);
+      return next;
+    });
+  }
+  function playToFinal() {
+    setG((s) => {
+      let next = s, guard = 0;
+      while (!next.finished && guard < 400) { next = stepLive(next, gctx); guard++; }
+      return next;
+    });
+  }
+  function toMediaTimeout() {
+    const chunk = Math.max(4, Math.round(totalPoss / 5));
+    runN(chunk * 2);
+  }
+  function callTimeout() {
+    setG((s) => (s.timeouts <= 0 ? s : { ...s, timeouts: s.timeouts - 1, boostPoss: 4, oppRun: 0, fatigue: clamp(s.fatigue - 1, 0, 4), log: [{ id: `to${s.event}`, my: s.my, opp: s.opp, text: "Timeout — you settle the group down", half: s.event > totalPoss ? 2 : 1, timeout: true }, ...s.log] }));
+  }
+  function setPlan(key, val) { setG((s) => ({ ...s, gp: { ...s.gp, [key]: val } })); }
+
+  const clock = fmtClock(g, totalPoss);
+  const leading = g.my > g.opp;
+  const oppOnRun = g.oppRun >= 6 && g.timeouts > 0 && !g.finished;
+
+  function finish() {
+    const win = g.my > g.opp;
+    onFinish({ win, myScore: g.my, oppScore: g.opp, boxByPlayer: genLiveBox(ctx.roster, ctx.dc, g.my) });
+  }
+
+  return (
+    <Modal title="Coach Mode" subtitle={`${ctxInit.home ? "vs" : "at"} ${ctx.oppName}`} onClose={onClose} maxWidth={720}>
+      {/* Scoreboard */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: C.bg, border: `1px solid ${C.line}`, padding: "16px 22px", marginBottom: 16 }}>
+        <div style={{ textAlign: "center", minWidth: 120 }}>
+          <div style={{ fontSize: 12, color: C.dim, letterSpacing: "0.06em" }}>{TEAM_MAP[ctxInit.teamId]?.name || "YOU"}</div>
+          <div className="cbb-num" style={{ fontSize: 44, fontWeight: 700, color: leading ? C.gold : C.cream, lineHeight: 1 }}>{g.my}</div>
+        </div>
+        <div style={{ textAlign: "center" }}>
+          <div className="cbb-num" style={{ fontSize: 13, color: C.wood, fontWeight: 700 }}>{g.inOT ? "OT" : `${clock.half === 1 ? "1ST" : "2ND"} HALF`}</div>
+          <div className="cbb-num" style={{ fontSize: 20, fontWeight: 700, display: "flex", alignItems: "center", gap: 5, justifyContent: "center" }}><Clock size={14} color={C.dim} />{g.inOT ? "0:00" : clock.label}</div>
+          <div style={{ fontSize: 10.5, color: C.dimmer, marginTop: 3 }}>TO left: {g.timeouts}</div>
+        </div>
+        <div style={{ textAlign: "center", minWidth: 120 }}>
+          <div style={{ fontSize: 12, color: C.dim, letterSpacing: "0.06em" }}>{ctx.oppName}</div>
+          <div className="cbb-num" style={{ fontSize: 44, fontWeight: 700, color: !leading && g.opp > g.my ? C.red : C.cream, lineHeight: 1 }}>{g.opp}</div>
+        </div>
+      </div>
+
+      {!started ? (
+        <div>
+          <div style={{ fontSize: 12.5, color: C.dim, marginBottom: 8 }}>Set your tempo before tip-off. Fast play creates more possessions (and more variance — good if you're the underdog); a slow pace shortens the game and protects a talent edge.</div>
+          <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+            <PlanButton active={tempo === "slow"} onClick={() => setTempo("slow")}>Slow (58)</PlanButton>
+            <PlanButton active={tempo === "balanced"} onClick={() => setTempo("balanced")}>Balanced (65)</PlanButton>
+            <PlanButton active={tempo === "fast"} onClick={() => setTempo("fast")}>Fast (73)</PlanButton>
+          </div>
+          <button onClick={tip} className="cbb-btn" style={{ ...btnStyle(C.gold, "#221a00"), width: "100%", justifyContent: "center", fontSize: 14 }}><Play size={14} /> Tip Off</button>
+        </div>
+      ) : (
+        <div>
+          {/* Live game plan controls */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 14 }}>
+            <div>
+              <div style={{ fontSize: 10.5, color: C.dim, letterSpacing: "0.06em", marginBottom: 5, display: "flex", alignItems: "center", gap: 5 }}><Gauge size={12} /> OFFENSE</div>
+              <div style={{ display: "flex", gap: 6 }}>
+                <PlanButton active={g.gp.offFocus === "inside"} onClick={() => setPlan("offFocus", "inside")}>Inside</PlanButton>
+                <PlanButton active={g.gp.offFocus === "balanced"} onClick={() => setPlan("offFocus", "balanced")}>Balanced</PlanButton>
+                <PlanButton active={g.gp.offFocus === "perimeter"} onClick={() => setPlan("offFocus", "perimeter")}>Perimeter</PlanButton>
+              </div>
+            </div>
+            <div>
+              <div style={{ fontSize: 10.5, color: C.dim, letterSpacing: "0.06em", marginBottom: 5, display: "flex", alignItems: "center", gap: 5 }}><ShieldCheck size={12} /> DEFENSE</div>
+              <div style={{ display: "flex", gap: 6 }}>
+                <PlanButton active={g.gp.defScheme === "press"} onClick={() => setPlan("defScheme", "press")}>Press</PlanButton>
+                <PlanButton active={g.gp.defScheme === "balanced"} onClick={() => setPlan("defScheme", "balanced")}>Balanced</PlanButton>
+                <PlanButton active={g.gp.defScheme === "pack"} onClick={() => setPlan("defScheme", "pack")}>Pack</PlanButton>
+              </div>
+            </div>
+          </div>
+
+          <div style={{ fontSize: 11, color: C.dimmer, marginBottom: 12 }}>
+            {g.gp.offFocus === "inside" && (ctx.tend.inside > ctx.tend.perimeter ? "Feeding the post — plays to your frontcourt." : "Your bigs aren't built for this — forcing it inside is costing you.")}
+            {g.gp.offFocus === "perimeter" && (ctx.tend.perimeter > ctx.tend.inside ? "Letting it fly — plays to your shooters." : "You're jacking threes you can't make.")}
+            {g.gp.offFocus === "balanced" && "Taking what the defense gives you."}
+            {" · "}
+            {g.gp.defScheme === "press" && "Full-court press: rattles the opponent but wears your legs down."}
+            {g.gp.defScheme === "pack" && "Pack-line: runs shooters off the arc, softer on the glass."}
+            {g.gp.defScheme === "balanced" && "Straight man-to-man."}
+          </div>
+
+          {oppOnRun && (
+            <div style={{ fontSize: 12, color: C.red, marginBottom: 10, display: "flex", alignItems: "center", gap: 6 }}>
+              <Flame size={13} /> {ctx.oppName} is on a {g.oppRun}-0 run — consider a timeout.
+            </div>
+          )}
+
+          {/* Controls */}
+          {!g.finished ? (
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16 }}>
+              <button onClick={() => runN(2)} className="cbb-btn" style={btnStyle(C.wood)}><Play size={13} /> Run Possession</button>
+              <button onClick={toMediaTimeout} className="cbb-btn" style={btnStyle(C.panelAlt, C.cream)}><FastForward size={13} /> To Media Timeout</button>
+              <button onClick={callTimeout} disabled={g.timeouts <= 0} className="cbb-btn" style={{ ...btnStyle(oppOnRun ? C.gold : C.panelAlt, oppOnRun ? "#221a00" : C.cream), opacity: g.timeouts <= 0 ? 0.4 : 1 }}><Timer size={13} /> Timeout</button>
+              <button onClick={playToFinal} className="cbb-btn" style={btnStyle(C.panelAlt, C.cream)}><Zap size={13} /> Play to Final</button>
+            </div>
+          ) : (
+            <div style={{ marginBottom: 16 }}>
+              <div className="cbb-num" style={{ fontSize: 18, fontWeight: 700, color: g.my > g.opp ? C.green : C.red, marginBottom: 8 }}>
+                {g.my > g.opp ? "WIN" : "LOSS"} — {g.my}-{g.opp}
+              </div>
+              <button onClick={finish} className="cbb-btn" style={{ ...btnStyle(C.gold, "#221a00"), width: "100%", justifyContent: "center", fontSize: 14 }}><Check size={14} /> Final — Confirm Result</button>
+            </div>
+          )}
+
+          {/* Play-by-play */}
+          <div style={{ fontSize: 10.5, color: C.dim, letterSpacing: "0.06em", marginBottom: 6 }}>PLAY-BY-PLAY</div>
+          <div className="cbb-scroll" style={{ maxHeight: 200, overflowY: "auto", border: `1px solid ${C.line}` }}>
+            {g.log.length === 0 && <div style={{ padding: 12, fontSize: 12, color: C.dimmer }}>Tip-off. Run a possession to get started.</div>}
+            {g.log.map((l) => (
+              <div key={l.id} style={{ display: "flex", justifyContent: "space-between", gap: 10, padding: "5px 10px", borderBottom: `1px solid ${C.line}`, fontSize: 12, background: l.timeout ? C.panelAlt : "transparent" }}>
+                <span style={{ color: l.timeout ? C.gold : l.offMe ? C.cream : C.dim }}>{l.text}</span>
+                <span className="cbb-num" style={{ color: C.dimmer, flexShrink: 0 }}>{l.my}-{l.opp}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </Modal>
+  );
+}
+
 /* ---------- Opponent Roster Viewer ---------- */
 function TeamRosterModal({ teamId, year, strengths, rank, onClose }) {
   const team = TEAM_MAP[teamId];
@@ -4570,7 +5013,13 @@ function ProgramTab({ state, team, record, reputation, rivalIds, rankById }) {
   const sigWins = state.schedule.filter((g) => g.played && g.result.win && g.result.oppRank && g.result.oppRank <= 25);
   const awardsHistory = state.awardsHistory || [];
   const draftHistory = state.draftHistory || [];
-  const rivalNames = [...rivalIds].map((id) => TEAM_MAP[id]?.name).filter(Boolean);
+  const ledger = state.rivalryLedger || {};
+  const rivals = [...rivalIds].map((id) => ({ id, name: TEAM_MAP[id]?.name, rec: ledger[id] })).filter((r) => r.name);
+  const prestige = Math.round(team.prestige || 2);
+  const trend = state.prestigeTrendById?.[state.teamId] ?? 0;
+  const TrendIcon = trend > 0 ? TrendingUp : trend < 0 ? TrendingDown : Minus;
+  const trendColor = trend > 0 ? C.green : trend < 0 ? C.red : C.dim;
+  const trendText = trend > 0 ? "Trending up" : trend < 0 ? "Trending down" : "Holding steady";
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20, maxWidth: 940 }}>
@@ -4580,6 +5029,21 @@ function ProgramTab({ state, team, record, reputation, rivalIds, rankById }) {
         <StatBlock label="Seasons" value={coach.seasons} />
         <StatBlock label="Reputation" value={reputation} />
       </div>
+
+      <Panel style={{ padding: "16px 20px" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 14, flexWrap: "wrap" }}>
+          <div>
+            <div style={{ fontSize: 11, color: C.dim, letterSpacing: "0.08em", marginBottom: 4 }}>PROGRAM TRAJECTORY</div>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <span className="cbb-num" style={{ fontSize: 22, fontWeight: 700 }}>Prestige {prestige}</span>
+              <StarRow stars={prestige} />
+            </div>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 7, color: trendColor, fontSize: 13, fontWeight: 600 }}>
+            <TrendIcon size={16} /> {trendText}
+          </div>
+        </div>
+      </Panel>
 
       <Panel style={{ padding: 20 }}>
         <div style={{ fontSize: 11, color: C.dim, letterSpacing: "0.08em", marginBottom: 12, display: "flex", alignItems: "center", gap: 6 }}><Trophy size={13} color={C.gold} /> TROPHY CASE</div>
@@ -4607,12 +5071,29 @@ function ProgramTab({ state, team, record, reputation, rivalIds, rankById }) {
             ))}
           </div>
         ) : <div style={{ fontSize: 12.5, color: C.dimmer }}>No wins over ranked teams yet this season.</div>}
-        {rivalNames.length > 0 && (
-          <div style={{ fontSize: 11.5, color: C.dimmer, marginTop: 12, display: "flex", alignItems: "center", gap: 6 }}>
-            <Swords size={12} color={C.red} /> Conference rivals: {rivalNames.join(", ")}
-          </div>
-        )}
       </Panel>
+
+      {rivals.length > 0 && (
+        <Panel style={{ padding: 20 }}>
+          <div style={{ fontSize: 11, color: C.dim, letterSpacing: "0.08em", marginBottom: 12, display: "flex", alignItems: "center", gap: 6 }}><Swords size={13} color={C.red} /> RIVALRY LEDGER</div>
+          <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+            {rivals.map((r) => {
+              const w = r.rec?.w || 0, l = r.rec?.l || 0;
+              const edge = w > l ? C.green : l > w ? C.red : C.dim;
+              return (
+                <div key={r.id} style={{ border: `1px solid ${C.line}`, borderLeft: `3px solid ${edge}`, padding: "10px 14px", minWidth: 150 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600 }}>{r.name}</div>
+                  <div className="cbb-num" style={{ fontSize: 20, fontWeight: 700, color: edge, marginTop: 2 }}>{w}-{l}</div>
+                  <div style={{ fontSize: 10.5, color: C.dimmer }}>
+                    {w + l === 0 ? "No meetings yet" : w > l ? "You lead the series" : l > w ? "You trail the series" : "Series is even"}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          <div style={{ fontSize: 11, color: C.dimmer, marginTop: 12 }}>Head-to-head records against your conference rivals, tracked across seasons at this program.</div>
+        </Panel>
+      )}
 
       {state.history.length > 0 && (
         <Panel style={{ padding: 20 }}>
@@ -5158,6 +5639,9 @@ export default function CBBDynasty() {
       coach: { ...EMPTY_COACH },
       awardsHistory: [],
       draftHistory: [],
+      expectation: seasonExpectation(team.prestige),
+      rivalryLedger: {},
+      prestigeTrendById: {},
     };
     setPickingTeamFor(null);
     setSession(state);
