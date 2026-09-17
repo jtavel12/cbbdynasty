@@ -1178,8 +1178,8 @@ function makePlayer({ pos, classYear, prestige, starsAtSigning, real, walkOn }) 
     overall,
     durability: computeDurability(gp, classYear),
     starsAtSigning: starsAtSigning ?? null,
-    season: { gp: 0, pts: 0, reb: 0, ast: 0 },
-    career: { pts: 0, reb: 0, ast: 0, gp: 0 },
+    season: { ...EMPTY_SEASON_STATS },
+    career: { ...EMPTY_CAREER_STATS },
   };
 }
 
@@ -1765,8 +1765,8 @@ function recruitToPlayer(recruit, team) {
       durability: computeDurability(recruit.careerGp ?? recruit.realStats?.gp, recruit.classYear || "FR"),
       starsAtSigning: recruit.stars,
       ratingAtSigning: recruit.rating,
-      season: { gp: 0, pts: 0, reb: 0, ast: 0 },
-      career: { pts: 0, reb: 0, ast: 0, gp: 0 },
+      season: { ...EMPTY_SEASON_STATS },
+      career: { ...EMPTY_CAREER_STATS },
     };
   }
 
@@ -1793,8 +1793,8 @@ function recruitToPlayer(recruit, team) {
     durability: computeDurability(0, "FR"),
     starsAtSigning: stars,
     ratingAtSigning: rating,
-    season: { gp: 0, pts: 0, reb: 0, ast: 0 },
-    career: { pts: 0, reb: 0, ast: 0, gp: 0 },
+    season: { ...EMPTY_SEASON_STATS },
+    career: { ...EMPTY_CAREER_STATS },
   };
 }
 
@@ -2741,6 +2741,74 @@ function userGamePower(roster, depthChart, baseline, minutesMap) {
   return clamp(baseline.barthagPower + (raw - baseline.realOverall) * ROSTER_SENSITIVITY, 25, 95);
 }
 
+// One player's full box line for a game, driven by minutes and attributes.
+// Attempt-first (shots -> makes -> points), so FGM/FGA/3PM/3PA/points are
+// always internally consistent instead of points being rolled independently
+// of the shots that produced them. Shared by the user's own games (simmed or
+// live-played) and a CPU opponent's box for the same game.
+function genPlayerBoxLine(p, m) {
+  if (!m) return null;
+  const fat = fatigueMultiplier(m);
+  const mFactor = (m / 30) * fat;
+
+  const fga = Math.max(0, Math.round(mFactor * (5 + (p.attrs.scoring / 99) * 8) * rand(0.7, 1.3)));
+  const threeRate = clamp(0.15 + (p.attrs.threePoint / 99) * 0.35 + (POS_GUARDNESS[p.pos] ?? 0.5) * 0.15, 0.05, 0.7);
+  const tpa = Math.min(fga, Math.round(fga * threeRate));
+  const twoAtt = fga - tpa;
+  const fg2Pct = clamp(0.38 + (p.attrs.scoring / 99) * 0.22, 0.30, 0.68) * rand(0.85, 1.15);
+  const fg3Pct = clamp(0.24 + (p.attrs.threePoint / 99) * 0.24, 0.15, 0.48) * rand(0.8, 1.2);
+  const twoM = Math.min(twoAtt, Math.round(twoAtt * fg2Pct));
+  const tpm = Math.min(tpa, Math.round(tpa * fg3Pct));
+  const fgm = twoM + tpm;
+
+  const fta = Math.max(0, Math.round(mFactor * (1 + (p.attrs.scoring / 99) * 4) * rand(0.5, 1.5)));
+  const ftPct = clamp(0.55 + (p.attrs.scoring / 99) * 0.25, 0.45, 0.92) * rand(0.9, 1.1);
+  const ftm = Math.min(fta, Math.round(fta * ftPct));
+
+  const pts = twoM * 2 + tpm * 3 + ftm;
+  const reb = Math.max(0, Math.round(mFactor * (p.attrs.rebounding / 99) * 11 * rand(0.6, 1.4)));
+  const ast = Math.max(0, Math.round(mFactor * (p.attrs.passing / 99) * 7 * rand(0.5, 1.5)));
+  const stl = Math.max(0, Math.round(mFactor * (p.attrs.steals / 99) * 2.4 * rand(0.4, 1.6)));
+  const blk = Math.max(0, Math.round(mFactor * (p.attrs.blocks / 99) * 2.2 * rand(0.4, 1.6)));
+  const tov = Math.max(0, Math.round(mFactor * (3.2 - (p.attrs.ballHandling / 99) * 1.8) * rand(0.5, 1.5)));
+
+  return { min: m, pts, reb, ast, fgm, fga, tpm, tpa, ftm, fta, stl, blk, tov };
+}
+
+// A full team box for one game, normalized so total points match the score
+// the sim/live game actually produced (makes/attempts scaled in proportion,
+// so FG%/3P% don't drift from what the player's attributes actually earned).
+function genTeamBox(roster, depthChart, minutesMap, teamPts) {
+  const box = {};
+  POSITIONS.forEach((pos) => {
+    positionMinutes(pos, depthChart, roster, minutesMap).forEach(({ id, minutes: m }) => {
+      if (!m) return;
+      const pl = roster.find((x) => x.id === id);
+      const line = genPlayerBoxLine(pl, m);
+      if (line) box[id] = line;
+    });
+  });
+  const ids = Object.keys(box);
+  const sum = ids.reduce((s, id) => s + box[id].pts, 0) || 1;
+  const scale = teamPts / sum;
+  ids.forEach((id) => {
+    const b = box[id];
+    b.fgm = Math.max(0, Math.round(b.fgm * scale));
+    b.fga = Math.max(b.fgm, Math.round(b.fga * scale));
+    b.tpm = Math.max(0, Math.min(b.fgm, Math.round(b.tpm * scale)));
+    b.tpa = Math.max(b.tpm, Math.round(b.tpa * scale));
+    b.ftm = Math.max(0, Math.round(b.ftm * scale));
+    b.fta = Math.max(b.ftm, Math.round(b.fta * scale));
+    b.pts = Math.max(0, Math.round(b.pts * scale));
+  });
+  let drift = teamPts - ids.reduce((s, id) => s + box[id].pts, 0);
+  if (drift !== 0 && ids.length) {
+    const top = [...ids].sort((a, b) => box[b].pts - box[a].pts)[0];
+    box[top].pts = Math.max(0, box[top].pts + drift);
+  }
+  return box;
+}
+
 function simulateGame(roster, depthChart, oppPower, momentum = 0, baseline = null, minutesMap = null) {
   const myPower = userGamePower(roster, depthChart, baseline, minutesMap) + momentum;
   const diff = myPower - oppPower;
@@ -2759,21 +2827,21 @@ function simulateGame(roster, depthChart, oppPower, momentum = 0, baseline = nul
   if (win && myScore <= oppScore) myScore = oppScore + randInt(1, 4);
   if (!win && oppScore <= myScore) oppScore = myScore + randInt(1, 4);
 
-  // per-player box score
-  const boxByPlayer = {};
-  POSITIONS.forEach((pos) => {
-    positionMinutes(pos, depthChart, roster, minutesMap).forEach(({ id, minutes: m }) => {
-      if (!m) return;
-      const pl = roster.find((p) => p.id === id);
-      const fat = fatigueMultiplier(m);
-      const pts = Math.max(0, Math.round((m / 30) * (pl.attrs.scoring / 99) * fat * 24 * rand(0.7, 1.3)));
-      const reb = Math.max(0, Math.round((m / 30) * (pl.attrs.rebounding / 99) * fat * 11 * rand(0.6, 1.4)));
-      const ast = Math.max(0, Math.round((m / 30) * (pl.attrs.passing / 99) * fat * 7 * rand(0.5, 1.5)));
-      boxByPlayer[id] = { pts, reb, ast, min: m };
-    });
-  });
-
+  const boxByPlayer = genTeamBox(roster, depthChart, minutesMap, myScore);
   return { win, myScore, oppScore, boxByPlayer };
+}
+
+// A CPU opponent's box for a game the user just played/simmed — built from
+// their actual roster (real players where we have them) and scaled to the
+// score they actually put up. Purely a display artifact for that one game:
+// CPU teams don't track individual box stats across a season the way the
+// user's roster does, only their team win/loss record.
+function genOpponentBox(oppTeam, year, oppScore) {
+  const roster = buildInitialRoster(oppTeam, year);
+  const depthChart = defaultDepthChart(roster);
+  const minutesMap = defaultMinutesFor(depthChart);
+  const box = genTeamBox(roster, depthChart, minutesMap, oppScore);
+  return boxArray(box, roster);
 }
 
 // Convert the id-keyed box score into a display array (names + positions),
@@ -2782,9 +2850,33 @@ function boxArray(boxByPlayer, roster) {
   return Object.entries(boxByPlayer)
     .map(([id, b]) => {
       const p = roster.find((x) => x.id === id);
-      return { name: p ? p.name : "\u2014", pos: p ? p.pos : "", min: b.min, pts: b.pts, reb: b.reb, ast: b.ast };
+      return {
+        name: p ? p.name : "\u2014", pos: p ? p.pos : "", min: b.min,
+        pts: b.pts, reb: b.reb, ast: b.ast,
+        fgm: b.fgm, fga: b.fga, tpm: b.tpm, tpa: b.tpa, ftm: b.ftm, fta: b.fta,
+        stl: b.stl, blk: b.blk, tov: b.tov,
+      };
     })
     .sort((a, b) => b.pts - a.pts);
+}
+
+// Shared zeroed shape for a player's running season/career totals, and a
+// helper to add one game's box line onto them — used everywhere a game
+// result gets credited to a player, so every stat (not just pts/reb/ast)
+// stays in sync instead of quietly drifting out of the tracked set.
+const EMPTY_SEASON_STATS = { gp: 0, pts: 0, reb: 0, ast: 0, fgm: 0, fga: 0, tpm: 0, tpa: 0, ftm: 0, fta: 0, stl: 0, blk: 0, tov: 0 };
+const EMPTY_CAREER_STATS = { gp: 0, pts: 0, reb: 0, ast: 0, fgm: 0, fga: 0, tpm: 0, tpa: 0, ftm: 0, fta: 0, stl: 0, blk: 0, tov: 0 };
+function addBoxToStats(stats, box) {
+  const out = { ...stats, gp: (stats.gp || 0) + 1 };
+  for (const k of ["pts", "reb", "ast", "fgm", "fga", "tpm", "tpa", "ftm", "fta", "stl", "blk", "tov"]) {
+    out[k] = (stats[k] || 0) + (box[k] || 0);
+  }
+  return out;
+}
+function rollCareerStats(career, season) {
+  const out = { ...career };
+  for (const k of Object.keys(EMPTY_CAREER_STATS)) out[k] = (career[k] || 0) + (season[k] || 0);
+  return out;
 }
 
 /* =========================================================================
@@ -2819,12 +2911,7 @@ function progressRosterForNewYear(roster, incoming, team, newYear, seasonSeed) {
   const survivors = staying
     .map((p) => {
       const nextClass = CLASS_ORDER[CLASS_ORDER.indexOf(p.class) + 1];
-      const rolledCareer = {
-        pts: p.career.pts + p.season.pts,
-        reb: p.career.reb + p.season.reb,
-        ast: p.career.ast + p.season.ast,
-        gp: p.career.gp + p.season.gp,
-      };
+      const rolledCareer = rollCareerStats(p.career, p.season);
 
       // Every player — real-named or fully generated — develops synthetically
       // toward their potential from here on. A real player's initial rating is
@@ -2848,7 +2935,7 @@ function progressRosterForNewYear(roster, incoming, team, newYear, seasonSeed) {
         attrs,
         overall: computeOverall(p.pos, attrs),
         career: rolledCareer,
-        season: { gp: 0, pts: 0, reb: 0, ast: 0 },
+        season: { ...EMPTY_SEASON_STATS },
       };
     });
   let combined = [...survivors, ...incoming];
@@ -3856,15 +3943,17 @@ function DynastyApp({ initial, onExit }) {
     let roster = state.roster.map((p) => {
       const box = result.boxByPlayer[p.id];
       if (!box) return p;
-      return { ...p, season: { gp: p.season.gp + 1, pts: p.season.pts + box.pts, reb: p.season.reb + box.reb, ast: p.season.ast + box.ast } };
+      return { ...p, season: addBoxToStats(p.season, box) };
     });
     roster = tickInjuries(roster);
     const inj = maybeInjure(roster, rotationMinutesOf(state.depthChart, roster, state.minutes));
     roster = inj.roster;
     const box = boxArray(result.boxByPlayer, state.roster);
+    const oppBox = genOpponentBox(opp, state.year, result.oppScore);
+    const thisGameId = nextGame.id;
 
     const schedule = state.schedule.map((g) => g.id === nextGame.id
-      ? { ...g, played: true, result: { win: result.win, myScore: result.myScore, oppScore: result.oppScore, oppRank, box } }
+      ? { ...g, played: true, result: { win: result.win, myScore: result.myScore, oppScore: result.oppScore, oppRank, box, oppBox } }
       : g);
     const newWeekIndex = schedule.filter((g) => g.played).length + 1;
     const weeksElapsed = Math.max(0, newWeekIndex - state.recruitingWeekIndex);
@@ -3879,6 +3968,7 @@ function DynastyApp({ initial, onExit }) {
     }
 
     setState((s) => ({ ...s, roster, schedule, recruitingBoard, recruitingPoints, recruitingWeekIndex: newWeekIndex, rivalryLedger }));
+    setBoxViewId(thisGameId);
 
     const sig = result.win && oppRank && oppRank <= 25;
     let msg = result.win
@@ -3921,7 +4011,7 @@ function DynastyApp({ initial, onExit }) {
       roster = roster.map((p) => {
         const bx = result.boxByPlayer[p.id];
         if (!bx) return p;
-        return { ...p, season: { gp: p.season.gp + 1, pts: p.season.pts + bx.pts, reb: p.season.reb + bx.reb, ast: p.season.ast + bx.ast } };
+        return { ...p, season: addBoxToStats(p.season, bx) };
       });
       roster = tickInjuries(roster);
       roster = maybeInjure(roster, rotationMinutesOf(state.depthChart, roster, state.minutes)).roster;
@@ -3958,7 +4048,7 @@ function DynastyApp({ initial, onExit }) {
       roster = roster.map((p) => {
         const bx = result.boxByPlayer[p.id];
         if (!bx) return p;
-        return { ...p, season: { gp: p.season.gp + 1, pts: p.season.pts + bx.pts, reb: p.season.reb + bx.reb, ast: p.season.ast + bx.ast } };
+        return { ...p, season: addBoxToStats(p.season, bx) };
       });
       roster = tickInjuries(roster);
       roster = maybeInjure(roster, rotationMinutesOf(state.depthChart, roster, state.minutes)).roster;
@@ -4238,7 +4328,7 @@ function DynastyApp({ initial, onExit }) {
         roster = s.roster.map((p) => {
           const box = userBox[p.id];
           if (!box) return p;
-          return { ...p, season: { gp: p.season.gp + 1, pts: p.season.pts + box.pts, reb: p.season.reb + box.reb, ast: p.season.ast + box.ast } };
+          return { ...p, season: addBoxToStats(p.season, box) };
         });
       }
       return { ...s, roster, postseason: next };
@@ -4294,7 +4384,7 @@ function DynastyApp({ initial, onExit }) {
       const roster = s.roster.map((p) => {
         const box = result.boxByPlayer[p.id];
         if (!box) return p;
-        return { ...p, season: { gp: p.season.gp + 1, pts: p.season.pts + box.pts, reb: p.season.reb + box.reb, ast: p.season.ast + box.ast } };
+        return { ...p, season: addBoxToStats(p.season, box) };
       });
       return { ...s, roster, postseason: ps };
     });
@@ -5337,7 +5427,8 @@ function MiniStat({ label, value }) {
     </div>
   );
 }
-function avg(total, gp) { return gp ? (total / gp).toFixed(1) : "0.0"; }
+function avg(total, gp) { return gp ? ((total || 0) / gp).toFixed(1) : "0.0"; }
+function pct(made, attempted) { return attempted ? `${Math.round((made / attempted) * 100)}%` : "—"; }
 
 /* ---------- Roster ---------- */
 function RosterTab({ roster, onViewPlayer }) {
@@ -5350,11 +5441,12 @@ function RosterTab({ roster, onViewPlayer }) {
         Click any player for a full profile and game log.
       </div>
       <Panel style={{ overflow: "hidden" }}>
-      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13.5 }}>
+      <div style={{ overflowX: "auto" }}>
+      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13.5, minWidth: 720 }}>
         <thead>
           <tr style={{ borderBottom: `1px solid ${C.line}`, color: C.dim, fontSize: 11, textAlign: "left" }}>
             <th style={th}>Player</th><th style={th}>Pos</th><th style={th}>Class</th><th style={th}>OVR</th>
-            <th style={th}>PPG</th><th style={th}>RPG</th><th style={th}>APG</th>
+            <th style={th}>PPG</th><th style={th}>RPG</th><th style={th}>APG</th><th style={th}>SPG</th><th style={th}>BPG</th>
           </tr>
         </thead>
         <tbody>
@@ -5374,10 +5466,13 @@ function RosterTab({ roster, onViewPlayer }) {
               <td style={td}>{avg(p.season.pts, p.season.gp)}</td>
               <td style={td}>{avg(p.season.reb, p.season.gp)}</td>
               <td style={td}>{avg(p.season.ast, p.season.gp)}</td>
+              <td style={td}>{avg(p.season.stl, p.season.gp)}</td>
+              <td style={td}>{avg(p.season.blk, p.season.gp)}</td>
             </tr>
           ))}
         </tbody>
       </table>
+      </div>
       </Panel>
     </div>
   );
@@ -6329,35 +6424,6 @@ function stepLive(g, ctx) {
   return { ...g, my, opp, event, fatigue, boostPoss, oppRun, log, finished, inOT, otPeriod: period };
 }
 
-// Box score for a completed played game, normalized so points sum to the score
-// the user actually watched pile up.
-function genLiveBox(roster, depthChart, teamPts, minutesMap) {
-  const box = {};
-  POSITIONS.forEach((pos) => {
-    positionMinutes(pos, depthChart, roster, minutesMap).forEach(({ id, minutes: m }) => {
-      if (!m) return;
-      const p = roster.find((x) => x.id === id);
-      const fat = fatigueMultiplier(m);
-      box[id] = {
-        pts: Math.max(0, Math.round((m / 30) * (p.attrs.scoring / 99) * fat * 24 * rand(0.7, 1.3))),
-        reb: Math.max(0, Math.round((m / 30) * (p.attrs.rebounding / 99) * fat * 11 * rand(0.6, 1.4))),
-        ast: Math.max(0, Math.round((m / 30) * (p.attrs.passing / 99) * fat * 7 * rand(0.5, 1.5))),
-        min: m,
-      };
-    });
-  });
-  const ids = Object.keys(box);
-  const sum = ids.reduce((s, id) => s + box[id].pts, 0) || 1;
-  const scale = teamPts / sum;
-  ids.forEach((id) => { box[id].pts = Math.max(0, Math.round(box[id].pts * scale)); });
-  let drift = teamPts - ids.reduce((s, id) => s + box[id].pts, 0);
-  if (drift !== 0 && ids.length) {
-    const top = [...ids].sort((a, b) => box[b].pts - box[a].pts)[0];
-    box[top].pts = Math.max(0, box[top].pts + drift);
-  }
-  return box;
-}
-
 // Clock + period label for the current game state — regulation halves (20
 // game-minutes each) and, once in overtime, 5-minute OT periods at the same
 // pace, numbered OT1, OT2, ... for as many as it takes to break the tie.
@@ -6643,7 +6709,7 @@ function LiveGame({ ctxInit, onFinish, onClose }) {
 
   function finish() {
     const win = g.my > g.opp;
-    onFinish({ win, myScore: g.my, oppScore: g.opp, boxByPlayer: genLiveBox(ctx.roster, ctx.dc, g.my, ctx.minutes) });
+    onFinish({ win, myScore: g.my, oppScore: g.opp, boxByPlayer: genTeamBox(ctx.roster, ctx.dc, ctx.minutes, g.my) });
   }
 
   return (
@@ -7119,6 +7185,26 @@ function PlayerModal({ player, onClose }) {
               </tr>
             </tbody>
           </table>
+
+          <div style={{ fontSize: 11, color: C.dim, letterSpacing: "0.08em", margin: "16px 0 10px" }}>SHOOTING &amp; DEFENSE (SEASON)</div>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+            <thead>
+              <tr style={{ color: C.dim, fontSize: 11, textAlign: "left" }}>
+                <th style={{ padding: "4px 6px" }}>FG%</th><th style={{ padding: "4px 6px" }}>3P%</th><th style={{ padding: "4px 6px" }}>FT%</th>
+                <th style={{ padding: "4px 6px" }}>SPG</th><th style={{ padding: "4px 6px" }}>BPG</th><th style={{ padding: "4px 6px" }}>TOV</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr style={{ borderTop: `1px solid ${C.line}` }}>
+                <td className="cbb-num" style={{ padding: "6px 6px" }}>{pct(s.fgm, s.fga)}</td>
+                <td className="cbb-num" style={{ padding: "6px 6px" }}>{pct(s.tpm, s.tpa)}</td>
+                <td className="cbb-num" style={{ padding: "6px 6px" }}>{pct(s.ftm, s.fta)}</td>
+                <td className="cbb-num" style={{ padding: "6px 6px" }}>{avg(s.stl, s.gp)}</td>
+                <td className="cbb-num" style={{ padding: "6px 6px" }}>{avg(s.blk, s.gp)}</td>
+                <td className="cbb-num" style={{ padding: "6px 6px" }}>{avg(s.tov, s.gp)}</td>
+              </tr>
+            </tbody>
+          </table>
         </div>
       </div>
     </Modal>
@@ -7126,6 +7212,50 @@ function PlayerModal({ player, onClose }) {
 }
 
 /* ---------- Box Score ---------- */
+// One team's box table — full stat line when the row has shooting splits
+// (fga present), otherwise falls back to the older PTS/REB/AST-only shape
+// so a box score saved before this stat depth existed still renders.
+function BoxTable({ label, rows }) {
+  const full = rows.length > 0 && rows[0].fga != null;
+  return (
+    <div style={{ marginBottom: 18 }}>
+      <div style={{ fontSize: 11, color: C.wood, letterSpacing: "0.08em", marginBottom: 8, fontWeight: 600 }}>{label}</div>
+      <div style={{ overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, minWidth: full ? 620 : 360 }}>
+          <thead>
+            <tr style={{ borderBottom: `1px solid ${C.line}`, color: C.dim, fontSize: 10.5, textAlign: "left" }}>
+              <th style={th}>Player</th><th style={th}>Pos</th><th style={th}>MIN</th><th style={th}>PTS</th><th style={th}>REB</th><th style={th}>AST</th>
+              {full && (<><th style={th}>STL</th><th style={th}>BLK</th><th style={th}>TOV</th><th style={th}>FG</th><th style={th}>3P</th><th style={th}>FT</th></>)}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((b, i) => (
+              <tr key={i} style={{ borderBottom: `1px solid ${C.line}` }}>
+                <td style={{ ...td, fontWeight: 600, whiteSpace: "nowrap" }}>{b.name}</td>
+                <td style={td}>{b.pos}</td>
+                <td className="cbb-num" style={td}>{b.min}</td>
+                <td className="cbb-num" style={{ ...td, fontWeight: 700 }}>{b.pts}</td>
+                <td className="cbb-num" style={td}>{b.reb}</td>
+                <td className="cbb-num" style={td}>{b.ast}</td>
+                {full && (
+                  <>
+                    <td className="cbb-num" style={td}>{b.stl}</td>
+                    <td className="cbb-num" style={td}>{b.blk}</td>
+                    <td className="cbb-num" style={td}>{b.tov}</td>
+                    <td className="cbb-num" style={{ ...td, whiteSpace: "nowrap" }}>{b.fgm}-{b.fga}</td>
+                    <td className="cbb-num" style={{ ...td, whiteSpace: "nowrap" }}>{b.tpm}-{b.tpa}</td>
+                    <td className="cbb-num" style={{ ...td, whiteSpace: "nowrap" }}>{b.ftm}-{b.fta}</td>
+                  </>
+                )}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 function BoxScoreModal({ game, teamName, onClose }) {
   if (!game || !game.result || !game.result.box) return null;
   const opp = TEAM_MAP[game.oppId];
@@ -7133,29 +7263,12 @@ function BoxScoreModal({ game, teamName, onClose }) {
   return (
     <Modal
       title={`${r.win ? "W" : "L"} ${r.myScore}-${r.oppScore} ${game.home ? "vs" : "at"} ${opp.name}`}
-      subtitle={`Week ${game.week}${r.oppRank ? ` · No. ${r.oppRank} ${opp.name}` : ""} · ${teamName} box score`}
+      subtitle={`Week ${game.week}${r.oppRank ? ` · No. ${r.oppRank} ${opp.name}` : ""} · box score`}
       onClose={onClose}
-      maxWidth={560}
+      maxWidth={780}
     >
-      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13.5 }}>
-        <thead>
-          <tr style={{ borderBottom: `1px solid ${C.line}`, color: C.dim, fontSize: 11, textAlign: "left" }}>
-            <th style={th}>Player</th><th style={th}>Pos</th><th style={th}>MIN</th><th style={th}>PTS</th><th style={th}>REB</th><th style={th}>AST</th>
-          </tr>
-        </thead>
-        <tbody>
-          {r.box.map((b, i) => (
-            <tr key={i} style={{ borderBottom: `1px solid ${C.line}` }}>
-              <td style={{ ...td, fontWeight: 600 }}>{b.name}</td>
-              <td style={td}>{b.pos}</td>
-              <td className="cbb-num" style={td}>{b.min}</td>
-              <td className="cbb-num" style={{ ...td, fontWeight: 700 }}>{b.pts}</td>
-              <td className="cbb-num" style={td}>{b.reb}</td>
-              <td className="cbb-num" style={td}>{b.ast}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      <BoxTable label={teamName.toUpperCase()} rows={r.box} />
+      {r.oppBox && r.oppBox.length > 0 && <BoxTable label={opp.name.toUpperCase()} rows={r.oppBox} />}
     </Modal>
   );
 }
