@@ -3,6 +3,7 @@ import torvikSeasonsRaw from "./data/torvik-seasons.json";
 import torvikPlayersRaw from "./data/torvik-players.json";
 import teamLocationsRaw from "./data/team-locations.json";
 import teamRecordsRaw from "./data/team-records.json";
+import nilBudgetsRaw from "./data/nil_budgets.json";
 import {
   LayoutDashboard, Users, ListOrdered, Search, CalendarDays, Trophy,
   Save, RotateCcw, ChevronUp, ChevronDown, Play, FastForward, Star,
@@ -2190,8 +2191,56 @@ function nilTierFor(team) {
   return "low";
 }
 
-// Where a team lands in its tier's range, driven by its existing 1-5 prestige.
+// Genuine naming-convention gaps between our TEAMS list and nil_budgets.json
+// (365 real/estimated per-team NIL budgets) — same category of mismatch
+// TORVIK_TEAM_ALIASES covers for the other real-data sources. "Boston
+// College"/"Boston University" both map to a literal "Boston" row in that
+// file; the two are disambiguated by conference below, not by this table.
+const NIL_BUDGET_NAME_ALIASES = {
+  "UNC Wilmington": "North Carolina at Wilmington",
+  "UNC Greensboro": "North Carolina at Greensboro",
+  "William & Mary": "College of William & Mary",
+  "Buffalo": "University at Buffalo",
+  "Holy Cross": "College of the Holy Cross",
+  "UT Rio Grande Valley": "Texas Rio Grande Valley",
+  "Boston College": "Boston",
+  "Boston University": "Boston",
+};
+
+// Built once at module load: match every team in TEAMS to its real starting
+// NIL budget from nil_budgets.json by normalized name (falling back through
+// NIL_BUDGET_NAME_ALIASES), breaking the one duplicate name ("Boston") by
+// conference. Any team that still doesn't find a match is logged so the gap
+// is visible, and nilBudgetForTeam falls back to the generated formula for it.
+const REAL_NIL_BUDGET_BY_ID = (() => {
+  const byNormName = {};
+  for (const row of nilBudgetsRaw) {
+    const key = normalizeTeamKey(row.name);
+    (byNormName[key] ||= []).push(row);
+  }
+  const out = {};
+  const unmatched = [];
+  for (const t of TEAMS) {
+    const aliasName = NIL_BUDGET_NAME_ALIASES[t.name] || t.name;
+    const candidates = byNormName[normalizeTeamKey(aliasName)] || [];
+    const row = candidates.length > 1
+      ? (candidates.find((r) => r.conf === t.conf) || candidates[0])
+      : candidates[0];
+    if (row) out[t.id] = row.annualNilBudget;
+    else unmatched.push(t.name);
+  }
+  if (unmatched.length) {
+    console.warn(`[nil budgets] no real-data match for ${unmatched.length} team(s), using the generated tier+prestige formula for them instead: ${unmatched.join(", ")}`);
+  }
+  return out;
+})();
+
+// Where a team lands: its real annual NIL budget when nil_budgets.json has a
+// match, otherwise the old generated estimate — its tier's range (driven by
+// conference), positioned by the team's existing 1-5 prestige.
 function nilBudgetForTeam(team) {
+  const real = REAL_NIL_BUDGET_BY_ID[team.id];
+  if (real != null) return real;
   const [lo, hi] = NIL_TIER_RANGES[nilTierFor(team)];
   const t = clamp((team.prestige - 1) / 4, 0, 1);
   return Math.round(lo + (hi - lo) * t);

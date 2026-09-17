@@ -1,0 +1,2922 @@
+[
+  {
+    "name": "Duke",
+    "conf": "ACC",
+    "tier": "High",
+    "prestige": 5,
+    "annualNilBudget": 7000000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Indiana",
+    "conf": "Big Ten",
+    "tier": "High",
+    "prestige": 5,
+    "annualNilBudget": 7000000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Kansas",
+    "conf": "Big 12",
+    "tier": "High",
+    "prestige": 5,
+    "annualNilBudget": 7000000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Kentucky",
+    "conf": "SEC",
+    "tier": "High",
+    "prestige": 5,
+    "annualNilBudget": 7600000,
+    "basis": "Reported"
+  },
+  {
+    "name": "Louisville",
+    "conf": "ACC",
+    "tier": "High",
+    "prestige": 5,
+    "annualNilBudget": 7000000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Michigan",
+    "conf": "Big Ten",
+    "tier": "High",
+    "prestige": 5,
+    "annualNilBudget": 8800000,
+    "basis": "Reported"
+  },
+  {
+    "name": "Michigan State",
+    "conf": "Big Ten",
+    "tier": "High",
+    "prestige": 5,
+    "annualNilBudget": 7000000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "North Carolina",
+    "conf": "ACC",
+    "tier": "High",
+    "prestige": 5,
+    "annualNilBudget": 7000000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Ohio State",
+    "conf": "Big Ten",
+    "tier": "High",
+    "prestige": 5,
+    "annualNilBudget": 7000000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "UCLA",
+    "conf": "Big Ten",
+    "tier": "High",
+    "prestige": 5,
+    "annualNilBudget": 7000000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "UConn",
+    "conf": "Big East",
+    "tier": "High",
+    "prestige": 5,
+    "annualNilBudget": 7000000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Villanova",
+    "conf": "Big East",
+    "tier": "High",
+    "prestige": 5,
+    "annualNilBudget": 7000000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Alabama",
+    "conf": "SEC",
+    "tier": "High",
+    "prestige": 4,
+    "annualNilBudget": 2900000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Arizona",
+    "conf": "Big 12",
+    "tier": "High",
+    "prestige": 4,
+    "annualNilBudget": 2900000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Arkansas",
+    "conf": "SEC",
+    "tier": "High",
+    "prestige": 4,
+    "annualNilBudget": 2900000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "BYU",
+    "conf": "Big 12",
+    "tier": "High",
+    "prestige": 4,
+    "annualNilBudget": 2900000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Baylor",
+    "conf": "Big 12",
+    "tier": "High",
+    "prestige": 4,
+    "annualNilBudget": 2900000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "California",
+    "conf": "ACC",
+    "tier": "High",
+    "prestige": 4,
+    "annualNilBudget": 2900000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Cincinnati",
+    "conf": "Big 12",
+    "tier": "High",
+    "prestige": 4,
+    "annualNilBudget": 2900000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Florida",
+    "conf": "SEC",
+    "tier": "High",
+    "prestige": 4,
+    "annualNilBudget": 2900000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Georgetown",
+    "conf": "Big East",
+    "tier": "High",
+    "prestige": 4,
+    "annualNilBudget": 5500000,
+    "basis": "Reported"
+  },
+  {
+    "name": "Houston",
+    "conf": "Big 12",
+    "tier": "High",
+    "prestige": 4,
+    "annualNilBudget": 2900000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Illinois",
+    "conf": "Big Ten",
+    "tier": "High",
+    "prestige": 4,
+    "annualNilBudget": 2900000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Iowa",
+    "conf": "Big Ten",
+    "tier": "High",
+    "prestige": 4,
+    "annualNilBudget": 6600000,
+    "basis": "Reported"
+  },
+  {
+    "name": "Kansas State",
+    "conf": "Big 12",
+    "tier": "High",
+    "prestige": 4,
+    "annualNilBudget": 2900000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "LSU",
+    "conf": "SEC",
+    "tier": "High",
+    "prestige": 4,
+    "annualNilBudget": 2900000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Marquette",
+    "conf": "Big East",
+    "tier": "High",
+    "prestige": 4,
+    "annualNilBudget": 2900000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Maryland",
+    "conf": "Big Ten",
+    "tier": "High",
+    "prestige": 4,
+    "annualNilBudget": 7100000,
+    "basis": "Reported"
+  },
+  {
+    "name": "Mizzou",
+    "conf": "SEC",
+    "tier": "High",
+    "prestige": 4,
+    "annualNilBudget": 2900000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "NC State",
+    "conf": "ACC",
+    "tier": "High",
+    "prestige": 4,
+    "annualNilBudget": 2900000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Notre Dame",
+    "conf": "ACC",
+    "tier": "High",
+    "prestige": 4,
+    "annualNilBudget": 2900000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Oklahoma",
+    "conf": "SEC",
+    "tier": "High",
+    "prestige": 4,
+    "annualNilBudget": 2900000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Oklahoma State",
+    "conf": "Big 12",
+    "tier": "High",
+    "prestige": 4,
+    "annualNilBudget": 2900000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Oregon",
+    "conf": "Big Ten",
+    "tier": "High",
+    "prestige": 4,
+    "annualNilBudget": 2900000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Pitt",
+    "conf": "ACC",
+    "tier": "High",
+    "prestige": 4,
+    "annualNilBudget": 2900000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Purdue",
+    "conf": "Big Ten",
+    "tier": "High",
+    "prestige": 4,
+    "annualNilBudget": 2900000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "St. John's",
+    "conf": "Big East",
+    "tier": "High",
+    "prestige": 4,
+    "annualNilBudget": 2900000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Syracuse",
+    "conf": "ACC",
+    "tier": "High",
+    "prestige": 4,
+    "annualNilBudget": 2900000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Texas",
+    "conf": "SEC",
+    "tier": "High",
+    "prestige": 4,
+    "annualNilBudget": 2900000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Utah",
+    "conf": "Big 12",
+    "tier": "High",
+    "prestige": 4,
+    "annualNilBudget": 2900000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Virginia",
+    "conf": "ACC",
+    "tier": "High",
+    "prestige": 4,
+    "annualNilBudget": 6200000,
+    "basis": "Reported"
+  },
+  {
+    "name": "West Virginia",
+    "conf": "Big 12",
+    "tier": "High",
+    "prestige": 4,
+    "annualNilBudget": 2900000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Wisconsin",
+    "conf": "Big Ten",
+    "tier": "High",
+    "prestige": 4,
+    "annualNilBudget": 2900000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Xavier",
+    "conf": "Big East",
+    "tier": "High",
+    "prestige": 4,
+    "annualNilBudget": 5500000,
+    "basis": "Reported"
+  },
+  {
+    "name": "Arizona State",
+    "conf": "Big 12",
+    "tier": "High",
+    "prestige": 3,
+    "annualNilBudget": 1900000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Auburn",
+    "conf": "SEC",
+    "tier": "High",
+    "prestige": 3,
+    "annualNilBudget": 1900000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Boston",
+    "conf": "ACC",
+    "tier": "High",
+    "prestige": 3,
+    "annualNilBudget": 1900000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Butler",
+    "conf": "Big East",
+    "tier": "High",
+    "prestige": 3,
+    "annualNilBudget": 1900000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Clemson",
+    "conf": "ACC",
+    "tier": "High",
+    "prestige": 3,
+    "annualNilBudget": 1900000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Colorado",
+    "conf": "Big 12",
+    "tier": "High",
+    "prestige": 3,
+    "annualNilBudget": 1900000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Creighton",
+    "conf": "Big East",
+    "tier": "High",
+    "prestige": 3,
+    "annualNilBudget": 5600000,
+    "basis": "Reported"
+  },
+  {
+    "name": "DePaul",
+    "conf": "Big East",
+    "tier": "High",
+    "prestige": 3,
+    "annualNilBudget": 1900000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Florida State",
+    "conf": "ACC",
+    "tier": "High",
+    "prestige": 3,
+    "annualNilBudget": 1900000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Georgia",
+    "conf": "SEC",
+    "tier": "High",
+    "prestige": 3,
+    "annualNilBudget": 1900000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Georgia Tech",
+    "conf": "ACC",
+    "tier": "High",
+    "prestige": 3,
+    "annualNilBudget": 1900000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Iowa State",
+    "conf": "Big 12",
+    "tier": "High",
+    "prestige": 3,
+    "annualNilBudget": 1900000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Miami (FL)",
+    "conf": "ACC",
+    "tier": "High",
+    "prestige": 3,
+    "annualNilBudget": 7100000,
+    "basis": "Reported"
+  },
+  {
+    "name": "Minnesota",
+    "conf": "Big Ten",
+    "tier": "High",
+    "prestige": 3,
+    "annualNilBudget": 1900000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Mississippi State",
+    "conf": "SEC",
+    "tier": "High",
+    "prestige": 3,
+    "annualNilBudget": 1900000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Providence",
+    "conf": "Big East",
+    "tier": "High",
+    "prestige": 3,
+    "annualNilBudget": 1900000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "SMU",
+    "conf": "ACC",
+    "tier": "High",
+    "prestige": 3,
+    "annualNilBudget": 1900000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Seton Hall",
+    "conf": "Big East",
+    "tier": "High",
+    "prestige": 3,
+    "annualNilBudget": 1900000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Stanford",
+    "conf": "ACC",
+    "tier": "High",
+    "prestige": 3,
+    "annualNilBudget": 1900000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Tennessee",
+    "conf": "SEC",
+    "tier": "High",
+    "prestige": 3,
+    "annualNilBudget": 1900000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Texas A&M",
+    "conf": "SEC",
+    "tier": "High",
+    "prestige": 3,
+    "annualNilBudget": 1900000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Texas Tech",
+    "conf": "Big 12",
+    "tier": "High",
+    "prestige": 3,
+    "annualNilBudget": 1900000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "USC",
+    "conf": "Big Ten",
+    "tier": "High",
+    "prestige": 3,
+    "annualNilBudget": 1900000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Vandy",
+    "conf": "SEC",
+    "tier": "High",
+    "prestige": 3,
+    "annualNilBudget": 1900000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Wake Forest",
+    "conf": "ACC",
+    "tier": "High",
+    "prestige": 3,
+    "annualNilBudget": 1900000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Washington",
+    "conf": "Big Ten",
+    "tier": "High",
+    "prestige": 3,
+    "annualNilBudget": 5900000,
+    "basis": "Reported"
+  },
+  {
+    "name": "Nebraska",
+    "conf": "Big Ten",
+    "tier": "High",
+    "prestige": 2,
+    "annualNilBudget": 1300000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Ole Miss",
+    "conf": "SEC",
+    "tier": "High",
+    "prestige": 2,
+    "annualNilBudget": 1300000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Penn State",
+    "conf": "Big Ten",
+    "tier": "High",
+    "prestige": 2,
+    "annualNilBudget": 1300000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Rutgers",
+    "conf": "Big Ten",
+    "tier": "High",
+    "prestige": 2,
+    "annualNilBudget": 1300000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "South Carolina",
+    "conf": "SEC",
+    "tier": "High",
+    "prestige": 2,
+    "annualNilBudget": 1300000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "TCU",
+    "conf": "Big 12",
+    "tier": "High",
+    "prestige": 2,
+    "annualNilBudget": 1300000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "UCF",
+    "conf": "Big 12",
+    "tier": "High",
+    "prestige": 2,
+    "annualNilBudget": 1300000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Virginia Tech",
+    "conf": "ACC",
+    "tier": "High",
+    "prestige": 2,
+    "annualNilBudget": 1300000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Northwestern",
+    "conf": "Big Ten",
+    "tier": "High",
+    "prestige": 1,
+    "annualNilBudget": 1000000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Gonzaga",
+    "conf": "Pac-12",
+    "tier": "Mid",
+    "prestige": 4,
+    "annualNilBudget": 2500000,
+    "basis": "Reported"
+  },
+  {
+    "name": "Memphis",
+    "conf": "American",
+    "tier": "Mid",
+    "prestige": 4,
+    "annualNilBudget": 1800000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "San Francisco",
+    "conf": "WCC",
+    "tier": "Mid",
+    "prestige": 4,
+    "annualNilBudget": 1800000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Temple",
+    "conf": "American",
+    "tier": "Mid",
+    "prestige": 4,
+    "annualNilBudget": 1800000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "UNLV",
+    "conf": "Mountain West",
+    "tier": "Mid",
+    "prestige": 4,
+    "annualNilBudget": 1800000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Bradley",
+    "conf": "Missouri Valley",
+    "tier": "Mid",
+    "prestige": 3,
+    "annualNilBudget": 650000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Charlotte",
+    "conf": "American",
+    "tier": "Mid",
+    "prestige": 3,
+    "annualNilBudget": 650000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "College of the Holy Cross",
+    "conf": "Patriot",
+    "tier": "Mid",
+    "prestige": 3,
+    "annualNilBudget": 650000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Davidson",
+    "conf": "Atlantic 10",
+    "tier": "Mid",
+    "prestige": 3,
+    "annualNilBudget": 650000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Dayton",
+    "conf": "Atlantic 10",
+    "tier": "Mid",
+    "prestige": 3,
+    "annualNilBudget": 650000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Iona",
+    "conf": "MAAC",
+    "tier": "Mid",
+    "prestige": 3,
+    "annualNilBudget": 650000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "La Salle",
+    "conf": "Atlantic 10",
+    "tier": "Mid",
+    "prestige": 3,
+    "annualNilBudget": 650000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Loyola Chicago",
+    "conf": "Atlantic 10",
+    "tier": "Mid",
+    "prestige": 3,
+    "annualNilBudget": 650000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Miami (OH)",
+    "conf": "MAC",
+    "tier": "Mid",
+    "prestige": 3,
+    "annualNilBudget": 650000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Murray State",
+    "conf": "Missouri Valley",
+    "tier": "Mid",
+    "prestige": 3,
+    "annualNilBudget": 650000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "New Mexico",
+    "conf": "Mountain West",
+    "tier": "Mid",
+    "prestige": 3,
+    "annualNilBudget": 650000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "New Mexico State",
+    "conf": "Conference USA",
+    "tier": "Mid",
+    "prestige": 3,
+    "annualNilBudget": 650000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Ohio",
+    "conf": "MAC",
+    "tier": "Mid",
+    "prestige": 3,
+    "annualNilBudget": 650000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Penn",
+    "conf": "Ivy",
+    "tier": "Mid",
+    "prestige": 3,
+    "annualNilBudget": 650000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Princeton",
+    "conf": "Ivy",
+    "tier": "Mid",
+    "prestige": 3,
+    "annualNilBudget": 650000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Saint Joe's",
+    "conf": "Atlantic 10",
+    "tier": "Mid",
+    "prestige": 3,
+    "annualNilBudget": 650000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Saint Mary's",
+    "conf": "WCC",
+    "tier": "Mid",
+    "prestige": 3,
+    "annualNilBudget": 650000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Santa Clara",
+    "conf": "WCC",
+    "tier": "Mid",
+    "prestige": 3,
+    "annualNilBudget": 650000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Seattle",
+    "conf": "WCC",
+    "tier": "Mid",
+    "prestige": 3,
+    "annualNilBudget": 650000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Tulsa",
+    "conf": "American",
+    "tier": "Mid",
+    "prestige": 3,
+    "annualNilBudget": 650000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "UAB",
+    "conf": "American",
+    "tier": "Mid",
+    "prestige": 3,
+    "annualNilBudget": 650000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "UTEP",
+    "conf": "Mountain West",
+    "tier": "Mid",
+    "prestige": 3,
+    "annualNilBudget": 650000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "VCU",
+    "conf": "Atlantic 10",
+    "tier": "Mid",
+    "prestige": 3,
+    "annualNilBudget": 650000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Weber State",
+    "conf": "Big Sky",
+    "tier": "Mid",
+    "prestige": 3,
+    "annualNilBudget": 650000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Western Kentucky",
+    "conf": "Conference USA",
+    "tier": "Mid",
+    "prestige": 3,
+    "annualNilBudget": 650000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Wichita State",
+    "conf": "American",
+    "tier": "Mid",
+    "prestige": 3,
+    "annualNilBudget": 650000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Wyoming",
+    "conf": "Mountain West",
+    "tier": "Mid",
+    "prestige": 3,
+    "annualNilBudget": 650000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Air Force",
+    "conf": "Mountain West",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Akron",
+    "conf": "MAC",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "American",
+    "conf": "Patriot",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Ball State",
+    "conf": "MAC",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Belmont",
+    "conf": "Missouri Valley",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Boston",
+    "conf": "Patriot",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Bowling Green",
+    "conf": "MAC",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Bucknell",
+    "conf": "Patriot",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Cal State Fullerton",
+    "conf": "Big West",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Canisius",
+    "conf": "MAAC",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Central Michigan",
+    "conf": "MAC",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Charleston",
+    "conf": "CAA",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Chattanooga",
+    "conf": "Southern",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Coastal Carolina",
+    "conf": "Sun Belt",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Colgate",
+    "conf": "Patriot",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Cornell",
+    "conf": "Ivy",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Dartmouth",
+    "conf": "Ivy",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Delaware",
+    "conf": "Conference USA",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Detroit Mercy",
+    "conf": "Horizon",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Drake",
+    "conf": "Missouri Valley",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Drexel",
+    "conf": "CAA",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Duquesne",
+    "conf": "Atlantic 10",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "East Tennessee State",
+    "conf": "Southern",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Eastern Michigan",
+    "conf": "MAC",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Evansville",
+    "conf": "Missouri Valley",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "FAU",
+    "conf": "American",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Fairfield",
+    "conf": "MAAC",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Fairleigh Dickinson",
+    "conf": "NEC",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Fordham",
+    "conf": "Atlantic 10",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Furman",
+    "conf": "Southern",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "George Mason",
+    "conf": "Atlantic 10",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "George Washington",
+    "conf": "Atlantic 10",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Georgia State",
+    "conf": "Sun Belt",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Grand Canyon",
+    "conf": "Mountain West",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Green Bay",
+    "conf": "Horizon",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Hampton",
+    "conf": "CAA",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Harvard",
+    "conf": "Ivy",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Hawaii",
+    "conf": "Mountain West",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Hofstra",
+    "conf": "CAA",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Idaho",
+    "conf": "Big Sky",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Idaho State",
+    "conf": "Big Sky",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Illinois State",
+    "conf": "Missouri Valley",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Indiana State",
+    "conf": "Missouri Valley",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Jacksonville",
+    "conf": "ASUN",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "James Madison",
+    "conf": "Sun Belt",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Kent State",
+    "conf": "MAC",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Lafayette",
+    "conf": "Patriot",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Lehigh",
+    "conf": "Patriot",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Liberty",
+    "conf": "Conference USA",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Long Beach State",
+    "conf": "Big West",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Long Island",
+    "conf": "NEC",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Louisiana",
+    "conf": "Sun Belt",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Louisiana Tech",
+    "conf": "Sun Belt",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Louisiana\u2013Monroe",
+    "conf": "Sun Belt",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Loyola Marymount",
+    "conf": "WCC",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Manhattan",
+    "conf": "MAAC",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Marshall",
+    "conf": "Sun Belt",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Middle Tennessee",
+    "conf": "Conference USA",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Milwaukee",
+    "conf": "Horizon",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Missouri State",
+    "conf": "Conference USA",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Monmouth",
+    "conf": "CAA",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Montana",
+    "conf": "Big Sky",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Montana State",
+    "conf": "Big Sky",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Morehead State",
+    "conf": "Ohio Valley",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Mount St. Mary's",
+    "conf": "MAAC",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Navy",
+    "conf": "Patriot",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Nevada",
+    "conf": "Mountain West",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "North Carolina A&T",
+    "conf": "CAA",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "North Carolina at Greensboro",
+    "conf": "Southern",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "North Carolina at Wilmington",
+    "conf": "CAA",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "North Dakota State",
+    "conf": "Summit",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "North Texas",
+    "conf": "American",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Northeastern",
+    "conf": "CAA",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Northern Iowa",
+    "conf": "Missouri Valley",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Oakland",
+    "conf": "Horizon",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Old Dominion",
+    "conf": "Sun Belt",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Oral Roberts",
+    "conf": "Summit",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Pacific",
+    "conf": "WCC",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Pepperdine",
+    "conf": "WCC",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Rhode Island",
+    "conf": "Atlantic 10",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Rice",
+    "conf": "American",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Richmond",
+    "conf": "Atlantic 10",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Robert Morris",
+    "conf": "Horizon",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Saint Louis",
+    "conf": "Atlantic 10",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Saint Peter's",
+    "conf": "MAAC",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "San Diego",
+    "conf": "WCC",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Siena",
+    "conf": "MAAC",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "South Alabama",
+    "conf": "Sun Belt",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "South Dakota State",
+    "conf": "Summit",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "South Florida",
+    "conf": "American",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Southern Illinois",
+    "conf": "Missouri Valley",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "St. Bonaventure",
+    "conf": "Atlantic 10",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Toledo",
+    "conf": "MAC",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Troy",
+    "conf": "Sun Belt",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "UC Santa Barbara",
+    "conf": "Big West",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "UMass",
+    "conf": "MAC",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "UNC Asheville",
+    "conf": "Big South",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "UTSA",
+    "conf": "American",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "University at Buffalo",
+    "conf": "MAC",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Valpo",
+    "conf": "Missouri Valley",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Western Michigan",
+    "conf": "MAC",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Winthrop",
+    "conf": "Big South",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Wofford",
+    "conf": "Southern",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Wright State",
+    "conf": "Horizon",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Yale",
+    "conf": "Ivy",
+    "tier": "Mid",
+    "prestige": 2,
+    "annualNilBudget": 280000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Appalachian State",
+    "conf": "Sun Belt",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Arkansas State",
+    "conf": "Sun Belt",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Army",
+    "conf": "Patriot",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Bellarmine",
+    "conf": "ASUN",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Brown",
+    "conf": "Ivy",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "CSU Bakersfield",
+    "conf": "Big West",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Cal Poly",
+    "conf": "Big West",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Cal State Northridge",
+    "conf": "Big West",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "California Baptist",
+    "conf": "Big West",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Campbell",
+    "conf": "CAA",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Central Connecticut",
+    "conf": "NEC",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Charleston Southern",
+    "conf": "Big South",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Chicago State",
+    "conf": "NEC",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Citadel",
+    "conf": "Southern",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Cleveland State",
+    "conf": "Horizon",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "College of William & Mary",
+    "conf": "CAA",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Columbia",
+    "conf": "Ivy",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Denver",
+    "conf": "WCC",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "East Carolina",
+    "conf": "American",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Eastern Illinois",
+    "conf": "Ohio Valley",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Eastern Washington",
+    "conf": "Big Sky",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Elon",
+    "conf": "CAA",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "FIU",
+    "conf": "Conference USA",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Florida Gulf Coast",
+    "conf": "ASUN",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Gardner\u2013Webb",
+    "conf": "Big South",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Georgia Southern",
+    "conf": "Sun Belt",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "High Point",
+    "conf": "Big South",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "IU Indy",
+    "conf": "Horizon",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Jacksonville State",
+    "conf": "Conference USA",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Kansas City",
+    "conf": "Summit",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Kennesaw State",
+    "conf": "Conference USA",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Le Moyne",
+    "conf": "NEC",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Lindenwood",
+    "conf": "Ohio Valley",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Lipscomb",
+    "conf": "ASUN",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Longwood",
+    "conf": "Big South",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Loyola Maryland",
+    "conf": "Patriot",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Marist",
+    "conf": "MAAC",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Mercer",
+    "conf": "Southern",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Mercyhurst",
+    "conf": "NEC",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Merrimack",
+    "conf": "MAAC",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "New Haven",
+    "conf": "NEC",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Niagara",
+    "conf": "MAAC",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "North Dakota",
+    "conf": "Summit",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "North Florida",
+    "conf": "ASUN",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Northern Arizona",
+    "conf": "Big Sky",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Northern Colorado",
+    "conf": "Big Sky",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Northern Illinois",
+    "conf": "Horizon",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Northern Kentucky",
+    "conf": "Horizon",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Omaha",
+    "conf": "Summit",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Portland",
+    "conf": "WCC",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Portland State",
+    "conf": "Big Sky",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Presbyterian",
+    "conf": "Big South",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Purdue Fort Wayne",
+    "conf": "Horizon",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Queens University of Charlotte",
+    "conf": "ASUN",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Quinnipiac",
+    "conf": "MAAC",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Radford",
+    "conf": "Big South",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Rider",
+    "conf": "MAAC",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "SIU Edwardsville",
+    "conf": "Ohio Valley",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Sacramento State",
+    "conf": "Big West",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Sacred Heart",
+    "conf": "MAAC",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Sam Houston",
+    "conf": "Conference USA",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Samford",
+    "conf": "Southern",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "San Jose State",
+    "conf": "Mountain West",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "South Dakota",
+    "conf": "Summit",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Southeast Missouri",
+    "conf": "Ohio Valley",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Southern Indiana",
+    "conf": "Ohio Valley",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Southern Miss",
+    "conf": "Sun Belt",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Southern Utah",
+    "conf": "Big Sky",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "St. Thomas",
+    "conf": "Summit",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Stetson",
+    "conf": "ASUN",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Stonehill",
+    "conf": "NEC",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Stony Brook",
+    "conf": "CAA",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Tennessee State",
+    "conf": "Ohio Valley",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Tennessee Tech",
+    "conf": "Southern",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Towson",
+    "conf": "CAA",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Tulane",
+    "conf": "American",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "UC Davis",
+    "conf": "Mountain West",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "UC Irvine",
+    "conf": "Big West",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "UC Riverside",
+    "conf": "Big West",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "UC San Diego",
+    "conf": "Big West",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "UIC",
+    "conf": "Missouri Valley",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "USC Upstate",
+    "conf": "Big South",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "UT Martin",
+    "conf": "Ohio Valley",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Utah Tech",
+    "conf": "Big Sky",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Utah Valley",
+    "conf": "Big West",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Virginia Military Institute",
+    "conf": "Southern",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Wagner",
+    "conf": "NEC",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "West Florida",
+    "conf": "ASUN",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Western Carolina",
+    "conf": "Southern",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Western Illinois",
+    "conf": "Ohio Valley",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Youngstown State",
+    "conf": "Horizon",
+    "tier": "Mid",
+    "prestige": 1,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Oregon State",
+    "conf": "Pac-12",
+    "tier": "Low",
+    "prestige": 3,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "San Diego State",
+    "conf": "Pac-12",
+    "tier": "Low",
+    "prestige": 3,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Utah State",
+    "conf": "Pac-12",
+    "tier": "Low",
+    "prestige": 3,
+    "annualNilBudget": 150000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Alabama State",
+    "conf": "SWAC",
+    "tier": "Low",
+    "prestige": 2,
+    "annualNilBudget": 70000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Albany",
+    "conf": "America East",
+    "tier": "Low",
+    "prestige": 2,
+    "annualNilBudget": 70000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Alcorn State",
+    "conf": "SWAC",
+    "tier": "Low",
+    "prestige": 2,
+    "annualNilBudget": 70000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Austin Peay",
+    "conf": "UAC",
+    "tier": "Low",
+    "prestige": 2,
+    "annualNilBudget": 70000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Boise State",
+    "conf": "Pac-12",
+    "tier": "Low",
+    "prestige": 2,
+    "annualNilBudget": 70000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Colorado State",
+    "conf": "Pac-12",
+    "tier": "Low",
+    "prestige": 2,
+    "annualNilBudget": 70000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Coppin State",
+    "conf": "MEAC",
+    "tier": "Low",
+    "prestige": 2,
+    "annualNilBudget": 70000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Eastern Kentucky",
+    "conf": "UAC",
+    "tier": "Low",
+    "prestige": 2,
+    "annualNilBudget": 70000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Fresno State",
+    "conf": "Pac-12",
+    "tier": "Low",
+    "prestige": 2,
+    "annualNilBudget": 70000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Howard",
+    "conf": "MEAC",
+    "tier": "Low",
+    "prestige": 2,
+    "annualNilBudget": 70000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "LSU New Orleans",
+    "conf": "Southland",
+    "tier": "Low",
+    "prestige": 2,
+    "annualNilBudget": 70000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Lamar",
+    "conf": "Southland",
+    "tier": "Low",
+    "prestige": 2,
+    "annualNilBudget": 70000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Little Rock",
+    "conf": "UAC",
+    "tier": "Low",
+    "prestige": 2,
+    "annualNilBudget": 70000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "McNeese",
+    "conf": "Southland",
+    "tier": "Low",
+    "prestige": 2,
+    "annualNilBudget": 70000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Mississippi Valley State",
+    "conf": "SWAC",
+    "tier": "Low",
+    "prestige": 2,
+    "annualNilBudget": 70000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Norfolk State",
+    "conf": "MEAC",
+    "tier": "Low",
+    "prestige": 2,
+    "annualNilBudget": 70000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "North Carolina Central",
+    "conf": "MEAC",
+    "tier": "Low",
+    "prestige": 2,
+    "annualNilBudget": 70000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "SC State",
+    "conf": "MEAC",
+    "tier": "Low",
+    "prestige": 2,
+    "annualNilBudget": 70000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Southern",
+    "conf": "SWAC",
+    "tier": "Low",
+    "prestige": 2,
+    "annualNilBudget": 70000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Stephen F. Austin",
+    "conf": "Southland",
+    "tier": "Low",
+    "prestige": 2,
+    "annualNilBudget": 70000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Texas Southern",
+    "conf": "SWAC",
+    "tier": "Low",
+    "prestige": 2,
+    "annualNilBudget": 70000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Vermont",
+    "conf": "America East",
+    "tier": "Low",
+    "prestige": 2,
+    "annualNilBudget": 70000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Washington State",
+    "conf": "Pac-12",
+    "tier": "Low",
+    "prestige": 2,
+    "annualNilBudget": 70000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Abilene Christian",
+    "conf": "UAC",
+    "tier": "Low",
+    "prestige": 1,
+    "annualNilBudget": 30000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Alabama A&M",
+    "conf": "SWAC",
+    "tier": "Low",
+    "prestige": 1,
+    "annualNilBudget": 30000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Arkansas\u2013Pine Bluff",
+    "conf": "SWAC",
+    "tier": "Low",
+    "prestige": 1,
+    "annualNilBudget": 30000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Bethune\u2013Cookman",
+    "conf": "SWAC",
+    "tier": "Low",
+    "prestige": 1,
+    "annualNilBudget": 30000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Binghamton",
+    "conf": "America East",
+    "tier": "Low",
+    "prestige": 1,
+    "annualNilBudget": 30000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Bryant",
+    "conf": "America East",
+    "tier": "Low",
+    "prestige": 1,
+    "annualNilBudget": 30000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Central Arkansas",
+    "conf": "UAC",
+    "tier": "Low",
+    "prestige": 1,
+    "annualNilBudget": 30000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Delaware State",
+    "conf": "MEAC",
+    "tier": "Low",
+    "prestige": 1,
+    "annualNilBudget": 30000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "East Texas A&M",
+    "conf": "Southland",
+    "tier": "Low",
+    "prestige": 1,
+    "annualNilBudget": 30000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Florida A&M",
+    "conf": "SWAC",
+    "tier": "Low",
+    "prestige": 1,
+    "annualNilBudget": 30000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Grambling State",
+    "conf": "SWAC",
+    "tier": "Low",
+    "prestige": 1,
+    "annualNilBudget": 30000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Houston Christian",
+    "conf": "Southland",
+    "tier": "Low",
+    "prestige": 1,
+    "annualNilBudget": 30000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Incarnate Word",
+    "conf": "Southland",
+    "tier": "Low",
+    "prestige": 1,
+    "annualNilBudget": 30000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Jackson State",
+    "conf": "SWAC",
+    "tier": "Low",
+    "prestige": 1,
+    "annualNilBudget": 30000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Maryland Eastern Shore",
+    "conf": "MEAC",
+    "tier": "Low",
+    "prestige": 1,
+    "annualNilBudget": 30000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Morgan State",
+    "conf": "MEAC",
+    "tier": "Low",
+    "prestige": 1,
+    "annualNilBudget": 30000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "New Hampshire",
+    "conf": "America East",
+    "tier": "Low",
+    "prestige": 1,
+    "annualNilBudget": 30000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "New Jersey Institute of Technology",
+    "conf": "America East",
+    "tier": "Low",
+    "prestige": 1,
+    "annualNilBudget": 30000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Nicholls",
+    "conf": "Southland",
+    "tier": "Low",
+    "prestige": 1,
+    "annualNilBudget": 30000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "North Alabama",
+    "conf": "UAC",
+    "tier": "Low",
+    "prestige": 1,
+    "annualNilBudget": 30000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Northwestern State",
+    "conf": "Southland",
+    "tier": "Low",
+    "prestige": 1,
+    "annualNilBudget": 30000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Prairie View A&M",
+    "conf": "SWAC",
+    "tier": "Low",
+    "prestige": 1,
+    "annualNilBudget": 30000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Southeastern Louisiana",
+    "conf": "Southland",
+    "tier": "Low",
+    "prestige": 1,
+    "annualNilBudget": 30000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Tarleton State",
+    "conf": "UAC",
+    "tier": "Low",
+    "prestige": 1,
+    "annualNilBudget": 30000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Texas A&M University-Corpus Christi",
+    "conf": "Southland",
+    "tier": "Low",
+    "prestige": 1,
+    "annualNilBudget": 30000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Texas Rio Grande Valley",
+    "conf": "Southland",
+    "tier": "Low",
+    "prestige": 1,
+    "annualNilBudget": 30000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "Texas State",
+    "conf": "Pac-12",
+    "tier": "Low",
+    "prestige": 1,
+    "annualNilBudget": 30000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "UMBC",
+    "conf": "America East",
+    "tier": "Low",
+    "prestige": 1,
+    "annualNilBudget": 30000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "UMaine",
+    "conf": "America East",
+    "tier": "Low",
+    "prestige": 1,
+    "annualNilBudget": 30000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "UMass Lowell",
+    "conf": "America East",
+    "tier": "Low",
+    "prestige": 1,
+    "annualNilBudget": 30000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "UT Arlington",
+    "conf": "UAC",
+    "tier": "Low",
+    "prestige": 1,
+    "annualNilBudget": 30000,
+    "basis": "Estimated"
+  },
+  {
+    "name": "West Georgia",
+    "conf": "UAC",
+    "tier": "Low",
+    "prestige": 1,
+    "annualNilBudget": 30000,
+    "basis": "Estimated"
+  }
+]
