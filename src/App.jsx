@@ -3664,6 +3664,34 @@ function projectedSeed(rank) {
   return { seed: clamp(Math.ceil(rank / 4), 1, 16), inField: rank <= 64 };
 }
 
+// Real NCAA-style resume quadrants (home/away thresholds; no neutral-site
+// distinction is tracked, so a true road game uses the away bands). Built
+// straight off each played game's real opponent rank at the time — the same
+// underlying "how good was this win/loss" signal the ranking itself uses —
+// so the bubble stops being a black box: a coach can see exactly which wins
+// and losses are actually moving the needle.
+const QUAD_THRESHOLDS = { home: [30, 75, 160], away: [75, 135, 240] };
+function gameQuad(oppRank, isHome) {
+  if (!oppRank) return 4;
+  const t = isHome ? QUAD_THRESHOLDS.home : QUAD_THRESHOLDS.away;
+  if (oppRank <= t[0]) return 1;
+  if (oppRank <= t[1]) return 2;
+  if (oppRank <= t[2]) return 3;
+  return 4;
+}
+function computeResume(schedule) {
+  const played = (schedule || []).filter((g) => g.played && g.result);
+  const quads = { 1: { w: 0, l: 0 }, 2: { w: 0, l: 0 }, 3: { w: 0, l: 0 }, 4: { w: 0, l: 0 } };
+  let rankSum = 0, rankCount = 0;
+  played.forEach((g) => {
+    const q = gameQuad(g.result.oppRank, g.home);
+    if (g.result.win) quads[q].w += 1; else quads[q].l += 1;
+    if (g.result.oppRank) { rankSum += g.result.oppRank; rankCount += 1; }
+  });
+  const avgOppRank = rankCount ? Math.round(rankSum / rankCount) : null;
+  return { quads, avgOppRank, gamesPlayed: played.length };
+}
+
 // Real, historically loaded rivalries for the sport's highest-profile
 // programs — a name on the Rivalry Ledger should mean something instead of
 // just naming whichever conference mate happens to have the higher prestige
@@ -3919,9 +3947,9 @@ function StarRow({ stars }) {
   );
 }
 
-function Panel({ children, style, className }) {
+function Panel({ children, style, className, ...rest }) {
   return (
-    <div className={className} style={{ background: C.panel, border: `1px solid ${C.line}`, ...style }}>
+    <div className={className} style={{ background: C.panel, border: `1px solid ${C.line}`, ...style }} {...rest}>
       {children}
     </div>
   );
@@ -5573,6 +5601,7 @@ function DashboardTab({ state, team, record, nextGame, stage, onSim, onPlay, onS
   const hasUnplayedNonConf = state.schedule.some((g) => !g.conf && !g.played);
   const nilBudget = (state.nilBudgetById || baselineNilBudgetById())[team.id] ?? nilBudgetForTeam(team);
   const programHistory = programHistoryFor(team.id, state);
+  const [showResume, setShowResume] = useState(false);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20, maxWidth: 900 }}>
@@ -5584,8 +5613,10 @@ function DashboardTab({ state, team, record, nextGame, stage, onSim, onPlay, onS
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 14 }}>
-        <Panel style={{ padding: "14px 18px" }}>
-          <div style={{ fontSize: 11, color: C.dim, letterSpacing: "0.08em" }}>BRACKETOLOGY</div>
+        <Panel onClick={() => setShowResume(true)} style={{ padding: "14px 18px", cursor: "pointer" }}>
+          <div style={{ fontSize: 11, color: C.dim, letterSpacing: "0.08em", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            BRACKETOLOGY <span style={{ color: C.dimmer, fontWeight: 400, letterSpacing: "normal", fontSize: 10.5 }}>why? &rarr;</span>
+          </div>
           <div className="cbb-num" style={{ fontSize: 20, fontWeight: 700, marginTop: 4, color: bracketology?.inField ? C.gold : C.cream }}>
             {bracketology ? (bracketology.inField ? `No. ${bracketology.seed} seed` : "Last Four Out") : "Not projected"}
           </div>
@@ -5786,7 +5817,68 @@ function DashboardTab({ state, team, record, nextGame, stage, onSim, onPlay, onS
           </div>
         </Panel>
       )}
+      {showResume && (
+        <ResumeModal bracketology={bracketology} record={record} schedule={state.schedule} onClose={() => setShowResume(false)} />
+      )}
     </div>
+  );
+}
+
+const QUAD_LABELS = {
+  1: "Quad 1", 2: "Quad 2", 3: "Quad 3", 4: "Quad 4",
+};
+const QUAD_DESC = {
+  1: "Home vs. top 30 · away vs. top 75",
+  2: "Home vs. 31-75 · away vs. 76-135",
+  3: "Home vs. 76-160 · away vs. 136-240",
+  4: "Home vs. 161+ · away vs. 241+",
+};
+
+// Shows the "why" behind the seed line: a real NCAA-style resume breakdown
+// built off each played game's actual opponent rank at the time, instead of
+// leaving the projection as a single unexplained number.
+function ResumeModal({ bracketology, record, schedule, onClose }) {
+  const resume = useMemo(() => computeResume(schedule), [schedule]);
+  const q1 = resume.quads[1], q2 = resume.quads[2], q3 = resume.quads[3], q4 = resume.quads[4];
+  const headline = bracketology
+    ? (bracketology.inField ? `Projected No. ${bracketology.seed} seed` : "Projected Last Four Out")
+    : "Not yet projected";
+  let verdict;
+  if (!resume.gamesPlayed) verdict = "No games played yet this season — check back once there's a resume to read.";
+  else if (bracketology?.inField && bracketology.seed <= 6) verdict = `${q1.w} Quad 1 win${q1.w === 1 ? "" : "s"} and a strong slate keep you comfortably in the field.`;
+  else if (bracketology?.inField) verdict = `${q1.w}-${q1.l} in Quad 1 is holding up the résumé; a bad loss below Quad 2 would start hurting.`;
+  else verdict = `Too many Quad 3/4 results (${q3.w}-${q3.l} · ${q4.w}-${q4.l}) and not enough Quad 1 wins (${q1.w}-${q1.l}) to feel safe right now.`;
+
+  return (
+    <Modal title="Résumé" subtitle={headline} onClose={onClose} maxWidth={480}>
+      <div style={{ fontSize: 12.5, color: C.dim, lineHeight: 1.6, marginBottom: 16 }}>
+        Built the same way a real NCAA committee reads a résumé: every game bucketed by how good (and where) the opponent was <em>at the time you played them</em>, not by how that opponent's season eventually turned out.
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 16 }}>
+        {[1, 2, 3, 4].map((q) => {
+          const row = resume.quads[q];
+          const games = row.w + row.l;
+          return (
+            <div key={q} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", border: `1px solid ${C.line}`, padding: "8px 12px" }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 600 }}>{QUAD_LABELS[q]}</div>
+                <div style={{ fontSize: 10.5, color: C.dimmer }}>{QUAD_DESC[q]}</div>
+              </div>
+              <div className="cbb-num" style={{ fontSize: 16, fontWeight: 700, color: games === 0 ? C.dimmer : (row.w >= row.l ? C.green : C.red) }}>
+                {row.w}-{row.l}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <div style={{ display: "flex", gap: 14, marginBottom: 16, flexWrap: "wrap" }}>
+        <RecapChip label="Record" value={`${record.w}-${record.l}`} />
+        <RecapChip label="Avg. Opponent Rank (SOS)" value={resume.avgOppRank ? `#${resume.avgOppRank}` : "—"} />
+      </div>
+      <div style={{ fontSize: 12.5, color: C.cream, lineHeight: 1.6, borderTop: `1px solid ${C.line}`, paddingTop: 14 }}>
+        {verdict}
+      </div>
+    </Modal>
   );
 }
 
