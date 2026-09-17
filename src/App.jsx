@@ -2939,6 +2939,11 @@ function progressRosterForNewYear(roster, incoming, team, newYear, seasonSeed) {
         overall: computeOverall(p.pos, attrs),
         career: rolledCareer,
         season: { ...EMPTY_SEASON_STATS },
+        // Even a season-ending injury heals over the offseason — nothing
+        // should carry a player into next year already sidelined.
+        injuredGames: 0,
+        injuryType: null,
+        injurySeasonEnding: false,
       };
     });
   let combined = [...survivors, ...incoming];
@@ -2965,6 +2970,12 @@ function progressRosterForNewYear(roster, incoming, team, newYear, seasonSeed) {
    INJURIES + MOMENTUM
    ========================================================================= */
 function isHurt(p) { return (p.injuredGames || 0) > 0; }
+// Compact "OUT ..." badge text for an injured player, wherever a full
+// sentence doesn't fit.
+function injuryBadge(p) {
+  if (!isHurt(p)) return "";
+  return p.injurySeasonEnding ? "OUT FOR SEASON" : `OUT ${p.injuredGames}`;
+}
 
 // Signed win/loss streak read off the most recent games (positive = winning).
 function currentStreak(schedule) {
@@ -2983,7 +2994,13 @@ function currentStreak(schedule) {
 function momentumMod(streak) { return clamp(streak, -5, 5) * 0.75; }
 
 function tickInjuries(roster) {
-  return roster.map((p) => (isHurt(p) ? { ...p, injuredGames: p.injuredGames - 1 } : p));
+  return roster.map((p) => {
+    if (!isHurt(p)) return p;
+    const injuredGames = p.injuredGames - 1;
+    return injuredGames > 0
+      ? { ...p, injuredGames }
+      : { ...p, injuredGames: 0, injuryType: null, injurySeasonEnding: false };
+  });
 }
 
 // Per-game injury risk for one player: scales up with minutes load (heavy
@@ -2998,20 +3015,50 @@ function injuryRiskFor(minutes, durability) {
   return clamp(0.012 * loadFactor * durFactor, 0, 0.09);
 }
 
-// How long an injury sidelines a player: usually short, with a chance of a
-// longer-term absence that grows as durability drops.
-function injuryLengthFor(durability) {
+// Named injury types, tiered by how long they sideline a player. Weight is
+// relative likelihood at baseline (70) durability; pickInjuryType skews the
+// pool toward the more severe entries for a fragile player, so a brittle
+// veteran isn't just "out slightly more often" than a durable one — he's
+// genuinely more likely to suffer something serious when he does go down.
+const INJURY_TYPES = [
+  { name: "Ankle Sprain", tier: "Day-to-Day", min: 1, max: 2, weight: 30 },
+  { name: "Bruised Knee", tier: "Day-to-Day", min: 1, max: 3, weight: 18 },
+  { name: "Concussion Protocol", tier: "Minor", min: 2, max: 4, weight: 12 },
+  { name: "Hamstring Strain", tier: "Minor", min: 3, max: 6, weight: 13 },
+  { name: "Groin Strain", tier: "Minor", min: 3, max: 7, weight: 8 },
+  { name: "Wrist Fracture", tier: "Significant", min: 6, max: 12, weight: 6 },
+  { name: "Stress Fracture (Foot)", tier: "Significant", min: 8, max: 15, weight: 6 },
+  { name: "Torn Meniscus", tier: "Season-Ending", min: 1, max: 1, weight: 4, seasonEnding: true },
+  { name: "Torn ACL", tier: "Season-Ending", min: 1, max: 1, weight: 3, seasonEnding: true },
+];
+
+// A durable player (99) draws close to the raw weights above; a fragile one
+// (40) roughly doubles the pull toward Significant/Season-Ending entries.
+function pickInjuryType(durability) {
   const d = clamp(durability ?? 70, 40, 99);
-  const base = randInt(1, 4);
-  const extra = Math.random() < (99 - d) / 120 ? randInt(3, 12) : 0;
-  return clamp(base + extra, 1, 18);
+  const fragility = (99 - d) / 59; // 0 (durable) .. 1 (fragile)
+  const severityMult = { "Day-to-Day": 0, "Minor": 0.5, "Significant": 1.5, "Season-Ending": 2.2 };
+  const weighted = INJURY_TYPES.map((t) => ({ ...t, w: t.weight * (1 + severityMult[t.tier] * fragility) }));
+  const total = weighted.reduce((s, t) => s + t.w, 0);
+  let r = Math.random() * total;
+  for (const t of weighted) { r -= t.w; if (r <= 0) return t; }
+  return weighted[weighted.length - 1];
+}
+
+// How long an injury sidelines a player, given its type. A season-ending
+// type sidelines them for every game left — `gamesRemaining` comes from the
+// caller's own schedule position, so it's always exactly right regardless of
+// when in the season it happens.
+function injuryLengthFor(type, gamesRemaining) {
+  if (type.seasonEnding) return Math.max(1, gamesRemaining);
+  return randInt(type.min, type.max);
 }
 
 // One independent roll per healthy rotation player each game; returns the
 // updated roster and (if anyone went down) the new injury. Multiple players
 // can theoretically go down in the same game, but only the headline injury is
 // reported in the flash message.
-function maybeInjure(roster, rotationMinutes) {
+function maybeInjure(roster, rotationMinutes, gamesRemaining = 1) {
   const hits = [];
   for (const { id, minutes } of rotationMinutes) {
     const p = roster.find((x) => x.id === id);
@@ -3019,11 +3066,26 @@ function maybeInjure(roster, rotationMinutes) {
     if (Math.random() < injuryRiskFor(minutes, p.durability)) hits.push(p);
   }
   if (!hits.length) return { roster, injured: null };
-  const hurtById = new Map(hits.map((p) => [p.id, injuryLengthFor(p.durability)]));
+  const hitInfo = new Map(hits.map((p) => {
+    const type = pickInjuryType(p.durability);
+    const gamesOut = injuryLengthFor(type, gamesRemaining);
+    return [p.id, { type, gamesOut }];
+  }));
   const lead = pick(hits);
+  const leadInfo = hitInfo.get(lead.id);
   return {
-    roster: roster.map((p) => (hurtById.has(p.id) ? { ...p, injuredGames: hurtById.get(p.id) } : p)),
-    injured: { id: lead.id, name: lead.name, games: hurtById.get(lead.id), extra: hits.length - 1 },
+    roster: roster.map((p) => {
+      const info = hitInfo.get(p.id);
+      if (!info) return p;
+      return {
+        ...p,
+        injuredGames: info.gamesOut,
+        injuryType: info.type.name,
+        injurySeasonEnding: !!info.type.seasonEnding,
+        injuryHistory: [...(p.injuryHistory || []), { type: info.type.name, gamesOut: info.gamesOut, seasonEnding: !!info.type.seasonEnding }].slice(-8),
+      };
+    }),
+    injured: { id: lead.id, name: lead.name, type: leadInfo.type.name, games: leadInfo.gamesOut, seasonEnding: !!leadInfo.type.seasonEnding, extra: hits.length - 1 },
   };
 }
 
@@ -4202,7 +4264,8 @@ function DynastyApp({ initial, onExit }) {
       return { ...p, season: addBoxToStats(p.season, box) };
     });
     roster = tickInjuries(roster);
-    const inj = maybeInjure(roster, rotationMinutesOf(state.depthChart, roster, state.minutes));
+    const gamesRemaining = Math.max(1, state.schedule.filter((g) => !g.played).length - 1);
+    const inj = maybeInjure(roster, rotationMinutesOf(state.depthChart, roster, state.minutes), gamesRemaining);
     roster = inj.roster;
     const box = boxArray(result.boxByPlayer, state.roster);
     const oppBox = genOpponentBox(opp, state.year, result.oppScore);
@@ -4230,7 +4293,7 @@ function DynastyApp({ initial, onExit }) {
     let msg = result.win
       ? `Beat ${opp.name} ${result.myScore}-${result.oppScore}${sig ? ` — signature win over No. ${oppRank}!` : ""}`
       : `Lost to ${opp.name} ${result.oppScore}-${result.myScore}`;
-    if (inj.injured) msg += ` ${inj.injured.name} injured (out ${inj.injured.games}).${inj.injured.extra > 0 ? ` ${inj.injured.extra} other player${inj.injured.extra > 1 ? "s" : ""} also banged up.` : ""}`;
+    if (inj.injured) msg += ` ${inj.injured.name}: ${inj.injured.type}${inj.injured.seasonEnding ? " — OUT FOR THE SEASON." : ` (out ${inj.injured.games}).`}${inj.injured.extra > 0 ? ` ${inj.injured.extra} other player${inj.injured.extra > 1 ? "s" : ""} also banged up.` : ""}`;
     flash(msg);
   }
 
@@ -4270,7 +4333,8 @@ function DynastyApp({ initial, onExit }) {
         return { ...p, season: addBoxToStats(p.season, bx) };
       });
       roster = tickInjuries(roster);
-      roster = maybeInjure(roster, rotationMinutesOf(state.depthChart, roster, state.minutes)).roster;
+      const gamesRemaining = Math.max(1, games.filter((x) => !x.played).length - 1);
+      roster = maybeInjure(roster, rotationMinutesOf(state.depthChart, roster, state.minutes), gamesRemaining).roster;
       const box = boxArray(result.boxByPlayer, roster);
       g.played = true;
       g.result = { win: result.win, myScore: result.myScore, oppScore: result.oppScore, oppRank, box };
@@ -4307,7 +4371,8 @@ function DynastyApp({ initial, onExit }) {
         return { ...p, season: addBoxToStats(p.season, bx) };
       });
       roster = tickInjuries(roster);
-      roster = maybeInjure(roster, rotationMinutesOf(state.depthChart, roster, state.minutes)).roster;
+      const gamesRemaining = Math.max(1, games.filter((x) => !x.played).length - 1);
+      roster = maybeInjure(roster, rotationMinutesOf(state.depthChart, roster, state.minutes), gamesRemaining).roster;
       const box = boxArray(result.boxByPlayer, roster);
       g.played = true;
       g.result = { win: result.win, myScore: result.myScore, oppScore: result.oppScore, oppRank, box };
@@ -5573,7 +5638,7 @@ function DashboardTab({ state, team, record, nextGame, stage, onSim, onPlay, onS
             {injured.map((p) => (
               <div key={p.id} style={{ border: `1px solid ${C.line}`, padding: "6px 10px", fontSize: 12.5 }}>
                 <span style={{ fontWeight: 600 }}>{p.name}</span>
-                <span style={{ color: C.dim }}> · {p.pos} · out {p.injuredGames} game{p.injuredGames > 1 ? "s" : ""}</span>
+                <span style={{ color: C.dim }}> · {p.pos} · {p.injuryType || "Injury"} · {p.injurySeasonEnding ? "out for season" : `out ${p.injuredGames} game${p.injuredGames > 1 ? "s" : ""}`}</span>
               </div>
             ))}
           </div>
@@ -5774,7 +5839,7 @@ function RosterTab({ roster, onViewPlayer, onChangePosition }) {
               <td style={{ ...td, cursor: onViewPlayer ? "pointer" : "default" }} onClick={() => onViewPlayer && onViewPlayer(p.id)}>
                 <div style={{ fontWeight: 600 }}>
                   {p.realName ? "• " : ""}{p.name}
-                  {isHurt(p) && <span style={{ fontSize: 9.5, color: C.red, marginLeft: 6, letterSpacing: "0.06em", border: `1px solid ${C.red}`, padding: "1px 4px" }}>OUT {p.injuredGames}</span>}
+                  {isHurt(p) && <span title={p.injuryType || undefined} style={{ fontSize: 9.5, color: C.red, marginLeft: 6, letterSpacing: "0.06em", border: `1px solid ${C.red}`, padding: "1px 4px" }}>{injuryBadge(p)}</span>}
                 </div>
                 {p.starsAtSigning != null && <StarRow stars={p.starsAtSigning} />}
               </td>
@@ -5878,11 +5943,14 @@ function DepthChartTab({ roster, depthChart, minutes, onMove, onAssign, onRemove
                     <div style={{ minWidth: 0 }}>
                       <div style={{ fontSize: 13, fontWeight: i === 0 ? 700 : 500, color: isHurt(p) ? C.dimmer : C.cream }}>
                         {i === 0 ? "★ " : ""}{p.name}
-                        {isHurt(p) && <span style={{ fontSize: 9, color: C.red, marginLeft: 5 }}>OUT {p.injuredGames}</span>}
+                        {isHurt(p) && <span title={p.injuryType || undefined} style={{ fontSize: 9, color: C.red, marginLeft: 5 }}>{injuryBadge(p)}</span>}
                         {!isHurt(p) && fatigued && <span style={{ fontSize: 9, color: C.orange || "#d38b2e", marginLeft: 5 }}>FATIGUE</span>}
                       </div>
                       <div style={{ fontSize: 11, color: outOfPos ? C.red : C.dim }}>
                         {p.class} · OVR {eff}{outOfPos ? ` · natural ${p.pos} ${p.overall}` : ""} · DUR {p.durability ?? "—"}
+                        {!isHurt(p) && injuryRiskFor(m, p.durability) >= 0.014 && (
+                          <span title="Heavy workload on a fragile player — elevated injury risk at these minutes" style={{ color: C.wood, marginLeft: 5 }}>⚠ high injury risk</span>
+                        )}
                       </div>
                     </div>
                     <div style={{ display: "flex", flexDirection: "column" }}>
@@ -5918,7 +5986,7 @@ function DepthChartTab({ roster, depthChart, minutes, onMove, onAssign, onRemove
               <div key={p.id} style={{ border: `1px solid ${C.line}`, padding: "6px 10px", display: "flex", alignItems: "center", gap: 8 }}>
                 <div>
                   <div style={{ fontSize: 12.5, fontWeight: 600, color: isHurt(p) ? C.dimmer : C.cream }}>
-                    {p.name}{isHurt(p) && <span style={{ fontSize: 9, color: C.red, marginLeft: 5 }}>OUT {p.injuredGames}</span>}
+                    {p.name}{isHurt(p) && <span title={p.injuryType || undefined} style={{ fontSize: 9, color: C.red, marginLeft: 5 }}>{injuryBadge(p)}</span>}
                   </div>
                   <div style={{ fontSize: 10.5, color: C.dim }}>{p.pos} · {p.class} · OVR {p.overall} · DUR {p.durability ?? "—"}</div>
                 </div>
@@ -7556,7 +7624,13 @@ function PlayerModal({ player, onClose }) {
     <Modal title={p.name} subtitle={`${p.pos} · ${p.class} · ${p.height} · OVR ${p.overall}${p.realName ? " · real player" : ""}`} onClose={onClose} maxWidth={620}>
       {isHurt(p) && (
         <div style={{ marginBottom: 14, padding: "8px 12px", border: `1px solid ${C.red}`, color: C.red, fontSize: 12.5, display: "flex", alignItems: "center", gap: 6 }}>
-          <HeartPulse size={13} /> Injured — out {p.injuredGames} game{p.injuredGames > 1 ? "s" : ""}
+          <HeartPulse size={13} /> {p.injuryType || "Injured"} — {p.injurySeasonEnding ? "out for the season" : `out ${p.injuredGames} game${p.injuredGames > 1 ? "s" : ""}`}
+        </div>
+      )}
+      {p.injuryHistory && p.injuryHistory.length > 0 && (
+        <div style={{ marginBottom: 14, fontSize: 11.5, color: C.dimmer }}>
+          <span style={{ color: C.dim }}>Injury history:</span>{" "}
+          {p.injuryHistory.map((h, i) => `${h.type}${h.seasonEnding ? " (season-ending)" : ` (${h.gamesOut}g)`}`).join(", ")}
         </div>
       )}
       {p.starsAtSigning != null && (
