@@ -8,7 +8,7 @@ import {
   Save, RotateCcw, ChevronUp, ChevronDown, Play, FastForward, Star,
   ShieldCheck, X, Check, TrendingUp, TrendingDown, Award, Crown,
   Medal, HeartPulse, Swords, Flame, GraduationCap, Landmark, Lock,
-  Clock, Gauge, Zap, Minus, Timer, DollarSign, AlertTriangle
+  Clock, Gauge, Zap, Minus, Timer, DollarSign, AlertTriangle, Newspaper
 } from "lucide-react";
 
 /* =========================================================================
@@ -2206,17 +2206,22 @@ function cpuSeasonSeq(team, year, powerById, seasonSeed) {
   const confSlate = seededShuffle(confPool, rng);
 
   const seq = [];
+  const oppIds = [];
   // Non-conference first, conference second — same week ordering genSchedule
   // uses for the user, so a "through week N" snapshot compares like for like.
   for (let i = 0; i < NONCONF_GAMES; i++) {
-    const oppPower = powerById[nonConfSlate[i % nonConfSlate.length].id] ?? LEAGUE_AVG_POWER;
+    const oppTeam = nonConfSlate[i % nonConfSlate.length];
+    const oppPower = powerById[oppTeam.id] ?? LEAGUE_AVG_POWER;
     seq.push(rng() < gameWinProb(power, oppPower) ? 1 : 0);
+    oppIds.push(oppTeam.id);
   }
   for (let i = 0; i < CONF_GAMES; i++) {
-    const oppPower = powerById[confSlate[i % confSlate.length].id] ?? LEAGUE_AVG_POWER;
+    const oppTeam = confSlate[i % confSlate.length];
+    const oppPower = powerById[oppTeam.id] ?? LEAGUE_AVG_POWER;
     seq.push(rng() < gameWinProb(power, oppPower) ? 1 : 0);
+    oppIds.push(oppTeam.id);
   }
-  return { G: seq.length, seq, realRank: real ? (real.rank || null) : null };
+  return { G: seq.length, seq, oppIds, realRank: real ? (real.rank || null) : null };
 }
 
 // Records THROUGH the games played so far. The user's row is their real played
@@ -2265,6 +2270,53 @@ function accruedRecordTable(powerById, userTeamId, userRecord, year, seasonSeed,
     rec[t.id] = { wins: w, losses: k - w, confWins: confW, confLosses: confL, streak, last10W, last10G, realRank };
   }
   return rec;
+}
+
+// "Around the country" — a handful of the week's notable results (upsets and
+// ranked-vs-ranked games), pulled from the exact same emergent per-team
+// schedules that already drive the standings. Every CPU team's schedule is
+// sampled independently (see cpuSeasonSeq), so this reads each team's own
+// most recent result rather than reconstructing one true league-wide slate —
+// plenty real enough for a Sunday-morning recap ticker, deduped so the same
+// pairing never shows up twice in one week.
+function weeklyHeadlines(powerById, rankById, userTeamId, year, seasonSeed, gamesPlayed) {
+  if (gamesPlayed <= 0) return [];
+  const idx = gamesPlayed - 1;
+  const seed = seasonSeed == null ? (Math.imul(year, 2654435761) >>> 0) : seasonSeed;
+  const seenPairs = new Set();
+  const items = [];
+  for (const t of TEAMS) {
+    if (t.id === userTeamId) continue;
+    const { G, seq, oppIds } = cpuSeasonSeq(t, year, powerById, seed);
+    if (idx >= G) continue;
+    const oppId = oppIds[idx];
+    const opp = TEAM_MAP[oppId];
+    if (!opp || oppId === userTeamId) continue;
+    const pairKey = [t.id, oppId].sort().join("|");
+    if (seenPairs.has(pairKey)) continue;
+    seenPairs.add(pairKey);
+
+    const win = !!seq[idx];
+    const myRank = rankById[t.id];
+    const oppRank = rankById[oppId];
+    const winnerRank = win ? myRank : oppRank;
+    const loserRank = win ? oppRank : myRank;
+    const isUpset = !!loserRank && loserRank <= 25 && (!winnerRank || winnerRank > 25);
+    const isRankedClash = !!myRank && !!oppRank && myRank <= 25 && oppRank <= 25;
+    if (!isUpset && !isRankedClash) continue;
+
+    const winner = win ? t : opp;
+    const loser = win ? opp : t;
+    items.push({
+      id: pairKey, upset: isUpset,
+      text: isUpset
+        ? `${winner.name} knocks off No. ${loserRank} ${loser.name}`
+        : `No. ${winnerRank} ${winner.name} tops No. ${loserRank} ${loser.name}`,
+      winnerRank: winnerRank || 999, loserRank: loserRank || 999,
+    });
+  }
+  items.sort((a, b) => (Number(b.upset) - Number(a.upset)) || (a.winnerRank - b.winnerRank) || (a.loserRank - b.loserRank));
+  return items.slice(0, 8);
 }
 
 function rankingScore(wins, losses, power, realRank, isUser = false, gamesPlayed = 0) {
@@ -3245,10 +3297,58 @@ function projectedSeed(rank) {
   return { seed: clamp(Math.ceil(rank / 4), 1, 16), inField: rank <= 64 };
 }
 
-// Rivals = the two highest-prestige other programs in your conference.
+// Real, historically loaded rivalries for the sport's highest-profile
+// programs — a name on the Rivalry Ledger should mean something instead of
+// just naming whichever conference mate happens to have the higher prestige
+// score. Hand-curating all 365 teams isn't worth it, so this only covers
+// the handful of blue-bloods and their real rivals; everyone else still
+// falls back to the algorithmic pick below.
+const CURATED_RIVALRIES = {
+  duke: ["north-carolina", "maryland"],
+  "north-carolina": ["duke", "nc-state"],
+  "nc-state": ["north-carolina", "duke"],
+  kentucky: ["louisville", "indiana"],
+  louisville: ["kentucky", "cincinnati"],
+  indiana: ["purdue", "kentucky"],
+  purdue: ["indiana"],
+  kansas: ["kansas-state", "mizzou"],
+  "kansas-state": ["kansas"],
+  mizzou: ["kansas", "illinois"],
+  illinois: ["mizzou"],
+  syracuse: ["georgetown", "uconn"],
+  georgetown: ["syracuse", "villanova"],
+  villanova: ["georgetown", "temple"],
+  temple: ["villanova"],
+  uconn: ["syracuse"],
+  michigan: ["michigan-state", "ohio-state"],
+  "michigan-state": ["michigan"],
+  "ohio-state": ["michigan"],
+  arizona: ["arizona-state"],
+  "arizona-state": ["arizona"],
+  ucla: ["usc"],
+  usc: ["ucla"],
+  oklahoma: ["oklahoma-state"],
+  "oklahoma-state": ["oklahoma"],
+  texas: ["texas-a-m"],
+  "texas-a-m": ["texas"],
+  xavier: ["cincinnati", "butler"],
+  cincinnati: ["xavier", "louisville"],
+  butler: ["xavier"],
+  wisconsin: ["minnesota"],
+  minnesota: ["wisconsin"],
+  vcu: ["richmond"],
+  richmond: ["vcu"],
+  gonzaga: ["saint-mary-s"],
+  "saint-mary-s": ["gonzaga"],
+};
+
+// Rivals: a curated real rivalry when this program has one, otherwise the
+// two highest-prestige other programs in your conference.
 function rivalTeamIds(teamId) {
   const t = TEAM_MAP[teamId];
   if (!t) return new Set();
+  const curated = (CURATED_RIVALRIES[teamId] || []).filter((id) => TEAM_MAP[id]);
+  if (curated.length > 0) return new Set(curated.slice(0, 2));
   const mates = TEAMS.filter((x) => x.conf === t.conf && x.id !== teamId)
     .sort((a, b) => b.prestige - a.prestige || a.name.localeCompare(b.name));
   return new Set(mates.slice(0, 2).map((x) => x.id));
@@ -3668,6 +3768,10 @@ function DynastyApp({ initial, onExit }) {
     () => buildLeaderboard(state.year, state.teamId, state.roster, state.seasonSeed, record.w + record.l),
     [state.year, state.teamId, state.roster, state.seasonSeed, record]
   );
+  const headlines = useMemo(() => {
+    const powerById = powerTableFor(state.strengths, state.year);
+    return weeklyHeadlines(powerById, rankById, state.teamId, state.year, state.seasonSeed, record.w + record.l);
+  }, [state.strengths, state.year, state.teamId, state.seasonSeed, record, rankById]);
   const rivalIds = useMemo(() => rivalTeamIds(state.teamId), [state.teamId]);
   const needs = useMemo(() => positionNeeds(state.roster), [state.roster]);
   const bracketology = projectedSeed(rankById[state.teamId]);
@@ -4715,6 +4819,7 @@ function DynastyApp({ initial, onExit }) {
               expectation={state.expectation || seasonExpectation(team.prestige)}
               jobSecurity={state.coach?.jobSecurity ?? 60}
               rankById={rankById}
+              headlines={headlines}
               onViewPlayer={setPlayerViewId} />
           )}
           {tab === "roster" && <RosterTab roster={state.roster} onViewPlayer={setPlayerViewId} />}
@@ -4856,7 +4961,7 @@ function DynastyApp({ initial, onExit }) {
 }
 
 /* ---------- Dashboard ---------- */
-function DashboardTab({ state, team, record, nextGame, stage, onSim, onPlay, onSimToConf, onSimSeason, onEnterPostseason, onEnterOffseason, onGoTab, onAdvanceYear, reputation, bracketology, expectation, jobSecurity, rankById, onViewPlayer }) {
+function DashboardTab({ state, team, record, nextGame, stage, onSim, onPlay, onSimToConf, onSimSeason, onEnterPostseason, onEnterOffseason, onGoTab, onAdvanceYear, reputation, bracketology, expectation, jobSecurity, rankById, headlines, onViewPlayer }) {
   const overall = Math.round(userTeamOverall(state.roster, state.depthChart, state.minutes));
   const topPlayer = [...state.roster].sort((a, b) => b.overall - a.overall)[0];
   const injured = state.roster.filter(isHurt);
@@ -5006,6 +5111,22 @@ function DashboardTab({ state, team, record, nextGame, stage, onSim, onPlay, onS
           </div>
         )}
       </Panel>
+
+      {headlines && headlines.length > 0 && (
+        <Panel style={{ padding: 20 }}>
+          <div style={{ fontSize: 11, color: C.dim, letterSpacing: "0.08em", marginBottom: 10, display: "flex", alignItems: "center", gap: 6 }}>
+            <Newspaper size={13} color={C.wood} /> AROUND THE COUNTRY
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {headlines.map((h) => (
+              <div key={h.id} style={{ fontSize: 12.5, display: "flex", alignItems: "center", gap: 7 }}>
+                {h.upset && <Zap size={12} color={C.gold} style={{ flexShrink: 0 }} />}
+                <span style={{ color: h.upset ? C.gold : C.cream }}>{h.text}</span>
+              </div>
+            ))}
+          </div>
+        </Panel>
+      )}
 
       {injured.length > 0 && (
         <Panel style={{ padding: 20, borderLeft: `3px solid ${C.red}` }}>
