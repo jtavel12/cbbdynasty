@@ -4212,6 +4212,7 @@ function DynastyApp({ initial, onExit }) {
   const [toast, setToast] = useState(null);
   const [viewTeamId, setViewTeamId] = useState(null);
   const [jobPickerOpen, setJobPickerOpen] = useState(false);
+  const [confirmExit, setConfirmExit] = useState(false); // "New Dynasty" sidebar button — deletes this save, so it's gated behind a confirm
   const [playerViewId, setPlayerViewId] = useState(null);
   const [boxViewId, setBoxViewId] = useState(null);
   const [recap, setRecap] = useState(null);
@@ -5416,7 +5417,7 @@ function DynastyApp({ initial, onExit }) {
             style={{ display: "flex", alignItems: "center", gap: 8, background: "transparent", border: `1px solid ${C.line}`, color: C.dim, padding: "8px 10px", cursor: "pointer", fontSize: 12.5 }}>
             <Save size={13} /> <span className="cbb-rail-label">Save Dynasty</span>
           </button>
-          <button onClick={onExit} title="New Dynasty" className="cbb-btn cbb-nav-btn"
+          <button onClick={() => setConfirmExit(true)} title="New Dynasty" className="cbb-btn cbb-nav-btn"
             style={{ display: "flex", alignItems: "center", gap: 8, background: "transparent", border: `1px solid ${C.line}`, color: C.dim, padding: "8px 10px", cursor: "pointer", fontSize: 12.5 }}>
             <RotateCcw size={13} /> <span className="cbb-rail-label">New Dynasty</span>
           </button>
@@ -5580,6 +5581,23 @@ function DynastyApp({ initial, onExit }) {
             flash(`You're staying at ${team.name}.`);
           }}
         />
+      )}
+      {confirmExit && (
+        <Modal title="Start a new dynasty?" onClose={() => setConfirmExit(false)} maxWidth={440}>
+          <div style={{ fontSize: 13, color: C.red, lineHeight: 1.6, marginBottom: 20 }}>
+            This permanently deletes your current save at {team.name}. This can&apos;t be undone.
+          </div>
+          <div style={{ display: "flex", gap: 10 }}>
+            <button onClick={() => setConfirmExit(false)} className="cbb-btn"
+              style={{ ...btnStyle(C.panelAlt, C.cream), flex: 1, justifyContent: "center", border: `1px solid ${C.line}` }}>
+              Cancel
+            </button>
+            <button onClick={onExit} className="cbb-btn"
+              style={{ fontSize: 13, padding: "9px 14px", flex: 1, justifyContent: "center", display: "flex", alignItems: "center", border: `1px solid ${C.red}`, background: C.red, color: C.cream, cursor: "pointer" }}>
+              Yes, delete and start over
+            </button>
+          </div>
+        </Modal>
       )}
       {livePlay && (
         <LiveGame
