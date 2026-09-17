@@ -1185,15 +1185,23 @@ function makePlayer({ pos, classYear, prestige, starsAtSigning, real, walkOn }) 
 
 const ROSTER_SIZE = 16;        // every team carries a full 16-man roster
 const SCHOLARSHIP_LIMIT = 13;  // at most 13 of them are on scholarship
+// A "Risk It" penalty (see RISK_IT_OPTIONS) that goes wrong can halve a
+// program's scholarship count, so recruiting/roster-building are actually
+// constrained rather than just showing a smaller number.
+const SCHOLARSHIP_PENALTY_LIMIT = Math.ceil(SCHOLARSHIP_LIMIT / 2);
+function effectiveScholarshipLimit(state) {
+  return state?.scholarshipPenalty ? SCHOLARSHIP_PENALTY_LIMIT : SCHOLARSHIP_LIMIT;
+}
 
 // Decide who holds a scholarship: generated walk-ons never do; among the real
-// players, the top 13 by overall are on scholarship and any beyond that (a team
-// carrying more than 13 real players) drop to non-scholarship — i.e. the
-// statistically weakest real players lose the scholarship, per the roster rules.
-function assignScholarships(roster) {
+// players, the top `limit` by overall are on scholarship and any beyond that
+// drop to non-scholarship — i.e. the statistically weakest real players lose
+// the scholarship, per the roster rules. `limit` defaults to the normal cap
+// but shrinks for a program serving a scholarship-reduction penalty.
+function assignScholarships(roster, limit = SCHOLARSHIP_LIMIT) {
   const realOnes = roster.filter((p) => !p.generatedWalkOn);
   const ranked = [...realOnes].sort((a, b) => b.overall - a.overall);
-  const scho = new Set(ranked.slice(0, SCHOLARSHIP_LIMIT).map((p) => p.id));
+  const scho = new Set(ranked.slice(0, limit).map((p) => p.id));
   return roster.map((p) => ({ ...p, scholarship: !p.generatedWalkOn && scho.has(p.id) }));
 }
 
@@ -1586,12 +1594,26 @@ function seedInterest(board, team) {
 // same week). Interest gained scales with the effort — a visit lands far more
 // than a call.
 const RECRUIT_ACTIONS = {
-  CALL:  { key: "CALL",  label: "Phone Call",        cost: 5,  gain: [4, 8],   perWeek: 2 },
-  OFFER: { key: "OFFER", label: "Scholarship Offer", cost: 5,  gain: [6, 10],  oneTime: true },
-  VISIT: { key: "VISIT", label: "Official Visit",    cost: 12, gain: [16, 26], maxUses: 1 },
-  HOME:  { key: "HOME",  label: "Home Visit",        cost: 9,  gain: [11, 18], maxSeason: 2 },
-  SCOUT: { key: "SCOUT", label: "Scout",             cost: 10, oneTime: true },
+  CALL:    { key: "CALL",    label: "Phone Call",        cost: 5,  gain: [4, 8],   perWeek: 2 },
+  OFFER:   { key: "OFFER",   label: "Scholarship Offer", cost: 5,  gain: [6, 10],  oneTime: true },
+  VISIT:   { key: "VISIT",   label: "Official Visit",    cost: 12, gain: [16, 26], maxUses: 1 },
+  HOME:    { key: "HOME",    label: "Home Visit",        cost: 9,  gain: [11, 18], maxSeason: 2 },
+  SCOUT:   { key: "SCOUT",   label: "Scout",             cost: 10, oneTime: true },
+  RISK_IT: { key: "RISK_IT", label: "Risk It",           cost: 40 },
 };
+
+// "Risk It": a real gamble, laid out in full before the coach commits to it —
+// each option's interest gain and risk percentage are both shown up front,
+// along with both possible penalties, so nothing about the downside is
+// hidden. A triggered penalty (see RISK_IT_PENALTIES) is a 50/50 coin flip
+// between the two, applied for real, not just narrated.
+const RISK_IT_OPTIONS = [
+  { key: "CLUB",  label: "Trip to a gentlemen's club", gain: 25, riskPct: 0.10 },
+  { key: "UNCLE", label: "Give uncle $25,000",          gain: 50, riskPct: 0.30 },
+  { key: "FORGE", label: "Forge ACT score",             gain: 50, riskPct: 0.40 },
+];
+// Years a triggered postseason ban lasts (this season plus 4 more = 5 total).
+const RISK_IT_BAN_SEASONS = 4;
 
 // Visit pricing scales with how far a recruit's hometown is from campus. Within
 // 100 miles it's the base; every additional 300 miles adds 25% of the base
@@ -1645,6 +1667,7 @@ function canTakeAction(recruit, actionKey, pointsLeft, weekIndex = 0, team = nul
   if (actionKey === "VISIT") return (recruit.visitsUsed || 0) < action.maxUses;
   if (actionKey === "HOME") return (recruit.homeVisitsUsed || 0) < action.maxSeason && recruit.homeVisitWeek !== weekIndex;
   if (actionKey === "SCOUT") return !recruit.scouted;
+  if (actionKey === "RISK_IT") return true;
   return false;
 }
 
@@ -2591,10 +2614,12 @@ const REGION_NAMES = ["East", "West", "South", "Midwest"];
 
 // Seed each conference by its members' national ranking (best = 1 seed), then
 // build a single-elim bracket where the top seed meets the bottom seed first.
-function buildConfBrackets(rankById) {
+// `banned` (a "Risk It" postseason-ban penalty) drops any listed team id from
+// its own conference bracket entirely — genuinely ineligible, not just absent.
+function buildConfBrackets(rankById, banned) {
   const byConf = {};
   for (const conf of CONF_LIST) {
-    const members = TEAMS.filter((t) => t.conf === conf)
+    const members = TEAMS.filter((t) => t.conf === conf && !banned?.has(t.id))
       .sort((a, b) => rankById[a.id] - rankById[b.id])
       .map((t) => t.id);
     byConf[conf] = buildSingleElim(members);
@@ -2605,11 +2630,14 @@ function buildConfBrackets(rankById) {
 // 64-team field: every conference champ earns an auto-bid, then the highest
 // remaining ranked teams fill the at-large pool. Seeds 1-16 across 4 regions
 // are assigned by national rank in an S-curve so the regions are balanced.
-function buildMadness(confChampions, rankById) {
+// `banned` excludes a postseason-banned team from the at-large pool too, as a
+// defensive backstop (they can't have won a conf title to auto-bid in either,
+// since buildConfBrackets already dropped them from that bracket).
+function buildMadness(confChampions, rankById, banned) {
   const championIds = new Set(Object.values(confChampions));
   const autoBids = [...championIds];
   const atLargePool = TEAMS
-    .filter((t) => !championIds.has(t.id))
+    .filter((t) => !championIds.has(t.id) && !banned?.has(t.id))
     .sort((a, b) => rankById[a.id] - rankById[b.id])
     .map((t) => t.id);
   const need = Math.max(0, 64 - autoBids.length);
@@ -2633,14 +2661,21 @@ function buildMadness(confChampions, rankById) {
 // NIT: a 32-team consolation field for teams that missed the Madness field
 // (the highest-ranked teams left over), so a season that falls short of the
 // NCAA Tournament still has something to play for instead of just ending.
-function buildNit(madnessField, rankById) {
+function buildNit(madnessField, rankById, banned) {
   const excluded = new Set(madnessField);
   const pool = TEAMS
-    .filter((t) => !excluded.has(t.id))
+    .filter((t) => !excluded.has(t.id) && !banned?.has(t.id))
     .sort((a, b) => rankById[a.id] - rankById[b.id])
     .map((t) => t.id);
   const field = pool.slice(0, 32);
   return { bracket: buildSingleElim(field) };
+}
+
+// Whether "Risk It" landed a postseason-ban penalty that's still active for
+// the given season — checked against the CURRENT season, so the ban covers
+// this postseason and however many more full seasons were specified.
+function isPostseasonBanned(state) {
+  return state?.postseasonBanUntilYear != null && state.year <= state.postseasonBanUntilYear;
 }
 
 // True once all four regions have crowned a champion.
@@ -2762,10 +2797,30 @@ function userTeamOverall(roster, depthChart, minutesMap) {
 // across nearly the full power scale, so recruiting — not the school's history —
 // is what determines your strength once you reshape the team.
 const ROSTER_SENSITIVITY = 1.8;
-function userGamePower(roster, depthChart, baseline, minutesMap) {
-  const raw = userTeamOverall(roster, depthChart, minutesMap);
+function mapOverallToPower(raw, baseline) {
   if (!baseline) return raw;
   return clamp(baseline.barthagPower + (raw - baseline.realOverall) * ROSTER_SENSITIVITY, 25, 95);
+}
+function userGamePower(roster, depthChart, baseline, minutesMap) {
+  return mapOverallToPower(userTeamOverall(roster, depthChart, minutesMap), baseline);
+}
+
+// The Coach Mode analogue of userTeamOverall: strength of the exact 5
+// players currently on the floor, equal-weighted (they're all playing every
+// second of the possession, so there's no minutes-share to blend), rather
+// than a season-long average across the whole rotation.
+function onFloorTeamOverall(roster, onFloor, boxMinutes) {
+  let sum = 0, n = 0;
+  POSITIONS.forEach((pos) => {
+    const pl = roster.find((p) => p.id === onFloor[pos]);
+    if (!pl) return;
+    sum += overallAtPos(pl, pos) * fatigueMultiplier(boxMinutes[pl.id] || 0);
+    n += 1;
+  });
+  return n ? sum / n : 55;
+}
+function liveGamePower(roster, onFloor, boxMinutes, baseline) {
+  return mapOverallToPower(onFloorTeamOverall(roster, onFloor, boxMinutes), baseline);
 }
 
 // One player's full box line for a game, driven by minutes and attributes.
@@ -2815,6 +2870,13 @@ function genTeamBox(roster, depthChart, minutesMap, teamPts) {
       if (line) box[id] = line;
     });
   });
+  return scaleBoxToScore(box, teamPts);
+}
+
+// Shared by genTeamBox and the Coach Mode live-minutes box below: scales raw
+// box lines so total points match the score the game actually produced, then
+// nudges the top scorer to soak up any final rounding drift.
+function scaleBoxToScore(box, teamPts) {
   const ids = Object.keys(box);
   const sum = ids.reduce((s, id) => s + box[id].pts, 0) || 1;
   const scale = teamPts / sum;
@@ -2834,6 +2896,25 @@ function genTeamBox(roster, depthChart, minutesMap, teamPts) {
     box[top].pts = Math.max(0, box[top].pts + drift);
   }
   return box;
+}
+
+// The Coach Mode analogue of genTeamBox: minutes come from actually-tracked
+// live playing time (real subs and in-game injury promotions included)
+// instead of the pregame plan, so bench players who never actually entered
+// the game get no box-score credit at all.
+function genTeamBoxFromLiveMinutes(roster, boxMinutes, teamPts) {
+  const box = {};
+  Object.entries(boxMinutes).forEach(([id, rawM]) => {
+    // Minutes accrue as repeated fractional adds (game clock / possessions),
+    // so round to a clean whole minute before it ever reaches the box line.
+    const m = Math.round(rawM);
+    if (!m) return;
+    const pl = roster.find((x) => x.id === id);
+    if (!pl) return;
+    const line = genPlayerBoxLine(pl, m);
+    if (line) box[id] = line;
+  });
+  return scaleBoxToScore(box, teamPts);
 }
 
 function simulateGame(roster, depthChart, oppPower, momentum = 0, baseline = null, minutesMap = null) {
@@ -2950,7 +3031,7 @@ function unhappyDepartureChance(p, seasonSeed, newYear) {
   return clamp((0.5 - playRate) * 0.7 * classMult, 0, 0.42);
 }
 
-function progressRosterForNewYear(roster, incoming, team, newYear, seasonSeed) {
+function progressRosterForNewYear(roster, incoming, team, newYear, seasonSeed, scholarshipLimit = SCHOLARSHIP_LIMIT) {
   const graduated = roster.filter((p) => p.class === "SR").map((p) => finalizeCareerRecord(p, newYear - 1));
   const departed = [];
   const staying = roster.filter((p) => p.class !== "SR").filter((p) => {
@@ -3015,7 +3096,7 @@ function progressRosterForNewYear(roster, incoming, team, newYear, seasonSeed) {
     combined.push(makePlayer({ pos: thinnest, classYear: "FR", prestige: team?.prestige ?? 2, walkOn: true }));
   }
 
-  return { roster: assignScholarships(combined), departed, graduated };
+  return { roster: assignScholarships(combined, scholarshipLimit), departed, graduated };
 }
 
 /* =========================================================================
@@ -4218,6 +4299,7 @@ function DynastyApp({ initial, onExit }) {
   const [recap, setRecap] = useState(null);
   const [livePlay, setLivePlay] = useState(null);
   const [visit, setVisit] = useState(null); // { recruit, actionKey } for the interactive visit modal
+  const [riskIt, setRiskIt] = useState(null); // { recruit, source } for the Risk It confirmation modal
   const saveTimer = useRef(null);
 
   useEffect(() => {
@@ -4320,8 +4402,9 @@ function DynastyApp({ initial, onExit }) {
     const returning = state.roster.filter((p) => p.scholarship && p.class !== "SR" && !leavingEarly.has(p.id)).length;
     const committed = state.incomingCommits.length + (state.offseason?.committedTransfers?.length || 0);
     const used = returning + committed;
-    return { returning, committed, used, open: Math.max(0, SCHOLARSHIP_LIMIT - used) };
-  }, [state.roster, state.incomingCommits, state.offseason]);
+    const limit = effectiveScholarshipLimit(state);
+    return { returning, committed, used, limit, open: Math.max(0, limit - used) };
+  }, [state.roster, state.incomingCommits, state.offseason, state.scholarshipPenalty]);
 
   // Whether the coach was fired and hasn't resolved it yet — read straight off
   // PERSISTED state (state.coachFired), not local component state. A fired
@@ -4364,8 +4447,27 @@ function DynastyApp({ initial, onExit }) {
     });
     roster = tickInjuries(roster);
     const gamesRemaining = Math.max(1, state.schedule.filter((g) => !g.played).length - 1);
-    const inj = maybeInjure(roster, rotationMinutesOf(state.depthChart, roster, state.minutes), gamesRemaining);
-    roster = inj.roster;
+    let inj;
+    if (result.liveInjuries && result.liveInjuries.length) {
+      // Coach Mode already decided exactly who went down and when, live —
+      // apply those directly instead of rolling a fresh post-game injury.
+      roster = roster.map((p) => {
+        const hit = result.liveInjuries.find((h) => h.id === p.id);
+        if (!hit) return p;
+        return {
+          ...p,
+          injuredGames: hit.gamesOut,
+          injuryType: hit.type,
+          injurySeasonEnding: hit.seasonEnding,
+          injuryHistory: [...(p.injuryHistory || []), { type: hit.type, gamesOut: hit.gamesOut, seasonEnding: hit.seasonEnding }].slice(-8),
+        };
+      });
+      const lead = result.liveInjuries[0];
+      inj = { injured: { id: lead.id, name: lead.name, type: lead.type, games: lead.gamesOut, seasonEnding: lead.seasonEnding, extra: result.liveInjuries.length - 1 } };
+    } else {
+      inj = maybeInjure(roster, rotationMinutesOf(state.depthChart, roster, state.minutes), gamesRemaining);
+      roster = inj.roster;
+    }
     const box = boxArray(result.boxByPlayer, state.roster);
     const oppBox = genOpponentBox(opp, state.year, result.oppScore);
     const thisGameId = nextGame.id;
@@ -4411,7 +4513,8 @@ function DynastyApp({ initial, onExit }) {
     const opp = TEAM_MAP[nextGame.oppId];
     const oppPower = teamPowerRating(opp, state.strengths, state.year);
     const mom = momentumMod(currentStreak(state.schedule));
-    setLivePlay({ teamId: state.teamId, opp, oppId: nextGame.oppId, oppPower, oppRank: rankById[nextGame.oppId] || null, home: nextGame.home, momentum: mom, roster: state.roster, dc: state.depthChart, minutes: state.minutes, powerBaseline, year: state.year });
+    const gamesRemaining = Math.max(1, state.schedule.filter((g) => !g.played).length - 1);
+    setLivePlay({ teamId: state.teamId, opp, oppId: nextGame.oppId, oppPower, oppRank: rankById[nextGame.oppId] || null, home: nextGame.home, momentum: mom, roster: state.roster, dc: state.depthChart, powerBaseline, gamesRemaining, year: state.year });
   }
 
   function simToEndOfSeason() {
@@ -4522,6 +4625,7 @@ function DynastyApp({ initial, onExit }) {
     if (!os) return;
     if (!canTakeAction(recruit, actionKey, os.points, os.week, team)) return;
     if (actionKey === "VISIT" || actionKey === "HOME") { setVisit({ recruit, actionKey, source: "transfer" }); return; }
+    if (actionKey === "RISK_IT") { setRiskIt({ recruit, source: "transfer" }); return; }
     const cost = actionCostFor(actionKey, recruit, team);
     const updated = applyRecruitAction(recruit, actionKey, os.week);
     setState((s) => ({
@@ -4668,20 +4772,24 @@ function DynastyApp({ initial, onExit }) {
 
   function startPostseason() {
     if (!seasonOver || state.postseason) return;
+    const bannedIds = isPostseasonBanned(state) ? [state.teamId] : [];
     setState((s) => ({
       ...s,
       postseason: {
         phase: "conf",
-        confBrackets: buildConfBrackets(rankById),
+        confBrackets: buildConfBrackets(rankById, new Set(bannedIds)),
         confChampions: {},
         madness: null,
         nit: null,
         champion: null,
         seedRankById: rankById,
+        bannedTeamIds: bannedIds,
       },
     }));
     setTab("postseason");
-    flash("Conference tournaments are underway.");
+    flash(bannedIds.length
+      ? `Conference tournaments are underway. ${team.name} is banned from the postseason this year.`
+      : "Conference tournaments are underway.");
   }
 
   // Advances every live bracket one round. The user's games are simulated with
@@ -4725,8 +4833,9 @@ function DynastyApp({ initial, onExit }) {
         const allDone = CONF_LIST.every((c) => confBrackets[c].done);
         if (allDone) {
           next.phase = "madness";
-          next.madness = buildMadness(confChampions, next.seedRankById);
-          next.nit = buildNit(next.madness.field, next.seedRankById);
+          const banned = new Set(next.bannedTeamIds || []);
+          next.madness = buildMadness(confChampions, next.seedRankById, banned);
+          next.nit = buildNit(next.madness.field, next.seedRankById, banned);
         }
       } else if (next.phase === "madness") {
         if (next.nit && !next.nit.bracket.done) {
@@ -4788,7 +4897,7 @@ function DynastyApp({ initial, onExit }) {
     setLivePlay({
       teamId: state.teamId, opp, oppId, oppPower,
       oppRank: rankById[oppId] || null, home: true, momentum: 0,
-      roster: state.roster, dc: state.depthChart, minutes: state.minutes, powerBaseline,
+      roster: state.roster, dc: state.depthChart, powerBaseline, gamesRemaining: 1,
       isPostseason: true, loc, year: state.year,
     });
   }
@@ -4822,16 +4931,32 @@ function DynastyApp({ initial, onExit }) {
       } else if (loc.where === "nit") {
         ps.nit = { ...ps.nit, bracket: applyToBracket(ps.nit.bracket) };
       }
-      const roster = s.roster.map((p) => {
+      let roster = s.roster.map((p) => {
         const box = result.boxByPlayer[p.id];
         if (!box) return p;
         return { ...p, season: addBoxToStats(p.season, box) };
       });
+      roster = tickInjuries(roster);
+      if (result.liveInjuries && result.liveInjuries.length) {
+        roster = roster.map((p) => {
+          const hit = result.liveInjuries.find((h) => h.id === p.id);
+          if (!hit) return p;
+          return {
+            ...p,
+            injuredGames: hit.gamesOut,
+            injuryType: hit.type,
+            injurySeasonEnding: hit.seasonEnding,
+            injuryHistory: [...(p.injuryHistory || []), { type: hit.type, gamesOut: hit.gamesOut, seasonEnding: hit.seasonEnding }].slice(-8),
+          };
+        });
+      }
       return { ...s, roster, postseason: ps };
     });
-    flash(result.win
+    const lead = result.liveInjuries && result.liveInjuries[0];
+    flash((result.win
       ? `Advanced past ${lp.opp.name} ${result.myScore}-${result.oppScore}!`
-      : `Eliminated by ${lp.opp.name} ${result.oppScore}-${result.myScore}.`);
+      : `Eliminated by ${lp.opp.name} ${result.oppScore}-${result.myScore}.`)
+      + (lead ? ` ${lead.name}: ${lead.type}${lead.seasonEnding ? " — OUT FOR THE SEASON." : ` (out ${lead.gamesOut}).`}` : ""));
   }
 
   function doRecruitAction(recruit, actionKey) {
@@ -4840,6 +4965,7 @@ function DynastyApp({ initial, onExit }) {
     // Visits aren't a one-click point spend anymore — they open an interactive
     // trip where the coach's pitch choices decide how much interest is gained.
     if (actionKey === "VISIT" || actionKey === "HOME") { setVisit({ recruit, actionKey, source: "recruit" }); return; }
+    if (actionKey === "RISK_IT") { setRiskIt({ recruit, source: "recruit" }); return; }
     const cost = actionCostFor(actionKey, recruit, team);
     const updated = applyRecruitAction(recruit, actionKey, week);
     setState((s) => {
@@ -4907,6 +5033,52 @@ function DynastyApp({ initial, onExit }) {
       };
     });
     setVisit(null);
+  }
+
+  // Resolve a "Risk It" gamble the coach already confirmed (interest gain,
+  // risk %, and both possible penalties were all shown before they picked).
+  // Deducts the flat 40-point cost, applies the chosen option's interest
+  // gain, then rolls that option's risk percentage — a hit flips a coin
+  // between a real 5-season postseason ban and a real scholarship cut,
+  // either of which persists in dynasty state from here on, not just a
+  // flash message.
+  function finishRiskIt(optionKey) {
+    if (!riskIt) return;
+    const { recruit, source } = riskIt;
+    const opt = RISK_IT_OPTIONS.find((o) => o.key === optionKey);
+    if (!opt) return;
+    const isTransfer = source === "transfer";
+    const cost = RECRUIT_ACTIONS.RISK_IT.cost;
+    const hit = Math.random() < opt.riskPct;
+    const penalty = hit ? (Math.random() < 0.5 ? "BAN" : "SCHOLARSHIPS") : null;
+    setState((s) => {
+      const board = isTransfer ? s.offseason?.transferBoard : s.recruitingBoard;
+      const r0 = board && board.find((r) => r.id === recruit.id);
+      if (!r0 || r0.committedTo) return s;
+      const next = { ...r0, interest: clamp(r0.interest + opt.gain, 0, 100) };
+      let patch = {};
+      if (penalty === "BAN") patch = { postseasonBanUntilYear: s.year + RISK_IT_BAN_SEASONS };
+      if (penalty === "SCHOLARSHIPS") patch = { scholarshipPenalty: true };
+      if (isTransfer) {
+        return {
+          ...s, ...patch,
+          offseason: {
+            ...s.offseason,
+            points: s.offseason.points - cost,
+            transferBoard: s.offseason.transferBoard.map((r) => (r.id === recruit.id ? next : r)),
+          },
+        };
+      }
+      return {
+        ...s, ...patch,
+        recruitingPoints: s.recruitingPoints - cost,
+        recruitingBoard: s.recruitingBoard.map((r) => (r.id === recruit.id ? next : r)),
+      };
+    });
+    setRiskIt(null);
+    if (penalty === "BAN") flash(`${recruit.name}: +${opt.gain} interest — but it blew back. ${team.name} is banned from the postseason for the next 5 seasons.`);
+    else if (penalty === "SCHOLARSHIPS") flash(`${recruit.name}: +${opt.gain} interest — but it blew back. ${team.name}'s scholarship count is cut in half going forward.`);
+    else flash(`${recruit.name}: +${opt.gain} interest. Got away with it.`);
   }
 
   function toggleTarget(recruitId) {
@@ -5007,7 +5179,7 @@ function DynastyApp({ initial, onExit }) {
     setState((s) => {
       const player = s.roster.find((p) => p.id === playerId);
       if (!player) return s;
-      const roster = assignScholarships(s.roster.filter((p) => p.id !== playerId));
+      const roster = assignScholarships(s.roster.filter((p) => p.id !== playerId), effectiveScholarshipLimit(s));
       const dc = {};
       POSITIONS.forEach((p) => { dc[p] = (s.depthChart[p] || []).filter((id) => id !== playerId); });
       let offseason = s.offseason;
@@ -5122,7 +5294,7 @@ function DynastyApp({ initial, onExit }) {
 
     const newYear = state.year + 1;
     const surviving = state.roster.filter((p) => !earlyIds.has(p.id));
-    const { roster: newRoster, departed: unhappyDepartures, graduated: graduatedRecords } = progressRosterForNewYear(surviving, incomingRecruits, team, newYear, state.seasonSeed);
+    const { roster: newRoster, departed: unhappyDepartures, graduated: graduatedRecords } = progressRosterForNewYear(surviving, incomingRecruits, team, newYear, state.seasonSeed, effectiveScholarshipLimit(state));
     const newStrengths = genSeasonStrengths();
     const psSummary = postseasonSummary(state.postseason, state.teamId);
 
@@ -5620,6 +5792,13 @@ function DynastyApp({ initial, onExit }) {
           onFinish={finishVisit}
         />
       )}
+      {riskIt && (
+        <RiskItModal
+          recruit={riskIt.recruit}
+          onClose={() => setRiskIt(null)}
+          onConfirm={finishRiskIt}
+        />
+      )}
     </div>
   );
 }
@@ -5666,6 +5845,15 @@ function DashboardTab({ state, team, record, nextGame, stage, onSim, onPlay, onS
           </div>
         </Panel>
       </div>
+
+      {isPostseasonBanned(state) && (
+        <Panel style={{ padding: "14px 18px", borderLeft: `3px solid ${C.red}` }}>
+          <div style={{ fontSize: 11, color: C.red, letterSpacing: "0.08em", marginBottom: 4 }}>POSTSEASON BAN</div>
+          <div style={{ fontSize: 13, color: C.cream }}>
+            Ineligible for conference tournament or NCAA Tournament play through the {seasonLabel(state.postseasonBanUntilYear)} season — the fallout from a recruiting risk that didn&apos;t pay off.
+          </div>
+        </Panel>
+      )}
 
       {expectation && (() => {
         const hs = hotSeatTier(jobSecurity);
@@ -6563,7 +6751,7 @@ function RecruitingTab({ board, otherBoard, committedIds, targets, onToggleTarge
           <div style={{ fontSize: 13, color: C.dim }}>
             NIL available: <strong style={{ color: C.gold }}>{formatNil(nilAvailable)}</strong> / {formatNil(nilBudget)}
           </div>
-          <div style={{ fontSize: 13, color: C.dim }}>Open scholarships: <strong style={{ color: open > 0 ? C.gold : C.red }}>{open}</strong> / {SCHOLARSHIP_LIMIT}</div>
+          <div style={{ fontSize: 13, color: C.dim }}>Open scholarships: <strong style={{ color: open > 0 ? C.gold : C.red }}>{open}</strong> / {scholarshipInfo?.limit ?? SCHOLARSHIP_LIMIT}</div>
           <div style={{ fontSize: 13, color: C.dim }}>Committed: <strong style={{ color: C.cream }}>{committedIds.length}</strong></div>
           {classRank && (
             <div style={{ fontSize: 13, color: C.dim }}>
@@ -6671,7 +6859,7 @@ function CutsPanel({ roster, scholarshipInfo, onCut, onViewPlayer }) {
   return (
     <div>
       <div style={{ fontSize: 11.5, color: C.dimmer, marginBottom: 10, maxWidth: 720 }}>
-        You can carry 16 players but only {SCHOLARSHIP_LIMIT} scholarships. Cutting a scholarship player frees a spot to sign a recruit or transfer. Walk-ons don&apos;t use a scholarship.
+        You can carry 16 players but only {scholarshipInfo?.limit ?? SCHOLARSHIP_LIMIT} scholarships. Cutting a scholarship player frees a spot to sign a recruit or transfer. Walk-ons don&apos;t use a scholarship.
       </div>
       <Panel style={{ overflow: "hidden" }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13.5 }}>
@@ -6760,7 +6948,7 @@ function TransferPortalTab({ offseason, hsBoard, team, scholarshipInfo, committe
 
       <div style={{ display: "flex", gap: 18, flexWrap: "wrap", marginBottom: 14, fontSize: 13, color: C.dim }}>
         <div>NIL available: <strong style={{ color: C.gold }}>{formatNil(nilAvailable)}</strong> / {formatNil(nilBudget)}</div>
-        <div>Open scholarships: <strong style={{ color: (scholarshipInfo?.open ?? 0) > 0 ? C.gold : C.red }}>{scholarshipInfo?.open ?? 0}</strong> / {SCHOLARSHIP_LIMIT}</div>
+        <div>Open scholarships: <strong style={{ color: (scholarshipInfo?.open ?? 0) > 0 ? C.gold : C.red }}>{scholarshipInfo?.open ?? 0}</strong> / {scholarshipInfo?.limit ?? SCHOLARSHIP_LIMIT}</div>
         <div>Portal points this week: <strong style={{ color: C.gold }}>{offseason.points}</strong></div>
         <div>Transfers committed: <strong style={{ color: C.cream }}>{committed.length}</strong></div>
         <div>HS signees this cycle: <strong style={{ color: C.cream }}>{committedFreshmen}</strong></div>
@@ -6905,7 +7093,7 @@ function OffseasonTab({ stage, offseason, hsBoard, team, roster, nextYear, commi
       </div>
 
       <div style={{ display: "flex", gap: 18, flexWrap: "wrap", marginBottom: 14, fontSize: 13, color: C.dim }}>
-        <div>Open scholarships: <strong style={{ color: (scholarshipInfo?.open ?? 0) > 0 ? C.gold : C.red }}>{scholarshipInfo?.open ?? 0}</strong> / {SCHOLARSHIP_LIMIT}</div>
+        <div>Open scholarships: <strong style={{ color: (scholarshipInfo?.open ?? 0) > 0 ? C.gold : C.red }}>{scholarshipInfo?.open ?? 0}</strong> / {scholarshipInfo?.limit ?? SCHOLARSHIP_LIMIT}</div>
         <div>Portal points this week: <strong style={{ color: C.gold }}>{offseason.points}</strong></div>
         <div>Transfers committed: <strong style={{ color: C.cream }}>{committed.length}</strong></div>
         <div>HS signees this cycle: <strong style={{ color: C.cream }}>{committedFreshmen}</strong></div>
@@ -7006,26 +7194,26 @@ function Modal({ title, subtitle, onClose, children, maxWidth = 760 }) {
    ========================================================================= */
 const TEMPO_POSS = { slow: 58, balanced: 65, fast: 73 };
 
-// Minute-weighted lean toward interior vs perimeter play, used to reward a game
-// plan that fits the roster you actually field.
-function liveTendencies(roster, depthChart, minutesMap) {
-  let inside = 0, perim = 0, mins = 0;
+// Lean toward interior vs perimeter play from the exact 5 players on the
+// floor right now — equal-weighted, since all 5 are playing every second of
+// the possession.
+function liveTendencies(roster, onFloor) {
+  let inside = 0, perim = 0, n = 0;
   POSITIONS.forEach((pos) => {
-    positionMinutes(pos, depthChart, roster, minutesMap).forEach(({ id, minutes: m }) => {
-      const p = roster.find((x) => x.id === id);
-      if (!p || !m) return;
-      const a = p.attrs;
-      inside += ((a.rebounding + a.postDefense + a.blocks) / 3) * m;
-      perim += ((a.threePoint + a.ballHandling + a.scoring) / 3) * m;
-      mins += m;
-    });
+    const p = roster.find((x) => x.id === onFloor[pos]);
+    if (!p) return;
+    const a = p.attrs;
+    inside += (a.rebounding + a.postDefense + a.blocks) / 3;
+    perim += (a.threePoint + a.ballHandling + a.scoring) / 3;
+    n += 1;
   });
-  if (!mins) return { inside: 50, perimeter: 50 };
-  return { inside: inside / mins, perimeter: perim / mins };
+  if (!n) return { inside: 50, perimeter: 50 };
+  return { inside: inside / n, perimeter: perim / n };
 }
 
-// Pick the scorer on a made bucket, weighted by minutes and scoring rating so
-// the box score reads like the rotation you're actually running.
+// Pick the scorer on a made bucket for a side whose rotation is a static
+// pregame plan (the CPU opponent — narration only, no live per-player
+// tracking) — weighted by minutes and scoring rating.
 function pickScorer(roster, depthChart, minutesMap) {
   const weighted = [];
   POSITIONS.forEach((pos) => {
@@ -7034,6 +7222,23 @@ function pickScorer(roster, depthChart, minutesMap) {
       if (!p || !m) return;
       weighted.push({ name: p.name, w: m * (0.4 + p.attrs.scoring / 99) });
     });
+  });
+  if (!weighted.length) return "The offense";
+  const total = weighted.reduce((s, x) => s + x.w, 0);
+  let r = Math.random() * total;
+  for (const x of weighted) { r -= x.w; if (r <= 0) return x.name; }
+  return weighted[0].name;
+}
+
+// Pick the scorer on a made bucket from the 5 players actually on the floor
+// for the user's side — weighted by scoring rating only, since anyone on the
+// floor is equally live for this possession.
+function pickOnFloorScorer(roster, onFloor) {
+  const weighted = [];
+  POSITIONS.forEach((pos) => {
+    const p = roster.find((x) => x.id === onFloor[pos]);
+    if (!p) return;
+    weighted.push({ name: p.name, w: 0.4 + p.attrs.scoring / 99 });
   });
   if (!weighted.length) return "The offense";
   const total = weighted.reduce((s, x) => s + x.w, 0);
@@ -7082,6 +7287,12 @@ function periodFor(event, T) {
 }
 
 // Advance the game one possession, returning the next immutable game state.
+// Both teams' 5 on-floor players are out there for every possession (offense
+// and defense alike), so each event credits ctx.T's worth of live game clock
+// to whoever is actually on the floor for us right now — not the pregame
+// plan — which is what makes a real substitution actually show up in the
+// final box score, and what makes "no subs" mean bench players never accrue
+// a single logged minute.
 function stepLive(g, ctx) {
   if (g.finished) return g;
   const e = g.event;
@@ -7091,7 +7302,7 @@ function stepLive(g, ctx) {
   let { my, opp } = g;
   let text;
   if (offMe) {
-    if (res.made) { my += res.pts; const who = pickScorer(ctx.roster, ctx.dc, ctx.minutes); text = res.three ? `${who} drains a three` : `${who} scores${res.pts === 2 ? "" : ""} inside`; }
+    if (res.made) { my += res.pts; const who = pickOnFloorScorer(ctx.roster, g.onFloor); text = res.three ? `${who} drains a three` : `${who} scores inside`; }
     else text = pick(["Shot rims out", "Turnover", "Contested miss", "Shot clock violation"]);
   } else {
     if (res.made) { opp += res.pts; const who = pickScorer(ctx.oppRoster, ctx.oppDc, ctx.oppMinutes); text = `${who} (${ctx.oppName}) ${res.three ? "hits from deep" : "answers with a bucket"}`; }
@@ -7104,14 +7315,53 @@ function stepLive(g, ctx) {
   const boostPoss = offMe && g.boostPoss > 0 ? g.boostPoss - 1 : g.boostPoss;
   const oppRun = offMe ? (res.made ? 0 : g.oppRun) : (res.made ? g.oppRun + res.pts : g.oppRun);
   const half = inOT ? 2 : (event > ctx.T ? 2 : 1);
-  const log = [{ id: event, my, opp, offMe, text, half, ot: inOT, otPeriod: period }, ...g.log].slice(0, 80);
+  let log = [{ id: event, my, opp, offMe, text, half, ot: inOT, otPeriod: period }, ...g.log];
+
+  // Credit this possession's slice of game clock to the 5 players actually
+  // on the floor, and roll each of them against the same per-game injury
+  // model used everywhere else — but as a marginal probability on the
+  // minutes they've now actually built up, so a knock can genuinely happen
+  // mid-game instead of only being decided after the final buzzer. A hit
+  // auto-promotes the next healthy player in the pregame rotation order at
+  // that position, live, instead of leaving the team to play short-handed.
+  const minDelta = (1200 / ctx.T) / 60;
+  const boxMinutes = { ...g.boxMinutes };
+  const gameInjuries = [...g.gameInjuries];
+  const onFloor = { ...g.onFloor };
+  POSITIONS.forEach((pos) => {
+    const id = onFloor[pos];
+    if (!id) return;
+    const pl = ctx.roster.find((p) => p.id === id);
+    if (!pl) return;
+    const before = boxMinutes[id] || 0;
+    const after = before + minDelta;
+    boxMinutes[id] = after;
+    if (gameInjuries.some((h) => h.id === id)) return;
+    const riskDelta = Math.max(0, injuryRiskFor(after, pl.durability) - injuryRiskFor(before, pl.durability));
+    if (Math.random() < riskDelta) {
+      const type = pickInjuryType(pl.durability);
+      const gamesOut = injuryLengthFor(type, ctx.gamesRemaining);
+      gameInjuries.push({ id, name: pl.name, type: type.name, gamesOut, seasonEnding: !!type.seasonEnding });
+      const order = (ctx.dc[pos] || []).filter((pid) => ctx.roster.find((p) => p.id === pid));
+      const next = order.find((pid) => pid !== id && !isHurt(ctx.roster.find((p) => p.id === pid)) && !gameInjuries.some((h) => h.id === pid));
+      if (next) {
+        onFloor[pos] = next;
+        const nextPl = ctx.roster.find((p) => p.id === next);
+        log = [{ id: `inj${event}-${pos}`, my, opp, injury: true, text: `${pl.name} goes down with a ${type.name}. ${nextPl.name} is in.`, half, ot: inOT, otPeriod: period }, ...log];
+      } else {
+        log = [{ id: `inj${event}-${pos}`, my, opp, injury: true, text: `${pl.name} goes down with a ${type.name}. No healthy backup at ${pos} — playing on shorthanded.`, half, ot: inOT, otPeriod: period }, ...log];
+      }
+    }
+  });
+  log = log.slice(0, 80);
+
   // A period — regulation half or OT — always plays out in full; the game
   // only ends once that period's last possession is in the books AND the
   // score has actually separated, exactly like the end of regulation. A tie
   // at a period's end starts the next 5-minute OT period, repeating for as
   // long as it takes, never sudden death mid-period.
   const finished = event === periodEnd && my !== opp;
-  return { ...g, my, opp, event, fatigue, boostPoss, oppRun, log, finished, inOT, otPeriod: period };
+  return { ...g, my, opp, event, fatigue, boostPoss, oppRun, log, finished, inOT, otPeriod: period, onFloor, boxMinutes, gameInjuries };
 }
 
 // Clock + period label for the current game state — regulation halves (20
@@ -7421,27 +7671,86 @@ function VisitExperience({ recruit, actionKey, team, onClose, onFinish }) {
   );
 }
 
+// A real gamble, laid out in full before the coach commits — every option's
+// exact interest gain and risk percentage are shown up front, along with
+// both possible penalties, so nothing about the downside is hidden.
+function RiskItModal({ recruit, onClose, onConfirm }) {
+  const [picked, setPicked] = useState(null);
+  const opt = RISK_IT_OPTIONS.find((o) => o.key === picked);
+  return (
+    <Modal title="Risk It" subtitle={`${recruit.name} · ${recruit.pos} · costs ${RECRUIT_ACTIONS.RISK_IT.cost} pts`} onClose={onClose} maxWidth={560}>
+      <div style={{ fontSize: 12.5, color: C.dimmer, marginBottom: 14 }}>
+        Pick one. Each option's interest gain and risk of a penalty are exact — no hidden odds.
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 16 }}>
+        {RISK_IT_OPTIONS.map((o) => (
+          <button key={o.key} onClick={() => setPicked(o.key)} className="cbb-btn"
+            style={{
+              textAlign: "left", padding: "12px 14px", cursor: "pointer",
+              border: `1px solid ${picked === o.key ? C.gold : C.line}`,
+              background: picked === o.key ? C.panelAlt : "transparent", color: C.cream,
+            }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span style={{ fontSize: 13.5, fontWeight: 600 }}>{o.label}</span>
+              <span className="cbb-num" style={{ fontSize: 12.5, color: C.green }}>+{o.gain} interest</span>
+            </div>
+            <div style={{ fontSize: 11.5, color: C.red, marginTop: 3 }}>{Math.round(o.riskPct * 100)}% chance of a penalty</div>
+          </button>
+        ))}
+      </div>
+      <div style={{ fontSize: 11.5, color: C.dim, marginBottom: 16, border: `1px solid ${C.line}`, padding: "10px 12px" }}>
+        <div style={{ marginBottom: 4 }}>If a penalty triggers, it's a coin flip (50/50) between:</div>
+        <div>— A postseason ban for the next 5 seasons (no conference tournament or NCAA Tournament)</div>
+        <div>— A 50% cut to your available scholarships, going forward</div>
+      </div>
+      <div style={{ display: "flex", gap: 10 }}>
+        <button onClick={onClose} className="cbb-btn" style={{ ...btnStyle(C.panelAlt, C.cream), flex: 1, justifyContent: "center", border: `1px solid ${C.line}` }}>
+          Cancel
+        </button>
+        <button onClick={() => picked && onConfirm(picked)} disabled={!picked} className="cbb-btn"
+          style={{ ...btnStyle(picked ? C.gold : C.line, picked ? "#221a00" : C.dimmer), flex: 1, justifyContent: "center", cursor: picked ? "pointer" : "not-allowed" }}>
+          {opt ? "Confirm — Risk It" : "Pick an option"}
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+// The 5 players who actually take the floor at tip-off: the top healthy
+// name in each position's pregame depth-chart order — i.e. your starters —
+// never the full rotation. Bench players only ever get box-score minutes if
+// a real substitution puts them in.
+function initialOnFloor(dc, roster) {
+  const out = {};
+  POSITIONS.forEach((pos) => {
+    const order = (dc[pos] || []).filter((id) => roster.find((p) => p.id === id));
+    out[pos] = order.find((id) => !isHurt(roster.find((p) => p.id === id))) ?? order[0] ?? null;
+  });
+  return out;
+}
+
 function LiveGame({ ctxInit, onFinish, onClose }) {
   const T = TEMPO_POSS.balanced; // possessions per team are locked at tip from tempo
-  // The depth chart and minutes you set pregame — but live, not frozen: a
-  // substitution during the game reassigns who's actually on the floor for
-  // every possession from that point on, so it feeds tendencies, scoring
-  // credit, team strength, and the final box score exactly like the pregame
-  // assignment does.
-  const [liveDc, setLiveDc] = useState(ctxInit.dc);
-  const [liveMinutes, setLiveMinutes] = useState(ctxInit.minutes);
   const [tempo, setTempo] = useState("balanced");
   const [started, setStarted] = useState(false);
+  // onFloor tracks who's literally on the court at each position right now —
+  // subs and mid-game injury promotions update it live. boxMinutes/
+  // gameInjuries accumulate the ACTUAL playing time and any knocks suffered
+  // as the game is actually played, possession by possession, rather than
+  // being read off the pregame plan after the fact.
   const [g, setG] = useState(() => ({
     my: 0, opp: 0, event: 0, fatigue: 0, boostPoss: 0, oppRun: 0,
     timeouts: 5, log: [], finished: false, inOT: false, otPeriod: 0,
     gp: { tempo: "balanced", offFocus: "balanced", defScheme: "balanced" },
+    onFloor: initialOnFloor(ctxInit.dc, ctxInit.roster),
+    boxMinutes: {},
+    gameInjuries: [],
   }));
   const totalPoss = TEMPO_POSS[tempo];
-  const tend = useMemo(() => liveTendencies(ctxInit.roster, liveDc, liveMinutes), [ctxInit.roster, liveDc, liveMinutes]);
+  const tend = useMemo(() => liveTendencies(ctxInit.roster, g.onFloor), [ctxInit.roster, g.onFloor]);
   const myPower = useMemo(
-    () => userGamePower(ctxInit.roster, liveDc, ctxInit.powerBaseline, liveMinutes) + ctxInit.momentum,
-    [ctxInit.roster, liveDc, ctxInit.powerBaseline, liveMinutes, ctxInit.momentum]
+    () => liveGamePower(ctxInit.roster, g.onFloor, g.boxMinutes, ctxInit.powerBaseline) + ctxInit.momentum,
+    [ctxInit.roster, g.onFloor, g.boxMinutes, ctxInit.powerBaseline, ctxInit.momentum]
   );
   // A lightweight opponent roster so their made shots can be credited to an
   // actual named player in the play-by-play, same as the user's side — built
@@ -7453,22 +7762,16 @@ function LiveGame({ ctxInit, onFinish, onClose }) {
     return { oppRoster, oppDc, oppMinutes };
   }, [ctxInit.opp, ctxInit.year]);
   const ctx = useMemo(() => ({
-    roster: ctxInit.roster, dc: liveDc, minutes: liveMinutes, oppName: ctxInit.opp.name,
-    oppPower: ctxInit.oppPower, myPower, tend, ...oppTeamState,
-  }), [ctxInit.roster, liveDc, liveMinutes, ctxInit.opp.name, ctxInit.oppPower, myPower, tend, oppTeamState]);
+    roster: ctxInit.roster, dc: ctxInit.dc, oppName: ctxInit.opp.name,
+    oppPower: ctxInit.oppPower, myPower, tend, gamesRemaining: ctxInit.gamesRemaining ?? 1, ...oppTeamState,
+  }), [ctxInit.roster, ctxInit.dc, ctxInit.opp.name, ctxInit.oppPower, myPower, tend, ctxInit.gamesRemaining, oppTeamState]);
   const gctx = useMemo(() => ({ ...ctx, T: totalPoss }), [ctx, totalPoss]);
 
-  // Swap `outId` for `inId` at `pos`: the incoming player takes over the
-  // outgoing player's spot AND their remaining-game minutes share; the
-  // outgoing player heads to the bench (0 minutes) for the rest of the game.
+  // Put `inId` on the floor at `pos` in `outId`'s place, starting the very
+  // next possession — exactly the minutes they actually go on to play from
+  // this point on, no pregame plan involved.
   function subPlayer(pos, outId, inId) {
-    setLiveDc((dc) => {
-      const next = {};
-      POSITIONS.forEach((p) => { next[p] = dc[p].filter((id) => id !== inId); });
-      next[pos] = next[pos].map((id) => (id === outId ? inId : id));
-      return next;
-    });
-    setLiveMinutes((m) => ({ ...m, [inId]: m[outId] ?? 0, [outId]: 0 }));
+    setG((s) => ({ ...s, onFloor: { ...s.onFloor, [pos]: inId } }));
   }
 
   function tip() {
@@ -7504,7 +7807,8 @@ function LiveGame({ ctxInit, onFinish, onClose }) {
 
   function finish() {
     const win = g.my > g.opp;
-    onFinish({ win, myScore: g.my, oppScore: g.opp, boxByPlayer: genTeamBox(ctx.roster, ctx.dc, ctx.minutes, g.my) });
+    const boxByPlayer = genTeamBoxFromLiveMinutes(ctx.roster, g.boxMinutes, g.my);
+    onFinish({ win, myScore: g.my, oppScore: g.opp, boxByPlayer, liveInjuries: g.gameInjuries });
   }
 
   return (
@@ -7575,49 +7879,40 @@ function LiveGame({ ctxInit, onFinish, onClose }) {
           )}
 
           {/* Substitutions — available any time you're setting the game plan,
-              including right after calling a timeout; swapping a player in
-              hands them the outgoing player's remaining-game minutes and
-              takes effect starting the next possession. */}
+              including right after calling a timeout. Whoever's in here is
+              literally on the floor right now; swapping someone in credits
+              them real minutes starting the next possession, and the player
+              coming out stops accruing box-score minutes immediately —
+              not just at the final buzzer. */}
           <div style={{ marginBottom: 14 }}>
             <div style={{ fontSize: 10.5, color: C.dim, letterSpacing: "0.06em", marginBottom: 5, display: "flex", alignItems: "center", gap: 5 }}>
               <Users size={12} /> SUBSTITUTIONS
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 8 }}>
               {(() => {
-                // The one healthy player actually on the floor at each
-                // position — whoever's carrying the most live minutes there.
-                // Everyone else on the roster (backups included) is a valid
-                // sub at any position; only the 5 currently on the floor are
-                // off the table.
-                const onFloorByPos = {};
-                POSITIONS.forEach((pos) => {
-                  const healthyIds = (liveDc[pos] || []).filter((id) => {
-                    const p = ctx.roster.find((x) => x.id === id);
-                    return p && !isHurt(p);
-                  });
-                  onFloorByPos[pos] = [...healthyIds].sort((a, b) => (liveMinutes[b] ?? 0) - (liveMinutes[a] ?? 0))[0];
-                });
-                const onFloorSet = new Set(Object.values(onFloorByPos).filter(Boolean));
+                const onFloorSet = new Set(Object.values(g.onFloor).filter(Boolean));
                 return POSITIONS.map((pos) => {
-                const onFloorId = onFloorByPos[pos];
-                const onFloor = ctx.roster.find((p) => p.id === onFloorId);
-                if (!onFloor) return null;
-                const bench = ctx.roster.filter((p) => !onFloorSet.has(p.id) && !isHurt(p));
-                return (
-                  <div key={pos} style={{ border: `1px solid ${C.line}`, padding: "6px 8px" }}>
-                    <div style={{ fontSize: 10, color: C.dimmer }}>{pos}</div>
-                    <div style={{ fontSize: 12, color: C.cream, fontWeight: 600 }}>{onFloor.name}</div>
-                    <select
-                      value=""
-                      onChange={(e) => { if (e.target.value) subPlayer(pos, onFloorId, e.target.value); }}
-                      disabled={!bench.length}
-                      style={{ width: "100%", marginTop: 4, background: C.panel, border: `1px solid ${C.line}`, color: C.cream, fontSize: 11, padding: "3px 4px" }}
-                    >
-                      <option value="">{bench.length ? "Sub in…" : "No one available"}</option>
-                      {bench.map((p) => <option key={p.id} value={p.id}>{p.name} · OVR {p.overall}</option>)}
-                    </select>
-                  </div>
-                );
+                  const onFloorId = g.onFloor[pos];
+                  const onFloorPl = ctx.roster.find((p) => p.id === onFloorId);
+                  if (!onFloorPl) return null;
+                  const bench = ctx.roster.filter((p) => !onFloorSet.has(p.id) && !isHurt(p) && !g.gameInjuries.some((h) => h.id === p.id));
+                  return (
+                    <div key={pos} style={{ border: `1px solid ${C.line}`, padding: "6px 8px" }}>
+                      <div style={{ fontSize: 10, color: C.dimmer }}>{pos}</div>
+                      <div style={{ fontSize: 12, color: C.cream, fontWeight: 600 }}>
+                        {onFloorPl.name} <span style={{ color: C.dimmer, fontWeight: 400 }}>· {Math.round(g.boxMinutes[onFloorId] || 0)} min</span>
+                      </div>
+                      <select
+                        value=""
+                        onChange={(e) => { if (e.target.value) subPlayer(pos, onFloorId, e.target.value); }}
+                        disabled={!bench.length}
+                        style={{ width: "100%", marginTop: 4, background: C.panel, border: `1px solid ${C.line}`, color: C.cream, fontSize: 11, padding: "3px 4px" }}
+                      >
+                        <option value="">{bench.length ? "Sub in…" : "No one available"}</option>
+                        {bench.map((p) => <option key={p.id} value={p.id}>{p.name} · OVR {p.overall}</option>)}
+                      </select>
+                    </div>
+                  );
                 });
               })()}
             </div>
@@ -7645,8 +7940,8 @@ function LiveGame({ ctxInit, onFinish, onClose }) {
           <div className="cbb-scroll" style={{ maxHeight: 200, overflowY: "auto", border: `1px solid ${C.line}` }}>
             {g.log.length === 0 && <div style={{ padding: 12, fontSize: 12, color: C.dimmer }}>Tip-off. Run a possession to get started.</div>}
             {g.log.map((l) => (
-              <div key={l.id} style={{ display: "flex", justifyContent: "space-between", gap: 10, padding: "5px 10px", borderBottom: `1px solid ${C.line}`, fontSize: 12, background: l.timeout ? C.panelAlt : "transparent" }}>
-                <span style={{ color: l.timeout ? C.gold : l.offMe ? C.cream : C.dim }}>{l.text}</span>
+              <div key={l.id} style={{ display: "flex", justifyContent: "space-between", gap: 10, padding: "5px 10px", borderBottom: `1px solid ${C.line}`, fontSize: 12, background: l.timeout ? C.panelAlt : l.injury ? "rgba(200,60,60,0.1)" : "transparent" }}>
+                <span style={{ color: l.timeout ? C.gold : l.injury ? C.red : l.offMe ? C.cream : C.dim }}>{l.text}</span>
                 <span className="cbb-num" style={{ color: C.dimmer, flexShrink: 0 }}>{l.my}-{l.opp}</span>
               </div>
             ))}
@@ -9187,6 +9482,8 @@ export default function CBBDynasty() {
       expectation: seasonExpectation(team.prestige),
       rivalryLedger: {},
       prestigeTrendById: {},
+      scholarshipPenalty: false,
+      postseasonBanUntilYear: null,
     };
     setPickingTeamFor(null);
     setSession(state);
