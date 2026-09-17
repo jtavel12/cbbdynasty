@@ -1289,6 +1289,17 @@ function starsFromValue(v) {
   return 1;
 }
 
+// Recruiting hype in reality concentrates hard at the very top of the sport
+// — a legitimately good mid-major (tier ~0.5, e.g. a prestige-3/5 program)
+// still reads as barely more than a true bottom-feeder to recruiting
+// services; only the sport's actual elite (tier approaching 1) pulls in
+// real blue-chip buzz. This front-loaded curve reflects that everywhere
+// pedigree feeds recruiting rank/NIL, so a mid-major signing doesn't
+// casually read as "half a blue blood" the way a flat linear scale would.
+function recruitingPedigreeCurve(tier) {
+  return Math.pow(clamp(tier, 0, 1), 2.4);
+}
+
 // A recruit's NIL ask: baseByStars scaled by whether they're a proven transfer,
 // their own competition-adjusted production (the same `adjustedValue` that
 // drives their star rating), and the pedigree of the program that produced
@@ -1299,7 +1310,8 @@ function computeNilAsk({ stars, adjustedValue, isTransfer, prestige }) {
   const base = NIL_BASE_BY_STARS[clamp(Math.round(stars || 1), 1, 5)];
   const transferMult = isTransfer ? 1.6 : 1;
   const productionMult = clamp(0.4 + (clamp(adjustedValue || 0, 0, 22) / 22) * 0.9, 0.4, 1.3);
-  const pedigreeMult = clamp(0.4 + ((clamp(prestige || 2, 1, 5) - 1) / 4) * 0.9, 0.4, 1.3);
+  const pedigreeTier = clamp((clamp(prestige || 2, 1, 5) - 1) / 4, 0, 1);
+  const pedigreeMult = clamp(0.4 + recruitingPedigreeCurve(pedigreeTier) * 0.9, 0.4, 1.3);
   const nilTarget = Math.round(base * transferMult * productionMult * pedigreeMult * rand(0.85, 1.15));
   const nilFloor = Math.round(nilTarget * rand(0.60, 0.80));
   return { nilTarget, nilFloor };
@@ -1384,21 +1396,23 @@ function buildRealNewcomer(r, year) {
   const frPpg = career ? perGame(career.ppg, career.gp) : perGame(firstRow.ppg, firstRow.gp);
   const frRpg = career ? perGame(career.rpg, career.gp) : perGame(firstRow.rpg, firstRow.gp);
   const frApg = career ? perGame(career.apg, career.gp) : perGame(firstRow.apg, firstRow.gp);
-  // Composite prospect value — real production still counts, but recruiting
-  // buzz in reality leans hard on WHERE a player proved it: the same
-  // per-game line means far more at a blue-blood than at the bottom of a
-  // weak conference. Pedigree (the real competition tier they played, 0..1)
-  // is the dominant term below; production is a real but secondary
-  // contributor, and a genuine statistical outlier (careerOutlierBonus) can
-  // still break through a low pedigree entirely on its own. This only
-  // drives the recruit's displayed stars/rank/rating and NIL ask — it never
-  // touches the real attributes/overall a signed player actually plays
-  // with (see genAttrsFromRealStats), which stay governed by real per-game
-  // production the way they always have.
+  // Composite prospect value — recruiting buzz here leans almost entirely on
+  // WHERE a player proved it, not how well: pedigree (the real competition
+  // tier they played, 0..1) is 75% of the number, real production (including
+  // the outlier bonus for a genuine statistical monster) is only 25%. This is
+  // deliberate — a Damian-Lillard-at-Weber-State type should NOT show up as a
+  // top recruit by default; he should be a marginal-looking name a coach has
+  // to actually scout to find, the same way a real mid-major star gets
+  // overlooked by recruiting services that grade on hype and program pedigree
+  // long before anyone's proven anything in games. This only drives the
+  // recruit's displayed stars/rank/rating and NIL ask — it never touches the
+  // real attributes/overall a signed player actually plays with (see
+  // genAttrsFromRealStats), which stay governed by real per-game production
+  // the way they always have.
   const rawValue = frPpg + frRpg * 0.7 + frApg * 0.9;
-  const pedigreeValue = 2 + tier * 16;
-  const productionValue = rawValue * sampleReliability(frGp);
-  const adjustedValue = pedigreeValue * 0.65 + productionValue * 0.35 + careerOutlierBonus(r.player) * 0.4;
+  const pedigreeValue = 2 + recruitingPedigreeCurve(tier) * 16;
+  const productionValue = rawValue * sampleReliability(frGp) + careerOutlierBonus(r.player);
+  const adjustedValue = pedigreeValue * 0.75 + productionValue * 0.25;
   const stars = starsFromValue(adjustedValue);
   const rating = clamp(0.55 + (adjustedValue / 26) * 0.44, 0.55, 1.0);
   const ht = normalizeHometown(r.hometown);
