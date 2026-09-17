@@ -4475,9 +4475,19 @@ function TeamSelect({ onPick }) {
             <span className="cbb-gradient-text">program.</span>
           </h1>
           <p className="cbb-hero-in" style={{ color: C.dim, fontSize: 15.5, lineHeight: 1.6, maxWidth: 560, margin: 0, animationDelay: ".16s" }}>
-            Every save is a new era: build the roster, sign your classes, and coach it forward
-            one season at a time — from an opening tip-off to a program only you could have built.
+            <span style={{ color: C.cream, fontWeight: 600 }}>Be the Coach:</span> build your roster with
+            real players, sign real recruits from their classes, and coach it forward one season at
+            a time — from an opening tip-off to a program only you could have built.
           </p>
+          <a
+            href="https://x.com/CBBDynastyApp"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="cbb-hero-in"
+            style={{ display: "inline-block", marginTop: 10, color: C.wood, fontSize: 13, fontWeight: 600, textDecoration: "none", animationDelay: ".2s" }}
+          >
+            Connect on X @CBBDynastyApp
+          </a>
           <div
             className="cbb-hero-in"
             style={{ marginTop: 22, height: 3, maxWidth: 560, background: `linear-gradient(90deg, ${C.gold}, ${C.wood} 55%, transparent)`, boxShadow: `0 0 14px 1px rgba(216,168,58,0.35)`, animationDelay: ".22s" }}
