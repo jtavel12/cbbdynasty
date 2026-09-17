@@ -1384,11 +1384,21 @@ function buildRealNewcomer(r, year) {
   const frPpg = career ? perGame(career.ppg, career.gp) : perGame(firstRow.ppg, firstRow.gp);
   const frRpg = career ? perGame(career.rpg, career.gp) : perGame(firstRow.rpg, firstRow.gp);
   const frApg = career ? perGame(career.apg, career.gp) : perGame(firstRow.apg, firstRow.gp);
-  // Composite production (points + boards + assists), scaled by strength of
-  // competition, then nudged by a career-arc credit so proven talents from
-  // small schools still grade like the stars they became.
+  // Composite prospect value — real production still counts, but recruiting
+  // buzz in reality leans hard on WHERE a player proved it: the same
+  // per-game line means far more at a blue-blood than at the bottom of a
+  // weak conference. Pedigree (the real competition tier they played, 0..1)
+  // is the dominant term below; production is a real but secondary
+  // contributor, and a genuine statistical outlier (careerOutlierBonus) can
+  // still break through a low pedigree entirely on its own. This only
+  // drives the recruit's displayed stars/rank/rating and NIL ask — it never
+  // touches the real attributes/overall a signed player actually plays
+  // with (see genAttrsFromRealStats), which stay governed by real per-game
+  // production the way they always have.
   const rawValue = frPpg + frRpg * 0.7 + frApg * 0.9;
-  const adjustedValue = rawValue * competitionMultiplier(tier) * sampleReliability(frGp) + careerOutlierBonus(r.player) * 0.4;
+  const pedigreeValue = 2 + tier * 16;
+  const productionValue = rawValue * sampleReliability(frGp);
+  const adjustedValue = pedigreeValue * 0.65 + productionValue * 0.35 + careerOutlierBonus(r.player) * 0.4;
   const stars = starsFromValue(adjustedValue);
   const rating = clamp(0.55 + (adjustedValue / 26) * 0.44, 0.55, 1.0);
   const ht = normalizeHometown(r.hometown);
@@ -6778,8 +6788,8 @@ function OffseasonTab({ stage, offseason, hsBoard, team, roster, nextYear, commi
       </div>
 
       <div style={{ fontSize: 12, color: C.wood, fontWeight: 600, letterSpacing: "0.06em", marginBottom: 8 }}>PLAYER DEVELOPMENT</div>
-      <div style={{ fontSize: 11.5, color: C.dimmer, marginBottom: 10, maxWidth: 720 }}>Spend {DEV_POINTS_PER_OFFSEASON} development points improving your roster&apos;s attributes for next season. Real players keep these gains permanently on top of their production.</div>
-      <ProgressionPanel roster={roster} devPoints={offseason.devPoints ?? 0} devSpent={offseason.devSpent} onDev={onDev} onViewPlayer={onViewPlayer} />
+      <div style={{ fontSize: 11.5, color: C.dimmer, marginBottom: 10, maxWidth: 720 }}>Spend {DEV_POINTS_PER_OFFSEASON} development points improving your roster&apos;s attributes for next season. Real players keep these gains permanently on top of their production. Graduating seniors won&apos;t be back, so they&apos;re not shown here.</div>
+      <ProgressionPanel roster={roster.filter((p) => p.class !== "SR")} devPoints={offseason.devPoints ?? 0} devSpent={offseason.devSpent} onDev={onDev} onViewPlayer={onViewPlayer} />
 
       <div style={{ fontSize: 12, color: C.wood, fontWeight: 600, letterSpacing: "0.06em", margin: "22px 0 8px" }}>ROSTER &amp; CUTS</div>
       <CutsPanel roster={roster} scholarshipInfo={scholarshipInfo} onCut={onCut} onViewPlayer={onViewPlayer} />
