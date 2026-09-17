@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Checks all 365 of our D-I team names against the real team-name strings
- * in src/data/torvik-players.json, using the same exact-match + alias
+ * in public/data/torvik-players.json, using the same exact-match + alias
  * logic as the app itself. Prints:
  *   - how many matched cleanly
  *   - every MISS, with up to 3 candidate real names that share a
@@ -61,7 +61,7 @@ function significantWords(name) {
   return name.toLowerCase().replace(/[()]/g, "").split(/\s+/).filter((w) => w.length > 2 && !stop.has(w));
 }
 
-const data = JSON.parse(fs.readFileSync("src/data/torvik-players.json", "utf-8"));
+const data = JSON.parse(fs.readFileSync("public/data/torvik-players.json", "utf-8"));
 const rows = data[year];
 if (!rows || !rows.length) {
   console.error(`No data for ${year} in torvik-players.json. Try a different year: node scripts/check-team-matches.mjs 2023`);

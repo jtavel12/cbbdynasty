@@ -70,7 +70,7 @@ function mapRealPosition(raw) {
   return null;
 }
 
-const data = JSON.parse(fs.readFileSync("src/data/torvik-players.json", "utf-8"));
+const data = JSON.parse(fs.readFileSync("public/data/torvik-players.json", "utf-8"));
 const rows = data[year];
 if (!rows || !rows.length) {
   console.error(`No data for ${year}.`);

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Pulls real historical team-season data from barttorvik.com and writes it
- * to src/data/torvik-seasons.json for the app to use as its source of truth
+ * to public/data/torvik-seasons.json for the app to use as its source of truth
  * for team strength/records instead of the synthetic random model.
  *
  * WHY THIS EXISTS / WHY YOU RUN IT (not Claude):
@@ -25,7 +25,7 @@ import path from "node:path";
 
 const START_YEAR = Number(process.argv[2]) || 2008;
 const END_YEAR = Number(process.argv[3]) || new Date().getFullYear();
-const OUT_DIR = path.join(process.cwd(), "src", "data");
+const OUT_DIR = path.join(process.cwd(), "public", "data");
 const OUT_FILE = path.join(OUT_DIR, "torvik-seasons.json");
 const CACHE_DIR = path.join(process.cwd(), ".torvik-cache");
 const DELAY_MS = 1500; // be polite — one request per season, spaced out

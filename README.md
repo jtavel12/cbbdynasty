@@ -41,7 +41,7 @@ CBBD_API_KEY=your-key node scripts/cbbd-import-players.mjs
 Its `/teams/roster?season=YYYY` endpoint returns every team's full roster
 for a season in one call, so this only needs ~18 requests total for
 2008-present — comfortably inside the free tier's 1,000 calls/month. It
-writes `src/data/torvik-players.json` (kept the filename the app already
+writes `public/data/torvik-players.json` (kept the filename the app already
 reads) and prints the raw field names it receives the first time it
 succeeds — I mapped names from the official client docs but couldn't test
 live from my sandbox, so if the printed keys don't match what the script
@@ -69,7 +69,7 @@ node scripts/import-torvik.mjs
 
 This pulls one request per season (2008 through the current year), 1.5s apart,
 and caches each year's raw file in `.torvik-cache/` so re-runs don't re-hit the
-site. It writes `src/data/torvik-seasons.json` — **this is now wired into the
+site. It writes `public/data/torvik-seasons.json` — **this is now wired into the
 sim**: `teamPowerRating()` in `App.jsx` checks this file first for a real
 team+year match (using each team's real `barthag` rating) and only falls back
 to the synthetic prestige-based model when there's no real data for that
@@ -140,7 +140,7 @@ now, but none of it should be *wrong* data.
 **To get coverage back up**, I need to see CBBD's actual team-name strings —
 run this from inside the project and paste me the output:
 ```
-node -e "const d=JSON.parse(require('fs').readFileSync('src/data/torvik-players.json')); const teams=[...new Set(d[2024].map(r=>r.team))].sort(); console.log(teams.length+' unique team names'); console.log(teams.slice(0,40).join('\n'));"
+node -e "const d=JSON.parse(require('fs').readFileSync('public/data/torvik-players.json')); const teams=[...new Set(d[2024].map(r=>r.team))].sort(); console.log(teams.length+' unique team names'); console.log(teams.slice(0,40).join('\n'));"
 ```
 Once I see the real convention, I can build out a complete, correct alias
 table instead of guessing. In the meantime, open your browser console while

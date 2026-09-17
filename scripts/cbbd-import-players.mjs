@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Pulls real player rosters AND real season stats from the College
- * Basketball Data API, then writes src/data/torvik-players.json in a
+ * Basketball Data API, then writes public/data/torvik-players.json in a
  * shape the app uses to set BOTH a player's identity (name, position,
  * class year) AND their in-game rating — driven by real per-game
  * production, not a random roll. This fixes the earlier version, which
@@ -34,7 +34,7 @@ import path from "node:path";
 
 const START_YEAR = Number(process.argv[2]) || 2008;
 const END_YEAR = Number(process.argv[3]) || new Date().getFullYear();
-const OUT_DIR = path.join(process.cwd(), "src", "data");
+const OUT_DIR = path.join(process.cwd(), "public", "data");
 const OUT_FILE = path.join(OUT_DIR, "torvik-players.json");
 const CACHE_DIR = path.join(process.cwd(), ".torvik-cache");
 const DELAY_MS = 1200;

@@ -1,6 +1,4 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
-import torvikSeasonsRaw from "./data/torvik-seasons.json";
-import torvikPlayersRaw from "./data/torvik-players.json";
 import teamLocationsRaw from "./data/team-locations.json";
 import teamRecordsRaw from "./data/team-records.json";
 import nilBudgetsRaw from "./data/nil_budgets.json";
@@ -445,8 +443,12 @@ const TEAM_LOCATIONS = teamLocationsRaw;
 
 /* =========================================================================
    REAL DATA (Bart Torvik) — wired in from scripts/import-torvik.mjs and
-   scripts/import-torvik-players.mjs. Both files default to {} until you
-   run those scripts, so the app works identically either way.
+   scripts/import-torvik-players.mjs, and served as static files from
+   public/data/ (NOT bundled into the JS — together they're ~50MB, which
+   would balloon the app bundle and stall first paint). Fetched once at
+   app boot by loadRealData() below; every binding here starts empty and
+   is filled in when that resolves, so the app works identically whether
+   or not you've ever run those scripts.
 
    Torvik's team-name strings don't always match ours 1:1 (e.g. it may say
    "Connecticut" where our list says "UConn"). TORVIK_TEAM_ALIASES covers
@@ -457,17 +459,14 @@ const TEAM_LOCATIONS = teamLocationsRaw;
    teams are logged there once per session, which is the list to extend
    this alias map with once we know the real API's naming convention.
    ========================================================================= */
-const torvikSeasons = torvikSeasonsRaw || {};
-const torvikPlayers = torvikPlayersRaw || {};
+let torvikSeasons = {};
+let torvikPlayers = {};
 
 // Every season we have real player data for, ascending. Torvik keys each
 // season by its ENDING calendar year (key "2009" == the 2008–09 season),
 // which is also the convention our internal `year` uses.
-const AVAILABLE_YEARS = Object.keys(torvikPlayers)
-  .map(Number)
-  .filter((n) => !Number.isNaN(n))
-  .sort((a, b) => a - b);
-const FIRST_YEAR = AVAILABLE_YEARS[0] ?? 2008;
+let AVAILABLE_YEARS = [];
+let FIRST_YEAR = 2008;
 
 // Season display label. Internal `year` is the season's ENDING year, so
 // year 2009 renders as "2008–09". Keeps the UI consistent with how college
@@ -638,7 +637,8 @@ function realPlayersFor(team, year) {
    their real career start. Identity is by name only — a pragmatic heuristic,
    since the dataset carries no stable per-player id.
    ------------------------------------------------------------------------- */
-const CAREER_INDEX = (() => {
+let CAREER_INDEX = {};
+function rebuildCareerIndex() {
   const idx = {};
   for (const y of Object.keys(torvikPlayers)) {
     for (const r of torvikPlayers[y] || []) {
@@ -647,8 +647,33 @@ const CAREER_INDEX = (() => {
     }
   }
   for (const name in idx) idx[name].sort((a, b) => a.year - b.year);
-  return idx;
-})();
+  CAREER_INDEX = idx;
+}
+
+// Fetches the two large real-data files from public/data/ (served as static
+// assets, not bundled — see the block above) and populates every binding
+// above. Resolves even on failure, leaving the app in its always-supported
+// no-real-data state rather than throwing.
+async function loadRealData() {
+  try {
+    const [playersRes, seasonsRes] = await Promise.all([
+      fetch("/data/torvik-players.json"),
+      fetch("/data/torvik-seasons.json"),
+    ]);
+    torvikPlayers = playersRes.ok ? await playersRes.json() : {};
+    torvikSeasons = seasonsRes.ok ? await seasonsRes.json() : {};
+  } catch (err) {
+    console.warn("[real data] failed to load — falling back to fully generated data:", err);
+    torvikPlayers = {};
+    torvikSeasons = {};
+  }
+  AVAILABLE_YEARS = Object.keys(torvikPlayers)
+    .map(Number)
+    .filter((n) => !Number.isNaN(n))
+    .sort((a, b) => a - b);
+  FIRST_YEAR = AVAILABLE_YEARS[0] ?? 2008;
+  rebuildCareerIndex();
+}
 
 function careerStartYear(name, fallback) {
   const c = CAREER_INDEX[name];
@@ -10037,7 +10062,10 @@ export default function CBBDynasty() {
 
   useEffect(() => {
     (async () => {
-      setSlots(await loadAllSlots());
+      // Real player/season data and the save slots that reference it are
+      // independent fetches — run them together, not one after the other.
+      const [, slots] = await Promise.all([loadRealData(), loadAllSlots()]);
+      setSlots(slots);
       setLoading(false);
     })();
   }, []);
