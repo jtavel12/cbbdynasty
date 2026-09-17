@@ -1610,11 +1610,49 @@ function rankBoard(board) {
   return sorted;
 }
 
+// A high-school recruit's real-world NIL floor scales with how nationally
+// known they are, independent of how their (still-early, thin-sample)
+// college production happens to value them — a top-100 kid commands a real
+// package almost by default. Deliberately NOT applied to the transfer
+// portal below: a transfer's ask already scales off real, proven college
+// production, not projected high-school hype.
+const HS_NIL_RANK_FLOOR_TIERS = [
+  { max: 100, floor: 50_000 },
+  { max: 200, floor: 50_000 },
+  { max: 300, floor: 35_000 },
+  { max: 400, floor: 25_000 },
+  { max: 500, floor: 12_500 },
+  { max: 600, floor: 3_500 },
+  { max: 900, floor: 1_000 },
+];
+function hsNilFloorForRank(nationalRank) {
+  if (!nationalRank) return 0;
+  const tier = HS_NIL_RANK_FLOOR_TIERS.find((t) => nationalRank <= t.max);
+  return tier ? tier.floor : 0; // outside the top 900 — no NIL required
+}
+
 // In-season high-school class (true freshmen only; transfers wait for the
 // off-season portal below).
 function genRecruitPool(year) {
   const real = realNewcomersFor(year, "fr");
-  return rankBoard(real.length > 0 ? real : genSyntheticPool("fr"));
+  const ranked = rankBoard(real.length > 0 ? real : genSyntheticPool("fr"));
+  ranked.forEach((r) => {
+    if (r.nationalRank > 900) {
+      // Unranked outside the top 900 — no NIL required to sign, full stop,
+      // even if the production formula alone would have asked for some.
+      r.nilFloor = 0;
+      return;
+    }
+    // Inside the top 900, the tier is only ever a floor: it raises what the
+    // production-based formula already set, never lowers a recruit who was
+    // already asking for more.
+    const rankFloor = hsNilFloorForRank(r.nationalRank);
+    if (rankFloor > (r.nilFloor ?? 0)) {
+      r.nilFloor = rankFloor;
+      r.nilTarget = Math.max(r.nilTarget ?? 0, Math.round(rankFloor * rand(1.15, 1.35)));
+    }
+  });
+  return ranked;
 }
 
 // Off-season transfer portal.
@@ -7642,14 +7680,25 @@ function OffseasonTab({ stage, offseason, hsBoard, team, roster, nextYear, commi
             </div>
           </Panel>
         </div>
-      ) : (
+      ) : (() => {
+        // By the time decisions are done, every declaration's been attempted
+        // and every transfer risk resolved — anyone leaving via the draft or
+        // the portal is already gone in every way that matters, so they
+        // shouldn't still show up as a body to develop or a candidate to cut.
+        const leavingIds = new Set([
+          ...draftDeclarations.filter((d) => d.attempted && !d.kept).map((d) => d.id),
+          ...transferRisks.filter((r) => r.resolved && r.staying === false).map((r) => r.id),
+        ]);
+        const activeRoster = roster.filter((p) => p.class !== "SR" && !leavingIds.has(p.id));
+        const cuttableRoster = roster.filter((p) => !leavingIds.has(p.id));
+        return (
         <>
           <div style={{ fontSize: 12, color: C.wood, fontWeight: 600, letterSpacing: "0.06em", margin: "22px 0 8px" }}>PLAYER DEVELOPMENT</div>
-          <div style={{ fontSize: 11.5, color: C.dimmer, marginBottom: 10, maxWidth: 720 }}>Spend {DEV_POINTS_PER_OFFSEASON} development points improving your roster&apos;s attributes for next season. Real players keep these gains permanently on top of their production. Graduating seniors won&apos;t be back, so they&apos;re not shown here.</div>
-          <ProgressionPanel roster={roster.filter((p) => p.class !== "SR")} devPoints={offseason.devPoints ?? 0} devSpent={offseason.devSpent} onDev={onDev} onViewPlayer={onViewPlayer} />
+          <div style={{ fontSize: 11.5, color: C.dimmer, marginBottom: 10, maxWidth: 720 }}>Spend {DEV_POINTS_PER_OFFSEASON} development points improving your roster&apos;s attributes for next season. Real players keep these gains permanently on top of their production. Graduating seniors, and anyone leaving via the draft or the portal, won&apos;t be back, so they&apos;re not shown here.</div>
+          <ProgressionPanel roster={activeRoster} devPoints={offseason.devPoints ?? 0} devSpent={offseason.devSpent} onDev={onDev} onViewPlayer={onViewPlayer} />
 
           <div style={{ fontSize: 12, color: C.wood, fontWeight: 600, letterSpacing: "0.06em", margin: "22px 0 8px" }}>ROSTER &amp; CUTS</div>
-          <CutsPanel roster={roster} scholarshipInfo={scholarshipInfo} onCut={onCut} onViewPlayer={onViewPlayer} />
+          <CutsPanel roster={cuttableRoster} scholarshipInfo={scholarshipInfo} onCut={onCut} onViewPlayer={onViewPlayer} />
 
           <div style={{ fontSize: 12, color: C.wood, fontWeight: 600, letterSpacing: "0.06em", margin: "22px 0 8px" }}>TRANSFER PORTAL</div>
           <RecruitBoard
@@ -7686,7 +7735,8 @@ function OffseasonTab({ stage, offseason, hsBoard, team, roster, nextYear, commi
             </table>
           </Panel>
         </>
-      )}
+        );
+      })()}
     </div>
   );
 }
