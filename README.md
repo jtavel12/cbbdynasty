@@ -112,17 +112,21 @@ This only applies to years where you've imported real data (2008–2026 as of
 your last pull). Years outside that range fall back to the fully generated
 system as before.
 
-## Roster size (10–13 players)
+## Roster size (16 players, 13 on scholarship)
 
-Rosters are now built and maintained within a realistic 10-13 range at every
-point in the sim:
-- **Initial rosters** vary randomly within that range rather than a fixed 12.
-- **Year-to-year**, if graduating seniors would drop a team below 10, the
-  sim automatically fills the gap with generated walk-on-tier freshmen at
-  whatever position is thinnest — so a team that doesn't recruit hard enough
-  won't end up unrealistically short-handed.
-- The existing 13-man ceiling (trimming the weakest bench players when a
-  big class pushes you over) still applies.
+Every team is built and maintained at a full 16-man roster at every point in
+the sim, with at most 13 of those 16 holding a scholarship (the rest are
+walk-ons):
+- **Initial rosters** are filled to exactly 16 — real players first, then
+  generated walk-on-tier freshmen at whatever position is thinnest if the
+  real pool comes up short.
+- **Year-to-year**, if graduating seniors and departures drop a team below
+  16, the sim automatically fills the gap the same way — so a team that
+  doesn't recruit hard enough won't end up unrealistically short-handed.
+- The 16-man roster cap trims the weakest players when a big class pushes
+  the roster over; the separate 13-man scholarship ceiling instead demotes
+  the weakest *real* players to walk-on (non-scholarship) status without
+  removing them from the roster.
 
 ## Fixed: wrong-team name matching
 

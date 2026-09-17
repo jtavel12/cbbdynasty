@@ -468,7 +468,6 @@ const AVAILABLE_YEARS = Object.keys(torvikPlayers)
   .filter((n) => !Number.isNaN(n))
   .sort((a, b) => a - b);
 const FIRST_YEAR = AVAILABLE_YEARS[0] ?? 2008;
-const LAST_YEAR = AVAILABLE_YEARS[AVAILABLE_YEARS.length - 1] ?? 2026;
 
 // Season display label. Internal `year` is the season's ENDING year, so
 // year 2009 renders as "2008–09". Keeps the UI consistent with how college
@@ -544,20 +543,6 @@ function normalizeTeamKey(name) {
 }
 
 const _unmatchedLogged = new Set();
-
-// Strict, exact-normalized-name match only — see note above on why the
-// old "contains" fallback was removed.
-function findByExactTeamName(teamName, rows, getTeamField) {
-  if (!rows || !rows.length) return null;
-  const alias = TORVIK_TEAM_ALIASES[teamName];
-  const target = normalizeTeamKey(alias || teamName);
-  const hit = rows.find((r) => normalizeTeamKey(getTeamField(r)) === target);
-  if (!hit && !_unmatchedLogged.has(teamName)) {
-    _unmatchedLogged.add(teamName);
-    console.warn(`[real data] no exact match for "${teamName}" (tried "${alias || teamName}") — add an alias in TORVIK_TEAM_ALIASES if this team has real data under a different name.`);
-  }
-  return hit || null;
-}
 
 // Bart Torvik's own team-results file (torvik-seasons.json) uses a THIRD
 // naming convention — its own, independent of both our TEAMS list and the
@@ -1622,6 +1607,15 @@ const RISK_IT_OPTIONS = [
 // covers 2 seasons total.
 const RISK_IT_PENALTY_EXTRA_SEASONS = 1;
 
+// Every prior Risk It attempt (win, lose, or draw) raises NCAA scrutiny on
+// the program — a repeat gambler's odds actually get worse, and the
+// modal always shows this ADJUSTED number, never the flat base rate, so
+// the "no hidden odds" promise holds even after a few attempts.
+const RISK_IT_NOTORIETY_PCT_PER_ATTEMPT = 0.02;
+function riskItRiskPct(basePct, notoriety) {
+  return clamp(basePct + (notoriety || 0) * RISK_IT_NOTORIETY_PCT_PER_ATTEMPT, 0, 0.9);
+}
+
 // Visit pricing scales with how far a recruit's hometown is from campus. Within
 // 100 miles it's the base; every additional 300 miles adds 25% of the base
 // (additive), capped. International recruits always pay the cap.
@@ -2012,13 +2006,6 @@ function teamPowerRating(team, strengthMap, year, { noise = true } = {}) {
   const prestige = team.prestigeExact ?? team.prestige;
   const talent = 38 + ((prestige - 1) / 4) * 40; // prestige 1->38 ... 5->78
   return clamp(talent + drift + jitter, 25, 92);
-}
-
-// Projected season win% for a team, centered so a league-average program is
-// a coin flip and blue bloods top out around .95. Shared by standings and the
-// per-team schedule projection so both tell the same story.
-function projectedWinPct(power) {
-  return clamp(0.5 + (power - LEAGUE_AVG_POWER) / 58, 0.05, 0.95);
 }
 
 // Per-season strength drift layered on top of a team's prestige baseline.
@@ -2658,8 +2645,6 @@ function findUserPendingMatchup(ps, userTeamId) {
   }
   return null;
 }
-
-function bracketFullyPlayed(b) { return b.done; }
 
 /* =========================================================================
    POSTSEASON: conference tournaments -> March Madness
@@ -3305,10 +3290,11 @@ function defenseScore(rpg, apg, rank) {
   return prod + teamBonus;
 }
 
-// Best real player line (per-game) for a team in a given season, or null.
-function bestRealLine(team, year) {
+// Top `n` real player lines (per-game) for a team in a given season, ranked
+// by the same production formula awardScore uses, best first.
+function topRealLines(team, year, n) {
   const rows = realPlayersFor(team, year);
-  if (!rows.length) return null;
+  if (!rows.length) return [];
   const mapped = rows
     .map((r) => ({
       name: r.player,
@@ -3320,9 +3306,13 @@ function bestRealLine(team, year) {
       class: realClassForName(r.player, year, r.startSeason) || "SO",
     }))
     .filter((r) => r.gp >= 5 && r.ppg + r.rpg + r.apg > 0);
-  if (!mapped.length) return null;
   mapped.sort((a, b) => (b.ppg + b.rpg * 0.75 + b.apg * 0.85) - (a.ppg + a.rpg * 0.75 + a.apg * 0.85));
-  return mapped[0];
+  return mapped.slice(0, n);
+}
+
+// Best real player line (per-game) for a team in a given season, or null.
+function bestRealLine(team, year) {
+  return topRealLines(team, year, 1)[0] || null;
 }
 
 // Fallback star line derived from a team's power when no real data exists.
@@ -3363,12 +3353,20 @@ function computeAwards(state, rankById, ranked, powerById) {
   const confMates = TEAMS.filter((t) => t.conf === userConf && t.id !== state.teamId);
   const pool = [...new Map([...nationalTeams, ...confMates].map((t) => [t.id, t])).values()]
     .filter((t) => t.id !== state.teamId);
+  // Every CPU team gets 2 candidate lines, not just its single best — the
+  // user's own roster contributes one candidate per rostered player with
+  // real minutes, so capping every opponent at exactly 1 structurally
+  // under-represented the rest of the country in the national award race.
   pool.forEach((t) => {
-    const line = bestRealLine(t, year) || synthStarLine(powerById[t.id]);
-    cands.push({
-      id: "x-" + t.id, name: line.name, teamId: t.id, teamName: t.name,
-      pos: line.pos, class: line.class, ppg: line.ppg, rpg: line.rpg, apg: line.apg,
-      isUser: false, rank: rankById[t.id], score: awardScore(line.ppg, line.rpg, line.apg, rankById[t.id]),
+    const real = topRealLines(t, year, 2);
+    const lines = real.length ? real : [synthStarLine(powerById[t.id])];
+    while (lines.length < 2) lines.push(synthStarLine(powerById[t.id]));
+    lines.forEach((line, i) => {
+      cands.push({
+        id: `x-${t.id}-${i}`, name: line.name, teamId: t.id, teamName: t.name,
+        pos: line.pos, class: line.class, ppg: line.ppg, rpg: line.rpg, apg: line.apg,
+        isUser: false, rank: rankById[t.id], score: awardScore(line.ppg, line.rpg, line.apg, rankById[t.id]),
+      });
     });
   });
 
@@ -3555,8 +3553,17 @@ const JOB_REP_REQ = { 5: 120, 4: 70, 3: 35, 2: 12, 1: 0 };
    (fluid) prestige. Beating it builds job security; falling short erodes it, and
    a coach who bottoms out gets shown the door.
    ========================================================================= */
-function seasonExpectation(prestige) {
+// `banned` is a "Risk It" postseason ban still active for the season this
+// expectation covers. The AD can't hold a coach to a bracket goal the
+// program is barred from reaching, so the bar drops to a wins-only target —
+// a lower one than the program's normal winTarget, since playing out a
+// season with nothing to chase in March is its own kind of hard.
+function seasonExpectation(prestige, banned = false) {
   const p = Math.round(prestige || 2);
+  if (banned) {
+    const winTarget = p >= 5 ? 24 : p === 4 ? 21 : p === 3 ? 18 : p === 2 ? 15 : 10;
+    return { label: `On postseason probation — win ${winTarget} games`, winTarget, psGoal: null, tier: p, probation: true };
+  }
   if (p >= 5) return { label: "Reach the Final Four", winTarget: 26, psGoal: "Final Four", tier: 5 };
   if (p === 4) return { label: "Win 24 and make a deep tournament run", winTarget: 24, psGoal: "NCAA Tournament", tier: 4 };
   if (p === 3) return { label: "Make the NCAA Tournament", winTarget: 20, psGoal: "NCAA Tournament", tier: 3 };
@@ -3575,10 +3582,14 @@ function psValue(s) {
   return 0;
 }
 
-// How the season measured up: a job-security swing and whether the bar was met.
-function evaluateSeason(exp, record, psSummary) {
+// How the season measured up: a job-security swing and whether the bar was
+// met. `banned` (an active postseason ban for the season just played) zeroes
+// out any postseason requirement regardless of what the expectation set at
+// the start of the season demanded — a coach can't be judged on a bracket
+// their own program was barred from, even if the ban landed mid-season.
+function evaluateSeason(exp, record, psSummary, banned = false) {
   const psv = psValue(psSummary);
-  const goalv = exp.psGoal ? psValue(exp.psGoal) : 0;
+  const goalv = (exp.psGoal && !banned) ? psValue(exp.psGoal) : 0;
   let sec = clamp(record.w - exp.winTarget, -12, 12) * 1.4 + (psv - goalv) * 6;
   if (psSummary === "National Champions") sec += 20;
   const met = record.w >= exp.winTarget && psv >= goalv;
@@ -3657,6 +3668,17 @@ function cpuNilGrowth(quality) {
   return clamp(0.02 + (quality ?? 0.5) * 0.28, 0.02, 0.30);
 }
 
+// Real starting budgets (nil_budgets.json) run up to ~$8.8M, well above the
+// ~$4M ceiling the growth rates below were originally tuned against. Left
+// uncapped, a plausible ~16%/season average compounds an $8M budget past
+// $80M over a 15-season dynasty. Growth tapers smoothly toward zero as a
+// budget nears this ceiling — never a hard wall, but never past it either.
+const NIL_BUDGET_CEILING = 20_000_000;
+function taperedNilGrowth(prev, rawGrowthPct) {
+  const room = clamp(1 - prev / NIL_BUDGET_CEILING, 0, 1);
+  return Math.min(prev * (1 + rawGrowthPct * room), NIL_BUDGET_CEILING);
+}
+
 // Advance every team's NIL budget one season: the human's team grades its 3
 // real objectives (compounding their boostPct onto the current budget); every
 // other team gets the lighter CPU approximation off the same season-quality
@@ -3672,10 +3694,10 @@ function advanceNilBudgets(prevNilById, userTeamId, userObjectives, evalCtx, yea
   for (const t of TEAMS) {
     const prev = prevNilById[t.id] ?? nilBudgetForTeam(t);
     if (t.id === userTeamId) {
-      next[t.id] = Math.round(prev * (1 + totalBoost));
+      next[t.id] = Math.round(taperedNilGrowth(prev, totalBoost));
     } else {
       const quality = seasonQualityFor(t, year, powerById, null);
-      next[t.id] = Math.round(prev * (1 + cpuNilGrowth(quality)));
+      next[t.id] = Math.round(taperedNilGrowth(prev, cpuNilGrowth(quality)));
     }
   }
   return { nextNilById: next, met, totalBoost };
@@ -5104,16 +5126,27 @@ function DynastyApp({ initial, onExit }) {
     if (!opt) return;
     const isTransfer = source === "transfer";
     const cost = RECRUIT_ACTIONS.RISK_IT.cost;
-    const hit = Math.random() < opt.riskPct;
+    const notoriety = state.riskItAttempts || 0;
+    const effectiveRiskPct = riskItRiskPct(opt.riskPct, notoriety);
+    const hit = Math.random() < effectiveRiskPct;
     const penalty = hit ? (Math.random() < 0.5 ? "BAN" : "SCHOLARSHIPS") : null;
     setState((s) => {
       const board = isTransfer ? s.offseason?.transferBoard : s.recruitingBoard;
       const r0 = board && board.find((r) => r.id === recruit.id);
       if (!r0 || r0.committedTo) return s;
       const next = { ...r0, interest: clamp(r0.interest + opt.gain, 0, 100) };
-      let patch = {};
-      if (penalty === "BAN") patch = { postseasonBanUntilYear: s.year + RISK_IT_PENALTY_EXTRA_SEASONS };
-      if (penalty === "SCHOLARSHIPS") patch = { scholarshipPenaltyUntilYear: s.year + RISK_IT_PENALTY_EXTRA_SEASONS };
+      // A repeat penalty while one's already active extends the existing
+      // expiry further out instead of resetting it — gambling again while
+      // already being punished stacks the punishment.
+      let patch = { riskItAttempts: notoriety + 1 };
+      if (penalty === "BAN") {
+        const base = Math.max(s.year, s.postseasonBanUntilYear ?? 0);
+        patch.postseasonBanUntilYear = base + RISK_IT_PENALTY_EXTRA_SEASONS;
+      }
+      if (penalty === "SCHOLARSHIPS") {
+        const base = Math.max(s.year, s.scholarshipPenaltyUntilYear ?? 0);
+        patch.scholarshipPenaltyUntilYear = base + RISK_IT_PENALTY_EXTRA_SEASONS;
+      }
       if (isTransfer) {
         return {
           ...s, ...patch,
@@ -5364,13 +5397,18 @@ function DynastyApp({ initial, onExit }) {
     ];
 
     // Hot seat: grade the season against the AD's bar, swing job security, and
-    // set next season's expectation off the program's drifted prestige.
+    // set next season's expectation off the program's drifted prestige. A
+    // postseason ban that was active for the season just played — even one
+    // that landed mid-season — can't cost job security on top of everything
+    // else it already costs; next season's expectation drops to probation
+    // too if the ban still covers it.
     const exp = state.expectation || seasonExpectation(team.prestige);
-    const evalRes = evaluateSeason(exp, record, psSummary);
+    const evalRes = evaluateSeason(exp, record, psSummary, isPostseasonBanned(state));
     const secBefore = state.coach?.jobSecurity ?? 60;
     const secAfter = clamp(secBefore + evalRes.securityDelta, 0, 100);
     coach.jobSecurity = secAfter;
-    const nextExp = seasonExpectation(nextPrestige[state.teamId] ?? team.prestige);
+    const nextBanned = state.postseasonBanUntilYear != null && newYear <= state.postseasonBanUntilYear;
+    const nextExp = seasonExpectation(nextPrestige[state.teamId] ?? team.prestige, nextBanned);
     const fired = secAfter <= 8;
     const wonCoy = coachOfYear(evalRes, psSummary);
     if (wonCoy) coach.coyAwards = (coach.coyAwards || 0) + 1;
@@ -5454,6 +5492,10 @@ function DynastyApp({ initial, onExit }) {
         ...(draft.length ? [{ year: state.year, teamName: team.name, picks: draft }] : []),
       ],
       history: [...state.history, { year: state.year, wins: record.w, losses: record.l, teamId: state.teamId, postseason: psSummary, awards, draft }],
+      // Kept beyond the one-time season recap popup so the Dashboard can
+      // still show who got fired around the country after that modal's
+      // been dismissed.
+      lastCoachingChanges: coachingFires.slice(0, 6),
       programRecords: {
         seasons: [...(state.programRecords?.seasons || []), ...seasonLines],
         careers: [...(state.programRecords?.careers || []), ...newCareerRecords],
@@ -5492,7 +5534,7 @@ function DynastyApp({ initial, onExit }) {
     // Every OTHER rival program's coach advances too. The program you're
     // leaving gets a fresh hire (you're vacating it); the program you're
     // joining drops out of this table since you're its coach now.
-    const { coachesById: carouselCoachesById } = advanceCoachingCarousel(
+    const { coachesById: carouselCoachesById, fires: coachingFires } = advanceCoachingCarousel(
       state.coachesById || baselineCoachesById(state.teamId, state.year),
       ranked, state.postseason, state.prestigeById || baselinePrestigeById(), state.year, state.teamId
     );
@@ -5510,7 +5552,7 @@ function DynastyApp({ initial, onExit }) {
     // Year year — a great season at your old job doesn't stop counting just
     // because you're moving on to a bigger one.
     const leavingExp = state.expectation || seasonExpectation(team.prestige);
-    const leavingEvalRes = evaluateSeason(leavingExp, record, psSummary);
+    const leavingEvalRes = evaluateSeason(leavingExp, record, psSummary, isPostseasonBanned(state));
     if (coachOfYear(leavingEvalRes, psSummary)) {
       coach.coyAwards = (coach.coyAwards || 0) + 1;
     }
@@ -5561,12 +5603,18 @@ function DynastyApp({ initial, onExit }) {
         ...(awards.userHonors.length ? [{ year: state.year, teamName: team.name, honors: awards.userHonors }] : []),
       ],
       history: [...state.history, { year: state.year, wins: record.w, losses: record.l, teamId: state.teamId, postseason: psSummary, awards }],
+      lastCoachingChanges: coachingFires.slice(0, 6),
       programRecords: {
         seasons: [...(state.programRecords?.seasons || []), ...seasonLines],
         careers: [...(state.programRecords?.careers || []), ...newCareerRecords],
       },
       coachFired: false,
       poachOffer: null,
+      // A "Risk It" postseason ban or scholarship cut is an NCAA-style
+      // sanction on the PROGRAM you're leaving, not a mark against you
+      // personally — it stays behind with the old school, not the new job.
+      postseasonBanUntilYear: null,
+      scholarshipPenaltyUntilYear: null,
     });
     setJobPickerOpen(false);
     setTab("dashboard");
@@ -5767,9 +5815,6 @@ function DynastyApp({ initial, onExit }) {
         </div>
       </div>
 
-      {viewTeamId && (
-        <TeamRosterModal teamId={viewTeamId} year={state.year} strengths={state.strengths} rank={rankById[viewTeamId]} poached={state.poachedPlayers || []} history={state.history} coach={state.coachesById?.[viewTeamId]} onClose={() => setViewTeamId(null)} />
-      )}
       {jobPickerOpen && (
         // Voluntary "Coaching Offers" browse only — a firing is handled by
         // the firedFlow early-return above and never reaches this tree.
@@ -5830,6 +5875,7 @@ function DynastyApp({ initial, onExit }) {
         <LiveGame
           ctxInit={livePlay}
           onClose={() => setLivePlay(null)}
+          onScoutOpponent={() => setViewTeamId(livePlay.oppId)}
           onFinish={(result) => {
             const lp = livePlay;
             setLivePlay(null);
@@ -5837,6 +5883,11 @@ function DynastyApp({ initial, onExit }) {
             else commitGameResult(result, lp.opp, lp.oppRank);
           }}
         />
+      )}
+      {/* Rendered after LiveGame so a scouting-report lookup mid-Coach-Mode
+          stacks visually on top of it, not underneath. */}
+      {viewTeamId && (
+        <TeamRosterModal teamId={viewTeamId} year={state.year} strengths={state.strengths} rank={rankById[viewTeamId]} poached={state.poachedPlayers || []} history={state.history} coach={state.coachesById?.[viewTeamId]} onClose={() => setViewTeamId(null)} />
       )}
       {visit && (
         <VisitExperience
@@ -5850,6 +5901,7 @@ function DynastyApp({ initial, onExit }) {
       {riskIt && (
         <RiskItModal
           recruit={riskIt.recruit}
+          notoriety={state.riskItAttempts || 0}
           onClose={() => setRiskIt(null)}
           onConfirm={finishRiskIt}
         />
@@ -6041,6 +6093,23 @@ function DashboardTab({ state, team, record, nextGame, stage, onSim, onPlay, onS
               <div key={h.id} style={{ fontSize: 12.5, display: "flex", alignItems: "center", gap: 7 }}>
                 {h.upset && <Zap size={12} color={C.gold} style={{ flexShrink: 0 }} />}
                 <span style={{ color: h.upset ? C.gold : C.cream }}>{h.text}</span>
+              </div>
+            ))}
+          </div>
+        </Panel>
+      )}
+
+      {/* Kept beyond the season recap popup — still visible here early in
+          the new season for anyone who dismissed that modal without reading it. */}
+      {state.lastCoachingChanges && state.lastCoachingChanges.length > 0 && (record.w + record.l) < 5 && (
+        <Panel style={{ padding: 20 }}>
+          <div style={{ fontSize: 11, color: C.dim, letterSpacing: "0.08em", marginBottom: 10, display: "flex", alignItems: "center", gap: 6 }}>
+            <Users size={13} color={C.wood} /> COACHING CAROUSEL
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {state.lastCoachingChanges.map((c, i) => (
+              <div key={i} style={{ fontSize: 12.5, color: C.cream }}>
+                {c.teamName} <span style={{ color: C.dim }}>parts ways with {c.coachName} — {c.wins}-{c.losses}, {c.psSummary || "missed the tournament"}</span>
               </div>
             ))}
           </div>
@@ -7103,6 +7172,7 @@ function DraftDecisionsPanel({ declarations, onPersuade, trajectory = 0.5, coach
                     placeholder="0"
                     onChange={(e) => setPledgeChoice((p) => ({ ...p, [d.id]: clamp(Math.round(Number(e.target.value) || 0), 0, nilAvailable) }))}
                     style={{ width: 100, background: C.panel, border: `1px solid ${C.line}`, color: C.cream, fontSize: 12, padding: "3px 6px" }} />
+                  <span style={{ fontSize: 11, color: C.dimmer }}>Ask: ~{formatNil(stayNilAsk(d))}</span>
                   {preview != null && (
                     <span style={{ fontSize: 11.5, color: C.dimmer }}>Est. {Math.round(preview * 100)}% to return</span>
                   )}
@@ -7738,13 +7808,14 @@ function VisitExperience({ recruit, actionKey, team, onClose, onFinish }) {
 // A real gamble, laid out in full before the coach commits — every option's
 // exact interest gain and risk percentage are shown up front, along with
 // both possible penalties, so nothing about the downside is hidden.
-function RiskItModal({ recruit, onClose, onConfirm }) {
+function RiskItModal({ recruit, notoriety = 0, onClose, onConfirm }) {
   const [picked, setPicked] = useState(null);
   const opt = RISK_IT_OPTIONS.find((o) => o.key === picked);
   return (
     <Modal title="Risk It" subtitle={`${recruit.name} · ${recruit.pos} · costs ${RECRUIT_ACTIONS.RISK_IT.cost} pts`} onClose={onClose} maxWidth={560}>
       <div style={{ fontSize: 12.5, color: C.dimmer, marginBottom: 14 }}>
         Pick one. Each option's interest gain and risk of a penalty are exact — no hidden odds.
+        {notoriety > 0 && ` You've done this ${notoriety} time${notoriety > 1 ? "s" : ""} already — the odds below already include the scrutiny that's bought you.`}
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 16 }}>
         {RISK_IT_OPTIONS.map((o) => (
@@ -7758,13 +7829,13 @@ function RiskItModal({ recruit, onClose, onConfirm }) {
               <span style={{ fontSize: 13.5, fontWeight: 600 }}>{o.label}</span>
               <span className="cbb-num" style={{ fontSize: 12.5, color: C.green }}>+{o.gain} interest</span>
             </div>
-            <div style={{ fontSize: 11.5, color: C.red, marginTop: 3 }}>{Math.round(o.riskPct * 100)}% chance of a penalty</div>
+            <div style={{ fontSize: 11.5, color: C.red, marginTop: 3 }}>{Math.round(riskItRiskPct(o.riskPct, notoriety) * 100)}% chance of a penalty</div>
           </button>
         ))}
       </div>
       <div style={{ fontSize: 11.5, color: C.dim, marginBottom: 16, border: `1px solid ${C.line}`, padding: "10px 12px" }}>
         <div style={{ marginBottom: 4 }}>If a penalty triggers, it's a coin flip (50/50) between:</div>
-        <div>— A postseason ban for the next 2 seasons (no conference tournament or NCAA Tournament)</div>
+        <div>— A postseason ban for the next 2 seasons (no conference tournament or NCAA Tournament — which also costs job security and NIL growth for as long as it lasts, since your season goals can&apos;t be met)</div>
         <div>— A 50% cut to your available scholarships for the next 2 seasons</div>
       </div>
       <div style={{ display: "flex", gap: 10 }}>
@@ -7793,7 +7864,7 @@ function initialOnFloor(dc, roster) {
   return out;
 }
 
-function LiveGame({ ctxInit, onFinish, onClose }) {
+function LiveGame({ ctxInit, onFinish, onClose, onScoutOpponent }) {
   const T = TEMPO_POSS.balanced; // possessions per team are locked at tip from tempo
   const [tempo, setTempo] = useState("balanced");
   const [started, setStarted] = useState(false);
@@ -7902,6 +7973,11 @@ function LiveGame({ ctxInit, onFinish, onClose }) {
             <PlanButton active={tempo === "balanced"} onClick={() => setTempo("balanced")}>Balanced (65)</PlanButton>
             <PlanButton active={tempo === "fast"} onClick={() => setTempo("fast")}>Fast (73)</PlanButton>
           </div>
+          {onScoutOpponent && (
+            <button onClick={onScoutOpponent} className="cbb-btn" style={{ ...btnStyle(C.panelAlt, C.cream), width: "100%", justifyContent: "center", fontSize: 13, marginBottom: 8, border: `1px solid ${C.line}` }}>
+              <Search size={13} /> Scout {ctx.oppName}
+            </button>
+          )}
           <button onClick={tip} className="cbb-btn" style={{ ...btnStyle(C.gold, "#221a00"), width: "100%", justifyContent: "center", fontSize: 14 }}><Play size={14} /> Tip Off</button>
         </div>
       ) : (
@@ -9548,6 +9624,7 @@ export default function CBBDynasty() {
       prestigeTrendById: {},
       scholarshipPenaltyUntilYear: null,
       postseasonBanUntilYear: null,
+      riskItAttempts: 0,
     };
     setPickingTeamFor(null);
     setSession(state);
@@ -9595,7 +9672,10 @@ export default function CBBDynasty() {
       <GlobalStyle />
       <Panel style={{ padding: 30, maxWidth: 560, width: "100%" }}>
         <div style={{ fontSize: 11, color: C.dim, letterSpacing: "0.08em", marginBottom: 4 }}>CBB DYNASTY</div>
-        <h2 className="cbb-num" style={{ fontSize: 24, fontWeight: 700, marginBottom: 18 }}>Choose a save slot</h2>
+        <h2 className="cbb-num" style={{ fontSize: 24, fontWeight: 700, marginBottom: 6 }}>Choose a save slot</h2>
+        <div style={{ fontSize: 12, color: C.dimmer, marginBottom: 18 }}>
+          {SAVE_SLOTS.length} dynasty saves at a time — delete one below to free it up for a new one.
+        </div>
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           {SAVE_SLOTS.map((slot) => {
             const s = slots[slot];
