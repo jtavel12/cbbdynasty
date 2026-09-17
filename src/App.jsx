@@ -7029,28 +7029,84 @@ function PlanButton({ active, onClick, children }) {
 // "balanced" is a dependable middle, "safe" is steady but modest. The best
 // choice isn't fixed — a bold pitch can land huge or fall flat — so visits
 // reward reading the room rather than mashing one button.
+//
+// Each script's `momentPools` is one pool of alternative moments per beat of
+// the visit (opening, middle, closing) — VisitExperience draws one moment
+// at random from each pool per visit, so the same recruiting trip doesn't
+// play out identically every single time across a long dynasty.
 const VISIT_SCRIPTS = {
   VISIT: {
     label: "Official Visit",
     Icon: Users,
     intro: "You've got them on campus for the weekend. Every stop is a chance to sell the program.",
     perMoment: [5, 9],
-    moments: [
-      { prompt: "First impression — how do you show off the program?", options: [
-        { label: "Walk him out to a packed practice-night arena", tone: "bold" },
-        { label: "Break down film of exactly how he'd fit", tone: "balanced" },
-        { label: "Quiet tour of the facilities and locker room", tone: "safe" },
-      ] },
-      { prompt: "Team dinner — set the tone with the players.", options: [
-        { label: "Big night out downtown with the whole roster", tone: "bold" },
-        { label: "Let the veterans sell the culture themselves", tone: "balanced" },
-        { label: "Low-key dinner with just his position group", tone: "safe" },
-      ] },
-      { prompt: "The closing pitch back in your office.", options: [
-        { label: "Promise him a featured role from day one", tone: "bold" },
-        { label: "Sell player development and the long game", tone: "balanced" },
-        { label: "Talk academics, the degree, life after ball", tone: "safe" },
-      ] },
+    momentPools: [
+      [
+        { prompt: "First impression — how do you show off the program?", options: [
+          { label: "Walk him out to a packed practice-night arena", tone: "bold" },
+          { label: "Break down film of exactly how he'd fit", tone: "balanced" },
+          { label: "Quiet tour of the facilities and locker room", tone: "safe" },
+        ] },
+        { prompt: "The campus tour — where do you take him first?", options: [
+          { label: "Show him the trophy case and banners hanging overhead", tone: "bold" },
+          { label: "Walk him through the weight room and sports science setup", tone: "balanced" },
+          { label: "Sit him down with academic advisors and tutors", tone: "safe" },
+        ] },
+        { prompt: "He asks what makes your program different.", options: [
+          { label: "Tell him this is where legends get built", tone: "bold" },
+          { label: "Lay out exactly how your system develops his position", tone: "balanced" },
+          { label: "Talk about the family atmosphere and support staff", tone: "safe" },
+        ] },
+        { prompt: "Game-day atmosphere — how do you sell it?", options: [
+          { label: "Get him courtside for a sellout crowd roaring", tone: "bold" },
+          { label: "Show him film of your offense running through his position", tone: "balanced" },
+          { label: "Introduce him quietly to a few current players first", tone: "safe" },
+        ] },
+      ],
+      [
+        { prompt: "Team dinner — set the tone with the players.", options: [
+          { label: "Big night out downtown with the whole roster", tone: "bold" },
+          { label: "Let the veterans sell the culture themselves", tone: "balanced" },
+          { label: "Low-key dinner with just his position group", tone: "safe" },
+        ] },
+        { prompt: "Practice — do you let him watch or jump in?", options: [
+          { label: "Have him scrimmage with the starters right then", tone: "bold" },
+          { label: "Have him run a few drills alongside the team", tone: "balanced" },
+          { label: "Let him just observe practice from the sideline", tone: "safe" },
+        ] },
+        { prompt: "Free time on campus — what's the plan?", options: [
+          { label: "Take him to a campus party with the team", tone: "bold" },
+          { label: "Let the team show him around at their own pace", tone: "balanced" },
+          { label: "Keep it structured — study hall, then quiet rest", tone: "safe" },
+        ] },
+        { prompt: "A current player pulls you aside, worried about his own role.", options: [
+          { label: "Tell him publicly you're building around this recruit", tone: "bold" },
+          { label: "Quietly reassure the current guy his role's still safe", tone: "balanced" },
+          { label: "Stay neutral and let it play out organically", tone: "safe" },
+        ] },
+      ],
+      [
+        { prompt: "The closing pitch back in your office.", options: [
+          { label: "Promise him a featured role from day one", tone: "bold" },
+          { label: "Sell player development and the long game", tone: "balanced" },
+          { label: "Talk academics, the degree, life after ball", tone: "safe" },
+        ] },
+        { prompt: "His parents call during the visit wanting an update.", options: [
+          { label: "Get on the phone and sell them directly", tone: "bold" },
+          { label: "Have him call them back himself, no pressure", tone: "balanced" },
+          { label: "Send a handwritten follow-up letter after", tone: "safe" },
+        ] },
+        { prompt: "Final handshake before he heads home.", options: [
+          { label: "Tell him you need an answer soon", tone: "bold" },
+          { label: "Tell him to take his time and trust his gut", tone: "balanced" },
+          { label: "Remind him the door's always open, no rush", tone: "safe" },
+        ] },
+        { prompt: "He asks point-blank where he ranks on your board.", options: [
+          { label: "Tell him he's the guy you're building around", tone: "bold" },
+          { label: "Tell him honestly where he stands right now", tone: "balanced" },
+          { label: "Deflect — focus on fit, not rankings", tone: "safe" },
+        ] },
+      ],
     ],
   },
   HOME: {
@@ -7058,22 +7114,58 @@ const VISIT_SCRIPTS = {
     Icon: Landmark,
     intro: "You're in his living room with the family. This one is personal.",
     perMoment: [4, 6],
-    moments: [
-      { prompt: "You sit down with the family. How do you open?", options: [
-        { label: "Big, confident vision for his future", tone: "bold" },
-        { label: "Ask about the family and really listen", tone: "balanced" },
-        { label: "Hand them the facts: minutes, plan, fit", tone: "safe" },
-      ] },
-      { prompt: "Mom asks the hard question about playing time.", options: [
-        { label: "Guarantee he starts as a freshman", tone: "bold" },
-        { label: "Be honest — he'll earn it, and you'll develop him", tone: "balanced" },
-        { label: "Point to how past recruits at his spot panned out", tone: "safe" },
-      ] },
-      { prompt: "Before you leave, you make it personal.", options: [
-        { label: "Tell him he's your top priority, full stop", tone: "bold" },
-        { label: "Share why you'd trust him with the ball late", tone: "balanced" },
-        { label: "Leave a handwritten note and the academic plan", tone: "safe" },
-      ] },
+    momentPools: [
+      [
+        { prompt: "You sit down with the family. How do you open?", options: [
+          { label: "Big, confident vision for his future", tone: "bold" },
+          { label: "Ask about the family and really listen", tone: "balanced" },
+          { label: "Hand them the facts: minutes, plan, fit", tone: "safe" },
+        ] },
+        { prompt: "The room feels a little tense. How do you break the ice?", options: [
+          { label: "Crack a joke and loosen the room up", tone: "bold" },
+          { label: "Compliment something personal you noticed in the home", tone: "balanced" },
+          { label: "Get straight to business — respect their time", tone: "safe" },
+        ] },
+        { prompt: "Dad wants to talk numbers and depth chart first.", options: [
+          { label: "Lay out a bold vision of stardom", tone: "bold" },
+          { label: "Walk through exactly where he fits on the depth chart", tone: "balanced" },
+          { label: "Bring printed academic and graduation-rate stats", tone: "safe" },
+        ] },
+      ],
+      [
+        { prompt: "Mom asks the hard question about playing time.", options: [
+          { label: "Guarantee he starts as a freshman", tone: "bold" },
+          { label: "Be honest — he'll earn it, and you'll develop him", tone: "balanced" },
+          { label: "Point to how past recruits at his spot panned out", tone: "safe" },
+        ] },
+        { prompt: "A younger sibling asks if he'll ever come home on breaks.", options: [
+          { label: "Promise he'll be taken care of like family", tone: "bold" },
+          { label: "Explain the travel plan and support system honestly", tone: "balanced" },
+          { label: "Talk about the structured academic calendar", tone: "safe" },
+        ] },
+        { prompt: "Dad brings up a rival school's offer.", options: [
+          { label: "Tell them straight up you're the better choice", tone: "bold" },
+          { label: "Respectfully compare what makes your program different", tone: "balanced" },
+          { label: "Don't badmouth anyone — let your program speak for itself", tone: "safe" },
+        ] },
+      ],
+      [
+        { prompt: "Before you leave, you make it personal.", options: [
+          { label: "Tell him he's your top priority, full stop", tone: "bold" },
+          { label: "Share why you'd trust him with the ball late", tone: "balanced" },
+          { label: "Leave a handwritten note and the academic plan", tone: "safe" },
+        ] },
+        { prompt: "The family walks you to the door.", options: [
+          { label: "Tell him this is home now, full stop", tone: "bold" },
+          { label: "Thank the family sincerely for their time", tone: "balanced" },
+          { label: "Leave your personal number for any questions", tone: "safe" },
+        ] },
+        { prompt: "One last question hangs in the air: why you?", options: [
+          { label: "Because nobody will fight harder for him than you", tone: "bold" },
+          { label: "Because your track record speaks for itself", tone: "balanced" },
+          { label: "Because it's the right fit, not just the right pitch", tone: "safe" },
+        ] },
+      ],
     ],
   },
 };
@@ -7098,14 +7190,18 @@ function visitOutcomeBlurb(tone, gain, expected) {
 function VisitExperience({ recruit, actionKey, team, onClose, onFinish }) {
   const script = VISIT_SCRIPTS[actionKey] || VISIT_SCRIPTS.VISIT;
   const { Icon } = script;
+  // One moment drawn at random from each beat's pool, fixed for the
+  // duration of this one visit — so replaying visits across a long dynasty
+  // doesn't always show the exact same three beats in the exact same order.
+  const moments = useMemo(() => script.momentPools.map((pool) => pick(pool)), [script]);
   const [step, setStep] = useState(0);          // which moment we're on
   const [picked, setPicked] = useState(null);   // outcome of the current moment, pre-continue
   const [log, setLog] = useState([]);           // [{ prompt, choice, gain, blurb }]
   const cost = actionCostFor(actionKey, recruit, team);
   const miles = recruitDistanceMiles(recruit, team);
   const total = log.reduce((a, e) => a + e.gain, 0);
-  const done = step >= script.moments.length;
-  const moment = !done ? script.moments[step] : null;
+  const done = step >= moments.length;
+  const moment = !done ? moments[step] : null;
 
   function choose(opt) {
     const base = rand(script.perMoment[0], script.perMoment[1]);
@@ -7144,7 +7240,7 @@ function VisitExperience({ recruit, actionKey, team, onClose, onFinish }) {
       {!done ? (
         <div>
           <div style={{ fontSize: 10.5, color: C.dim, letterSpacing: "0.08em", marginBottom: 6 }}>
-            STOP {step + 1} OF {script.moments.length}
+            STOP {step + 1} OF {moments.length}
           </div>
           {step === 0 && log.length === 0 && !picked && (
             <div style={{ fontSize: 12.5, color: C.dimmer, marginBottom: 12 }}>{script.intro}</div>
@@ -7170,7 +7266,7 @@ function VisitExperience({ recruit, actionKey, team, onClose, onFinish }) {
                 </div>
               </div>
               <button onClick={next} className="cbb-btn" style={{ ...btnStyle(C.wood), width: "100%", justifyContent: "center", fontSize: 14 }}>
-                {step + 1 < script.moments.length ? "Next stop" : "Wrap up the visit"}
+                {step + 1 < moments.length ? "Next stop" : "Wrap up the visit"}
               </button>
             </div>
           )}
