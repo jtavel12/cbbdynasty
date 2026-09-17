@@ -1164,6 +1164,10 @@ function makePlayer({ pos, classYear, prestige, starsAtSigning, real, walkOn }) 
     overall,
     durability: computeDurability(gp, classYear),
     starsAtSigning: starsAtSigning ?? null,
+    // Never recruited through the board (an inherited starting roster, or a
+    // walk-on fill-in), so there's no signed NIL offer to carry forward — a
+    // modest baseline off overall for a real body, nothing for a walk-on.
+    nil: !real || walkOn ? 0 : Math.round(clamp((overall - 50) / 40, 0, 1) * 60000 + 3000),
     season: { ...EMPTY_SEASON_STATS },
     career: { ...EMPTY_CAREER_STATS },
   };
@@ -1313,6 +1317,101 @@ function computeNilAsk({ stars, adjustedValue, isTransfer, prestige }) {
   const nilTarget = Math.round(base * transferMult * productionMult * pedigreeMult * rand(0.85, 1.15));
   const nilFloor = Math.round(nilTarget * rand(0.60, 0.80));
   return { nilTarget, nilFloor };
+}
+
+/* =========================================================================
+   RETURNING-PLAYER NIL DEMAND + TRANSFER RISK
+   A returning player's market NIL ask, computed the exact same way a
+   recruit's is (computeNilAsk, fed by the same pedigree/production blend
+   buildRealNewcomer uses) — just fed by THIS season's real production and
+   the player's OWN program's current prestige instead of a recruiting
+   pitch. Call this once per offseason and store the result; like
+   computeNilAsk, it's randomized per call, not a pure function of its inputs.
+   ========================================================================= */
+function playerNilDemand(player, team) {
+  const gp = player.season?.gp || 0;
+  const ppg = perGame(player.season?.pts, gp);
+  const rpg = perGame(player.season?.reb, gp);
+  const apg = perGame(player.season?.ast, gp);
+  const rawValue = ppg + rpg * 0.7 + apg * 0.9;
+  const productionValue = rawValue * sampleReliability(gp) + careerOutlierBonus(player.name);
+  const tier = clamp(((team?.prestige ?? 2) - 1) / 4, 0, 1);
+  const pedigreeValue = 2 + recruitingPedigreeCurve(tier) * 16;
+  const adjustedValue = pedigreeValue * 0.75 + productionValue * 0.25;
+  const { nilTarget } = computeNilAsk({ stars: player.starsAtSigning || 3, adjustedValue, isTransfer: false, prestige: team?.prestige ?? 2 });
+  return nilTarget;
+}
+
+// "Deserved" minutes at a player's position: where they'd rank in the
+// pregame depth-chart order if slotted purely by ability, read off the same
+// DEFAULT_MIN_SPLITS a freshly-built depth chart uses — i.e. what a coach
+// running things strictly by the book would hand them.
+function deservedMinutesFor(player, roster) {
+  const peers = roster.filter((p) => p.pos === player.pos).sort((a, b) => overallAtPos(b, b.pos) - overallAtPos(a, a.pos));
+  const rank = peers.findIndex((p) => p.id === player.id);
+  return DEFAULT_MIN_SPLITS[rank] ?? 0;
+}
+
+// A player is a transfer risk if they're being meaningfully underpaid
+// relative to their real market NIL, or clearly deserved more run than
+// they got — either one is shown as the reason, both if it's both. True
+// freshmen get a full season before this ever applies, same floor
+// unhappyDepartureChance used to enforce.
+const NIL_RISK_GAP = 0.35;   // demand this much above current NIL = underpaid
+const MINUTES_RISK_GAP = 8;  // deserved-vs-actual minutes gap that registers as a real gripe
+function transferRiskFor(player, roster, minutesMap, team) {
+  // Seniors are already leaving via graduation regardless of NIL or
+  // minutes — flagging them as a flight risk too is redundant noise.
+  if (player.class === "FR" || player.class === "SR" || player.generatedWalkOn) return null;
+  const nilDemand = playerNilDemand(player, team);
+  const current = player.nil || 0;
+  const nilGap = nilDemand > 0 ? clamp((nilDemand - current) / nilDemand, -1, 1) : 0;
+  const nilRisk = nilGap >= NIL_RISK_GAP;
+
+  const deservedMinutes = deservedMinutesFor(player, roster);
+  const actualMinutes = minutesMap?.[player.id] ?? 0;
+  const minutesGap = deservedMinutes - actualMinutes;
+  const minutesRisk = minutesGap >= MINUTES_RISK_GAP;
+
+  if (!nilRisk && !minutesRisk) return null;
+  const reason = nilRisk && minutesRisk ? "both" : nilRisk ? "nil" : "minutes";
+  return { id: player.id, nilDemand, nilGap, deservedMinutes, actualMinutes, minutesGap, reason };
+}
+
+// Every flagged transfer risk on the roster this offseason, in one pass.
+// `draftDeclaredIds` excludes anyone already declared for the NBA draft —
+// their stay-or-go decision is the draft-declaration flow's call, not a
+// second, contradictory transfer-portal decision on the same player.
+function computeTransferRisks(roster, minutesMap, team, draftDeclaredIds) {
+  return roster
+    .filter((p) => !draftDeclaredIds || !draftDeclaredIds.has(p.id))
+    .map((p) => transferRiskFor(p, roster, minutesMap, team))
+    .filter(Boolean)
+    .map((r) => ({ ...r, resolved: false, staying: null }));
+}
+
+// Whether a retention counter-offer actually keeps a flagged player —
+// meeting their real NIL demand makes staying likely, low-balling makes
+// leaving likely, with real randomness either way rather than a hard
+// cutoff; an unresolved playing-time gripe isn't fixed by money alone.
+function retentionChance(demand, offeredNil, minutesSatisfied) {
+  const ratio = demand > 0 ? clamp((offeredNil || 0) / demand, 0, 1.5) : 1;
+  let chance = clamp(0.15 + ratio * 0.65, 0.05, 0.92);
+  if (!minutesSatisfied) chance *= 0.7;
+  return clamp(chance, 0.05, 0.95);
+}
+
+// Total NIL already tied up in the CURRENT roster (excludes `excludeId`, so a
+// player's own existing figure doesn't count against their own counter-offer
+// room) — anyone already known to be gone this offseason (graduated, an
+// unkept draft declaration, or already resolved off the portal) is excluded
+// too, since their dollars have already come back to the pool.
+function committedRosterNil(roster, offseason, excludeId) {
+  const goneIds = new Set();
+  roster.forEach((p) => { if (p.class === "SR") goneIds.add(p.id); });
+  (offseason?.draftDeclarations || []).forEach((d) => { if (d.attempted && !d.kept) goneIds.add(d.id); });
+  (offseason?.transferRisks || []).forEach((r) => { if (r.resolved && r.staying === false) goneIds.add(r.id); });
+  return roster.reduce((sum, p) => (p.id === excludeId || goneIds.has(p.id) ? sum : sum + (p.nil || 0)), 0);
 }
 
 // Fresh, per-cycle recruiting-trail bookkeeping shared by every recruit object.
@@ -1787,7 +1886,12 @@ function resolveUnrankedRating(recruit, team) {
   return clamp(Math.round(rating * 10000) / 10000, 0.700, 0.799);
 }
 
+// A signed recruit's NIL offer becomes the resulting player's permanent NIL
+// figure — it persists on the roster (via the object spread every later
+// season-transition uses) until the coach or a retention negotiation
+// changes it, not just for the moment they sign.
 function recruitToPlayer(recruit, team) {
+  const nil = Math.max(0, Math.round(recruit.nilOffer || 0));
   if (recruit.real) {
     // Use the tier they actually earned their stats against, not the
     // signing team's — a recruit's proven talent shouldn't change just
@@ -1816,6 +1920,7 @@ function recruitToPlayer(recruit, team) {
       durability: computeDurability(recruit.careerGp ?? recruit.realStats?.gp, recruit.classYear || "FR"),
       starsAtSigning: recruit.stars,
       ratingAtSigning: recruit.rating,
+      nil,
       season: { ...EMPTY_SEASON_STATS },
       career: { ...EMPTY_CAREER_STATS },
     };
@@ -1844,6 +1949,7 @@ function recruitToPlayer(recruit, team) {
     durability: computeDurability(0, "FR"),
     starsAtSigning: stars,
     ratingAtSigning: rating,
+    nil,
     season: { ...EMPTY_SEASON_STATS },
     career: { ...EMPTY_CAREER_STATS },
   };
@@ -3071,10 +3177,16 @@ function unhappyDepartureChance(p, seasonSeed, newYear) {
   return clamp((0.5 - playRate) * 0.7 * classMult, 0, 0.42);
 }
 
-function progressRosterForNewYear(roster, incoming, team, newYear, seasonSeed, scholarshipLimit = SCHOLARSHIP_LIMIT) {
+// `resolvedTransferOutIds`, when given, is the exact set of unhappy
+// departures the Player Decisions page's retention flow already resolved
+// this offseason — nothing left to roll. It's only null for a caller that
+// never ran that flow, where the old blind-roll fallback still applies so
+// nothing crashes.
+function progressRosterForNewYear(roster, incoming, team, newYear, seasonSeed, scholarshipLimit = SCHOLARSHIP_LIMIT, resolvedTransferOutIds = null) {
   const graduated = roster.filter((p) => p.class === "SR").map((p) => finalizeCareerRecord(p, newYear - 1));
   const departed = [];
   const staying = roster.filter((p) => p.class !== "SR").filter((p) => {
+    if (resolvedTransferOutIds) return !resolvedTransferOutIds.has(p.id);
     const chance = unhappyDepartureChance(p, seasonSeed, newYear);
     if (chance <= 0) return true;
     const rng = seasonRngFor(seasonSeed ?? 0, `leave:${p.id}`, newYear);
@@ -3826,6 +3938,24 @@ function poachingOffer(coachingFires, userTeamId, userPrestige, userReputation) 
   const stepUp = best.prestige - userPrestige;
   const chance = clamp(0.16 + stepUp * 0.11, 0.15, 0.5);
   return Math.random() < chance ? best : null;
+}
+
+// The general, season-end version of the same question — not tied to a
+// program having JUST fired its coach this transition, so it draws from
+// every reputation-eligible opening in the country. Checked once, right as
+// the offseason begins, before any roster decisions — a real offer here is
+// meant to be the very first thing the coach has to weigh. Lower odds than
+// poachingOffer's "we just fired someone and need a name today" urgency,
+// since a general market offer is a real ask but not an emergency hire.
+function seasonEndJobOffer(userTeamId, userPrestige, userReputation) {
+  const candidates = TEAMS
+    .filter((t) => t.id !== userTeamId && t.prestige > userPrestige && userReputation >= (JOB_REP_REQ[t.prestige] ?? 0))
+    .sort((a, b) => b.prestige - a.prestige);
+  if (!candidates.length) return null;
+  const best = candidates[0];
+  const stepUp = best.prestige - userPrestige;
+  const chance = clamp(0.10 + stepUp * 0.07, 0.08, 0.35);
+  return Math.random() < chance ? { teamId: best.id, teamName: best.name, prestige: best.prestige } : null;
 }
 
 /* =========================================================================
@@ -4676,6 +4806,11 @@ function DynastyApp({ initial, onExit }) {
     const nextYear = state.year + 1;
     const transferBoard = seedInterest(genTransferBoard(nextYear), team);
     const draftDeclarations = decideEarlyDeclarations(state.roster);
+    const transferRisks = computeTransferRisks(state.roster, state.minutes, team, new Set(draftDeclarations.map((d) => d.id)));
+    // Checked once, right here, before the coach sees a single roster
+    // decision — a real market offer (if one exists) is meant to be the
+    // very first thing on the table each offseason.
+    const seasonEndOffer = seasonEndJobOffer(state.teamId, team.prestige, reputationOf(state.coach));
     setState((s) => ({
       ...s,
       offseason: {
@@ -4683,15 +4818,19 @@ function DynastyApp({ initial, onExit }) {
         transferBoard,
         committedTransfers: [],
         draftDeclarations,
+        transferRisks,
         points: weeklyRecruitingBudget(team),
         scheduleDraft: genSchedule(team, nextYear),
         done: false,
         devPoints: DEV_POINTS_PER_OFFSEASON,
         devSpent: {},
       },
+      seasonEndJobOffer: seasonEndOffer,
     }));
     setTab("offseason");
-    flash("Offseason underway — work the transfer portal, set your schedule, or take a new job.");
+    flash(seasonEndOffer
+      ? `Offseason underway — but ${TEAM_MAP[seasonEndOffer.teamId].name} wants to talk to you first.`
+      : "Offseason underway — work the transfer portal, set your schedule, or take a new job.");
   }
 
   // Mirrors doRecruitAction exactly — calls/offers apply immediately, visits
@@ -4759,8 +4898,14 @@ function DynastyApp({ initial, onExit }) {
       const nextNilById = (kept && pledge > 0)
         ? { ...(s.nilBudgetById || baselineNilBudgetById()), [s.teamId]: Math.max(0, ((s.nilBudgetById || baselineNilBudgetById())[s.teamId] ?? budget) - pledge) }
         : s.nilBudgetById;
+      // A successful pitch backed by real money is a real new NIL commitment
+      // — it sticks on the player's own record, not just the team ledger.
+      const roster = (kept && pledge > 0)
+        ? s.roster.map((p) => p.id === playerId ? { ...p, nil: (p.nil || 0) + pledge } : p)
+        : s.roster;
       return {
         ...s,
+        roster,
         ...(nextNilById ? { nilBudgetById: nextNilById } : {}),
         offseason: {
           ...s.offseason,
@@ -4772,6 +4917,55 @@ function DynastyApp({ initial, onExit }) {
     flash(kept
       ? `${decl.name} is withdrawing from the draft and returning!${pledge > 0 ? ` (${formatNil(pledge)} NIL deal)` : ""}`
       : `${decl.name} thanked you but is staying in the draft.`);
+  }
+
+  // Direct edit of a rostered player's NIL figure from the Player Decisions
+  // page — capped by whatever's actually still available (the team budget
+  // minus everyone else's current commitment), same guard every other NIL
+  // spend in the game already uses.
+  function setPlayerNil(playerId, amount) {
+    setState((s) => {
+      const player = s.roster.find((p) => p.id === playerId);
+      if (!player) return s;
+      const budget = (s.nilBudgetById || baselineNilBudgetById())[s.teamId] ?? 0;
+      const available = Math.max(0, budget - committedRosterNil(s.roster, s.offseason, playerId));
+      const nil = clamp(Math.round(Number(amount) || 0), 0, available);
+      return { ...s, roster: s.roster.map((p) => p.id === playerId ? { ...p, nil } : p) };
+    });
+  }
+
+  // Resolve one flagged transfer risk: `counterNil`, if given, becomes the
+  // player's new NIL figure before the retention roll (capped by what's
+  // actually available); `walk` skips straight to "not retained" with no
+  // roll at all — an explicit choice to just let them go. Either way the
+  // entry is marked resolved, which is what the Player Decisions gate
+  // actually checks for.
+  function resolveTransferRisk(playerId, counterNil, walk = false) {
+    const os = state.offseason;
+    if (!os || !os.transferRisks) return;
+    const risk = os.transferRisks.find((r) => r.id === playerId && !r.resolved);
+    const player = state.roster.find((p) => p.id === playerId);
+    if (!risk || !player) return;
+    const budget = (state.nilBudgetById || baselineNilBudgetById())[state.teamId] ?? 0;
+    const available = Math.max(0, budget - committedRosterNil(state.roster, os, playerId));
+    const maxOffer = Math.max(player.nil || 0, available);
+    const offeredNil = walk ? (player.nil || 0) : clamp(Math.round(Number(counterNil) || 0), player.nil || 0, maxOffer);
+    const minutesSatisfied = risk.reason === "nil";
+    const chance = walk ? 0 : retentionChance(risk.nilDemand, offeredNil, minutesSatisfied);
+    const staying = !walk && Math.random() < chance;
+    setState((s) => ({
+      ...s,
+      roster: s.roster.map((p) => p.id === playerId ? { ...p, nil: offeredNil } : p),
+      offseason: {
+        ...s.offseason,
+        transferRisks: s.offseason.transferRisks.map((r) => r.id === playerId ? { ...r, resolved: true, staying, offeredNil, chance } : r),
+      },
+    }));
+    flash(walk
+      ? `${player.name} is entering the transfer portal.`
+      : staying
+        ? `${player.name} is staying at ${team.name}${offeredNil > (player.nil || 0) ? ` — ${formatNil(offeredNil)} NIL` : ""}.`
+        : `${player.name} wasn't convinced and is entering the transfer portal.`);
   }
 
   function attemptSignTransfer(recruit) {
@@ -5368,6 +5562,27 @@ function DynastyApp({ initial, onExit }) {
     const coach = finalizeCoachSeason(state.coach, record, state.postseason, state.teamId, wonRegSeasonConf);
     const earlyIds = leavingIds;
 
+    // Unhappy departures now resolve from the Player Decisions page's
+    // retention flow (transferRisks), not a blind roll here — a player only
+    // ends up on this list because a counter-offer either wasn't made or
+    // didn't land. Falls back to the old silent formula only if that page
+    // was somehow never reached this offseason.
+    const transferRisks = os && os.transferRisks ? os.transferRisks : null;
+    const transferOutIds = new Set((transferRisks || []).filter((r) => r.resolved && r.staying === false).map((r) => r.id));
+    const unhappyDepartures = state.roster
+      .filter((p) => transferOutIds.has(p.id))
+      .map((p) => ({
+        id: p.id, name: p.name, pos: p.pos, class: p.class, overall: p.overall, nil: p.nil || 0,
+        reason: (transferRisks || []).find((r) => r.id === p.id)?.reason || "minutes",
+        careerRecord: finalizeCareerRecord(p, state.year),
+      }));
+    // NIL committed to anyone who's actually gone — drafted, transferred, or
+    // graduated — returns to the program's budget, freed up for whoever's
+    // still here or whoever's next.
+    const returnedNil = [...early, ...seniors, ...unhappyDepartures.map((d) => state.roster.find((p) => p.id === d.id))]
+      .filter(Boolean)
+      .reduce((sum, p) => sum + (p.nil || 0), 0);
+
     const incomingFreshmen = state.incomingCommits
       .map((id) => state.recruitingBoard.find((r) => r.id === id))
       .filter(Boolean)
@@ -5381,8 +5596,11 @@ function DynastyApp({ initial, onExit }) {
     const incomingRecruits = [...incomingFreshmen, ...incomingTransfers];
 
     const newYear = state.year + 1;
-    const surviving = state.roster.filter((p) => !earlyIds.has(p.id));
-    const { roster: newRoster, departed: unhappyDepartures, graduated: graduatedRecords } = progressRosterForNewYear(surviving, incomingRecruits, team, newYear, state.seasonSeed, effectiveScholarshipLimit(state));
+    const surviving = state.roster.filter((p) => !earlyIds.has(p.id) && !transferOutIds.has(p.id));
+    const { roster: newRoster, graduated: graduatedRecords } = progressRosterForNewYear(
+      surviving, incomingRecruits, team, newYear, state.seasonSeed, effectiveScholarshipLimit(state),
+      transferRisks ? transferOutIds : null
+    );
     const newStrengths = genSeasonStrengths();
     const psSummary = postseasonSummary(state.postseason, state.teamId);
 
@@ -5430,9 +5648,13 @@ function DynastyApp({ initial, onExit }) {
       record, psSummary, rankById, teamId: state.teamId, confChampionId, beatRanked,
       prevWins: prevHistoryEntry ? prevHistoryEntry.wins : null,
     };
-    const { nextNilById, met: nilMet, totalBoost: nilBoost } = advanceNilBudgets(
+    const { nextNilById: nilByIdBeforeReturns, met: nilMet, totalBoost: nilBoost } = advanceNilBudgets(
       state.nilBudgetById || baselineNilBudgetById(), state.teamId, state.nilObjectives, nilCtx, state.year, powerById
     );
+    // Whatever NIL was committed to a player who's actually gone (drafted,
+    // graduated, or lost to the portal) comes back to the budget on top of
+    // the normal season-over-season growth, not in place of it.
+    const nextNilById = { ...nilByIdBeforeReturns, [state.teamId]: (nilByIdBeforeReturns[state.teamId] || 0) + returnedNil };
     const nextNilObjectives = pickObjectivesFor(nextPrestige[state.teamId] ?? team.prestige);
 
     // Prestige movement since last season, for trend indicators.
@@ -5610,6 +5832,7 @@ function DynastyApp({ initial, onExit }) {
       },
       coachFired: false,
       poachOffer: null,
+      seasonEndJobOffer: null,
       // A "Risk It" postseason ban or scholarship cut is an NCAA-style
       // sanction on the PROGRAM you're leaving, not a mark against you
       // personally — it stays behind with the old school, not the new job.
@@ -5784,6 +6007,8 @@ function DynastyApp({ initial, onExit }) {
               trajectory={teamTrajectoryScore(record, postseasonSummary(state.postseason, state.teamId))}
               coachRepScore={clamp(reputation / 150, 0, 1)}
               onPersuade={persuadePlayer}
+              onSetPlayerNil={setPlayerNil}
+              onResolveTransferRisk={resolveTransferRisk}
               onAdvanceWeek={advanceOffseasonWeek}
               onEditGame={editDraftGame}
               onChangeJob={() => setJobPickerOpen(true)}
@@ -5850,6 +6075,18 @@ function DynastyApp({ initial, onExit }) {
           onAccept={() => changeJob(TEAM_MAP[state.poachOffer.teamId])}
           onDecline={() => {
             setState((s) => ({ ...s, poachOffer: null }));
+            flash(`You're staying at ${team.name}.`);
+          }}
+        />
+      )}
+      {!recap && state.seasonEndJobOffer && (
+        <PoachOfferModal
+          offer={state.seasonEndJobOffer}
+          currentTeamName={team.name}
+          flavorText={<>{TEAM_MAP[state.seasonEndJobOffer.teamId].name} has been watching your work at {team.name} and reached out before you dive into the offseason. Take the job and your current roster stays behind for the next coach; turn it down and you keep working at {team.name} with no hard feelings.</>}
+          onAccept={() => changeJob(TEAM_MAP[state.seasonEndJobOffer.teamId])}
+          onDecline={() => {
+            setState((s) => ({ ...s, seasonEndJobOffer: null }));
             flash(`You're staying at ${team.name}.`);
           }}
         />
@@ -6075,12 +6312,24 @@ function DashboardTab({ state, team, record, nextGame, stage, onSim, onPlay, onS
             <button onClick={() => onGoTab("offseason")} className="cbb-btn" style={btnStyle(C.wood)}><GraduationCap size={13} /> Go to Offseason</button>
           </div>
         )}
-        {stage === "offseasonDone" && (
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 14, flexWrap: "wrap" }}>
-            <div style={{ color: C.dim, fontSize: 14, flex: 1, minWidth: 220 }}>The offseason is complete. Begin the {seasonLabel(state.year + 1)} season.</div>
-            <button onClick={onAdvanceYear} className="cbb-btn" style={btnStyle(C.gold, "#221a00")}><TrendingUp size={13} /> Begin {seasonLabel(state.year + 1)} Season</button>
-          </div>
-        )}
+        {stage === "offseasonDone" && (() => {
+          const unresolvedTotal = ((state.offseason?.draftDeclarations || []).filter((d) => !d.attempted).length)
+            + ((state.offseason?.transferRisks || []).filter((r) => !r.resolved).length);
+          const decisionsDone = unresolvedTotal === 0;
+          return (
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 14, flexWrap: "wrap" }}>
+              <div style={{ color: C.dim, fontSize: 14, flex: 1, minWidth: 220 }}>
+                {decisionsDone
+                  ? `The offseason is complete. Begin the ${seasonLabel(state.year + 1)} season.`
+                  : `${unresolvedTotal} player decision${unresolvedTotal > 1 ? "s" : ""} still need resolving before the new season can begin.`}
+              </div>
+              <button onClick={decisionsDone ? onAdvanceYear : () => onGoTab("offseason")} className="cbb-btn"
+                style={btnStyle(C.gold, "#221a00")}>
+                {decisionsDone ? <><TrendingUp size={13} /> Begin {seasonLabel(state.year + 1)} Season</> : <><GraduationCap size={13} /> Go Resolve Player Decisions</>}
+              </button>
+            </div>
+          );
+        })()}
       </Panel>
 
       {headlines && headlines.length > 0 && (
@@ -6378,7 +6627,7 @@ function RosterTab({ roster, onViewPlayer, onChangePosition }) {
         <thead>
           <tr style={{ borderBottom: `1px solid ${C.line}`, color: C.dim, fontSize: 11, textAlign: "left" }}>
             <th style={th}>Player</th><th style={th}>Pos</th><th style={th}>Class</th><th style={th}>OVR</th>
-            <th style={th}>PPG</th><th style={th}>RPG</th><th style={th}>APG</th><th style={th}>SPG</th><th style={th}>BPG</th>
+            <th style={th}>PPG</th><th style={th}>RPG</th><th style={th}>APG</th><th style={th}>SPG</th><th style={th}>BPG</th><th style={th}>NIL</th>
           </tr>
         </thead>
         <tbody>
@@ -6410,6 +6659,7 @@ function RosterTab({ roster, onViewPlayer, onChangePosition }) {
               <td style={td}>{avg(p.season.ast, p.season.gp)}</td>
               <td style={td}>{avg(p.season.stl, p.season.gp)}</td>
               <td style={td}>{avg(p.season.blk, p.season.gp)}</td>
+              <td style={td} className="cbb-num">{formatNil(p.nil || 0)}</td>
             </tr>
           ))}
         </tbody>
@@ -7192,7 +7442,115 @@ function DraftDecisionsPanel({ declarations, onPersuade, trajectory = 0.5, coach
   );
 }
 
-function OffseasonTab({ stage, offseason, hsBoard, team, roster, nextYear, committedFreshmen, scholarshipInfo, rankById, onAction, onSign, onNilOffer, nilBudget, trajectory, coachRepScore, onPersuade, onAdvanceWeek, onEditGame, onChangeJob, onAdvanceYear, onViewTeam, onViewPlayer, onCut, onDev }) {
+// Every returning player's NIL figure, editable straight from the Player
+// Decisions page — walk-ons excluded, they never carry a real figure to
+// manage. Applies immediately (bounded server-side by setPlayerNil's own
+// available-budget check), no separate confirm step.
+function RosterNilPanel({ roster, nilBudget, offseason, onSetNil, onViewPlayer }) {
+  const editable = roster.filter((p) => !p.generatedWalkOn).sort((a, b) => b.overall - a.overall);
+  return (
+    <Panel style={{ overflow: "hidden" }}>
+      <div style={{ overflowX: "auto" }}>
+      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13.5 }}>
+        <thead>
+          <tr style={{ borderBottom: `1px solid ${C.line}`, color: C.dim, fontSize: 11, textAlign: "left" }}>
+            <th style={th}>Player</th><th style={th}>Pos</th><th style={th}>Class</th><th style={th}>OVR</th><th style={th}>NIL</th>
+          </tr>
+        </thead>
+        <tbody>
+          {editable.map((p) => (
+            <tr key={p.id} className="cbb-row" style={{ borderBottom: `1px solid ${C.line}` }}>
+              <td style={{ ...td, cursor: onViewPlayer ? "pointer" : "default" }} onClick={() => onViewPlayer && onViewPlayer(p.id)}>
+                <span style={{ fontWeight: 600 }}>{p.realName ? "• " : ""}{p.name}</span>
+                {p.class === "SR" && <span style={{ fontSize: 9.5, color: C.dim, marginLeft: 6, letterSpacing: "0.06em", border: `1px solid ${C.line}`, padding: "1px 4px" }}>GRADUATING</span>}
+              </td>
+              <td style={td}>{p.pos}</td>
+              <td style={td}>{p.class}</td>
+              <td style={{ ...td, fontWeight: 700 }} className="cbb-num">{p.overall}</td>
+              <td style={td}>
+                <input type="number" min={0} max={Math.max(p.nil || 0, nilBudget - committedRosterNil(roster, offseason, p.id))} step={5000} value={p.nil || 0}
+                  disabled={p.class === "SR"}
+                  onChange={(e) => onSetNil(p.id, e.target.value)}
+                  style={{ width: 110, background: C.panel, border: `1px solid ${C.line}`, color: C.cream, fontSize: 12, padding: "3px 6px", opacity: p.class === "SR" ? 0.5 : 1 }} />
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      </div>
+    </Panel>
+  );
+}
+
+// A flagged transfer risk: underpaid relative to their real market NIL,
+// clearly deserving more run than they got, or both — with the exact
+// reason shown, never just a bare "at risk" flag. A counter-offer's payoff
+// is shown up front (Est. X% to stay) before the coach commits to it, same
+// transparency standard as every other real-money decision in the game.
+function TransferRiskPanel({ transferRisks, roster, nilBudget, offseason, onResolve }) {
+  const [counterChoice, setCounterChoice] = useState({});
+  if (!transferRisks || transferRisks.length === 0) {
+    return (
+      <Panel style={{ padding: "14px 16px" }}>
+        <div style={{ color: C.dim, fontSize: 12.5 }}>No one on the roster is flagged as a transfer risk this offseason.</div>
+      </Panel>
+    );
+  }
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      {transferRisks.map((r) => {
+        const player = roster.find((p) => p.id === r.id);
+        if (!player) return null;
+        const available = Math.max(0, nilBudget - committedRosterNil(roster, offseason, r.id));
+        const maxOffer = Math.max(player.nil || 0, available);
+        const counter = clamp(counterChoice[r.id] ?? (player.nil || 0), player.nil || 0, maxOffer);
+        const previewChance = retentionChance(r.nilDemand, counter, r.reason === "nil");
+        const reasonText = r.reason === "both" ? "underpaid relative to their market value AND buried behind lesser talent"
+          : r.reason === "nil" ? "underpaid relative to their real market value"
+          : "not getting minutes their ability clearly deserves";
+        return (
+          <Panel key={r.id} style={{ padding: "12px 16px" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+              <div>
+                <span style={{ fontWeight: 600, fontSize: 13.5 }}>{player.name}</span>
+                <span className="cbb-num" style={{ fontSize: 11, color: C.dim, marginLeft: 8 }}>{player.pos} · {player.class} · {player.overall} OVR</span>
+                <span style={{ fontSize: 10.5, color: C.red, marginLeft: 8, border: `1px solid ${C.line}`, padding: "1px 6px" }}>FLIGHT RISK</span>
+              </div>
+              {r.resolved ? (
+                <span style={{ fontSize: 12, color: r.staying ? C.green : C.red, display: "flex", alignItems: "center", gap: 4 }}>
+                  {r.staying ? <><Check size={13} /> Staying — {formatNil(r.offeredNil)} NIL</> : "Transferring out"}
+                </span>
+              ) : (
+                <span style={{ fontSize: 11, color: C.gold, letterSpacing: "0.05em" }}>AT RISK</span>
+              )}
+            </div>
+            <div style={{ fontSize: 11.5, color: C.dimmer, marginTop: 6 }}>
+              {player.name.split(" ")[0]} is {reasonText}. Current NIL {formatNil(player.nil || 0)} vs. a market ask around {formatNil(r.nilDemand)}
+              {r.reason !== "nil" ? ` — getting ${r.actualMinutes} min/gm against a deserved ${r.deservedMinutes}.` : "."}
+            </div>
+            {!r.resolved && (
+              <div style={{ marginTop: 10, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                <span style={{ fontSize: 11.5, color: C.dim }}>Counter-offer NIL</span>
+                <input type="number" min={player.nil || 0} max={maxOffer} step={5000} value={counter}
+                  onChange={(e) => setCounterChoice((c) => ({ ...c, [r.id]: clamp(Math.round(Number(e.target.value) || 0), player.nil || 0, maxOffer) }))}
+                  style={{ width: 110, background: C.panel, border: `1px solid ${C.line}`, color: C.cream, fontSize: 12, padding: "3px 6px" }} />
+                <span style={{ fontSize: 11.5, color: C.dimmer }}>Est. {Math.round(previewChance * 100)}% to stay</span>
+                <button className="cbb-btn" onClick={() => onResolve(r.id, counter, false)} style={{ ...btnStyle(C.wood), fontSize: 12, padding: "6px 12px" }}>
+                  Attempt to Retain
+                </button>
+                <button className="cbb-btn" onClick={() => onResolve(r.id, null, true)} style={{ ...btnStyle(C.panelAlt, C.cream), fontSize: 12, padding: "6px 12px", border: `1px solid ${C.line}` }}>
+                  Let Them Walk
+                </button>
+              </div>
+            )}
+          </Panel>
+        );
+      })}
+    </div>
+  );
+}
+
+function OffseasonTab({ stage, offseason, hsBoard, team, roster, nextYear, committedFreshmen, scholarshipInfo, rankById, onAction, onSign, onNilOffer, nilBudget, trajectory, coachRepScore, onPersuade, onSetPlayerNil, onResolveTransferRisk, onAdvanceWeek, onEditGame, onChangeJob, onAdvanceYear, onViewTeam, onViewPlayer, onCut, onDev }) {
   if (!offseason) {
     return (
       <div>
@@ -7207,6 +7565,14 @@ function OffseasonTab({ stage, offseason, hsBoard, team, roster, nextYear, commi
 
   const draftNonConf = (offseason.scheduleDraft || []).filter((g) => !g.conf);
   const committed = offseason.committedTransfers || [];
+  const draftDeclarations = offseason.draftDeclarations || [];
+  const transferRisks = offseason.transferRisks || [];
+  const unresolvedDraft = draftDeclarations.filter((d) => !d.attempted).length;
+  const unresolvedTransferRisk = transferRisks.filter((r) => !r.resolved).length;
+  const unresolvedTotal = unresolvedDraft + unresolvedTransferRisk;
+  const decisionsDone = unresolvedTotal === 0;
+  const recruitingNilPending = [...offseason.transferBoard, ...(hsBoard || [])].reduce((sum, r) =>
+    sum + ((r.committedTo === team.id || !r.committedTo) ? (r.nilOffer || 0) : 0), 0);
 
   return (
     <div>
@@ -7222,7 +7588,11 @@ function OffseasonTab({ stage, offseason, hsBoard, team, roster, nextYear, commi
           {!offseason.done && (
             <button onClick={onAdvanceWeek} className="cbb-btn" style={btnStyle(C.wood)}><FastForward size={13} /> Advance Week</button>
           )}
-          <button onClick={onAdvanceYear} className="cbb-btn" style={btnStyle(C.gold, "#221a00")}><TrendingUp size={13} /> Begin {seasonLabel(nextYear)} Season</button>
+          <button onClick={onAdvanceYear} disabled={!decisionsDone} className="cbb-btn"
+            title={decisionsDone ? undefined : `Resolve ${unresolvedTotal} more player decision${unresolvedTotal > 1 ? "s" : ""} first`}
+            style={{ ...btnStyle(decisionsDone ? C.gold : C.line, decisionsDone ? "#221a00" : C.dimmer), cursor: decisionsDone ? "pointer" : "not-allowed" }}>
+            <TrendingUp size={13} /> Begin {seasonLabel(nextYear)} Season
+          </button>
         </div>
       </div>
 
@@ -7233,58 +7603,90 @@ function OffseasonTab({ stage, offseason, hsBoard, team, roster, nextYear, commi
         <div>HS signees this cycle: <strong style={{ color: C.cream }}>{committedFreshmen}</strong></div>
       </div>
 
-      <div style={{ fontSize: 12, color: C.wood, fontWeight: 600, letterSpacing: "0.06em", marginBottom: 8 }}>PLAYER DEVELOPMENT</div>
-      <div style={{ fontSize: 11.5, color: C.dimmer, marginBottom: 10, maxWidth: 720 }}>Spend {DEV_POINTS_PER_OFFSEASON} development points improving your roster&apos;s attributes for next season. Real players keep these gains permanently on top of their production. Graduating seniors won&apos;t be back, so they&apos;re not shown here.</div>
-      <ProgressionPanel roster={roster.filter((p) => p.class !== "SR")} devPoints={offseason.devPoints ?? 0} devSpent={offseason.devSpent} onDev={onDev} onViewPlayer={onViewPlayer} />
+      <div style={{ fontSize: 12, color: C.wood, fontWeight: 600, letterSpacing: "0.06em", marginBottom: 8 }}>
+        PLAYER DECISIONS {!decisionsDone && <span style={{ color: C.gold }}>· {unresolvedTotal} remaining</span>}
+      </div>
+      <div style={{ fontSize: 11.5, color: C.dimmer, marginBottom: 10, maxWidth: 760 }}>
+        Every real player&apos;s NIL, one row per name — edit it directly. Below that: anyone who declared for the draft needs a pitch, and anyone flagged as a transfer risk needs an offer or a decision to let them go. Nothing else opens up until these are all resolved.
+      </div>
+      <div style={{ marginBottom: 18 }}>
+        <RosterNilPanel roster={roster} nilBudget={nilBudget} offseason={offseason} onSetNil={onSetPlayerNil} onViewPlayer={onViewPlayer} />
+      </div>
 
-      <div style={{ fontSize: 12, color: C.wood, fontWeight: 600, letterSpacing: "0.06em", margin: "22px 0 8px" }}>ROSTER &amp; CUTS</div>
-      <CutsPanel roster={roster} scholarshipInfo={scholarshipInfo} onCut={onCut} onViewPlayer={onViewPlayer} />
+      <div style={{ fontSize: 11.5, color: C.wood, fontWeight: 600, letterSpacing: "0.06em", marginBottom: 8 }}>NBA DRAFT DECLARATIONS</div>
+      <div style={{ marginBottom: 18 }}>
+        <DraftDecisionsPanel
+          declarations={draftDeclarations}
+          onPersuade={onPersuade}
+          trajectory={trajectory}
+          coachRepScore={coachRepScore}
+          nilBudget={nilBudget}
+          recruitingNilPending={recruitingNilPending}
+        />
+      </div>
 
-      <div style={{ fontSize: 12, color: C.wood, fontWeight: 600, letterSpacing: "0.06em", margin: "22px 0 8px" }}>NBA DRAFT DECISIONS</div>
-      <DraftDecisionsPanel
-        declarations={offseason.draftDeclarations}
-        onPersuade={onPersuade}
-        trajectory={trajectory}
-        coachRepScore={coachRepScore}
+      <div style={{ fontSize: 11.5, color: C.wood, fontWeight: 600, letterSpacing: "0.06em", marginBottom: 8 }}>TRANSFER RISK</div>
+      <TransferRiskPanel
+        transferRisks={transferRisks}
+        roster={roster}
         nilBudget={nilBudget}
-        recruitingNilPending={[...offseason.transferBoard, ...(hsBoard || [])].reduce((sum, r) =>
-          sum + ((r.committedTo === team.id || !r.committedTo) ? (r.nilOffer || 0) : 0), 0)}
+        offseason={offseason}
+        onResolve={onResolveTransferRisk}
       />
 
-      <div style={{ fontSize: 12, color: C.wood, fontWeight: 600, letterSpacing: "0.06em", margin: "22px 0 8px" }}>TRANSFER PORTAL</div>
-      <RecruitBoard
-        board={offseason.transferBoard}
-        otherBoard={hsBoard}
-        committedIds={committed}
-        points={offseason.points}
-        weekIndex={offseason.week}
-        totalWeeks={OFFSEASON_WEEKS}
-        onAction={onAction}
-        onSign={onSign}
-        onNilOffer={onNilOffer}
-        nilBudget={nilBudget}
-        team={team}
-        emptyLabel="No transfers match those filters."
-      />
+      {!decisionsDone ? (
+        <div style={{ marginTop: 22 }}>
+          <Panel style={{ padding: 20, textAlign: "center" }}>
+            <div style={{ color: C.dim, fontSize: 13 }}>
+              Resolve every player decision above — {unresolvedTotal} left — before the transfer portal, player development, and schedule setup open up.
+            </div>
+          </Panel>
+        </div>
+      ) : (
+        <>
+          <div style={{ fontSize: 12, color: C.wood, fontWeight: 600, letterSpacing: "0.06em", margin: "22px 0 8px" }}>PLAYER DEVELOPMENT</div>
+          <div style={{ fontSize: 11.5, color: C.dimmer, marginBottom: 10, maxWidth: 720 }}>Spend {DEV_POINTS_PER_OFFSEASON} development points improving your roster&apos;s attributes for next season. Real players keep these gains permanently on top of their production. Graduating seniors won&apos;t be back, so they&apos;re not shown here.</div>
+          <ProgressionPanel roster={roster.filter((p) => p.class !== "SR")} devPoints={offseason.devPoints ?? 0} devSpent={offseason.devSpent} onDev={onDev} onViewPlayer={onViewPlayer} />
 
-      <div style={{ fontSize: 12, color: C.wood, fontWeight: 600, letterSpacing: "0.06em", margin: "22px 0 8px" }}>SCHEDULE SETUP — {seasonLabel(nextYear)} NON-CONFERENCE</div>
-      <div style={{ fontSize: 11.5, color: C.dimmer, marginBottom: 10 }}>Set next season&apos;s non-conference slate now. Use Change to pick an opponent or flip home/away; your conference games are assigned automatically.</div>
-      <Panel style={{ overflow: "hidden" }}>
-        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13.5 }}>
-          <thead>
-            <tr style={{ borderBottom: `1px solid ${C.line}`, color: C.dim, fontSize: 11, textAlign: "left" }}>
-              <th style={{ padding: "10px 14px" }}>Wk</th><th style={{ padding: "10px 14px" }}>Opponent</th><th style={{ padding: "10px 14px" }}>Site</th><th style={{ padding: "10px 14px" }}>Result</th><th style={{ padding: "10px 14px" }}></th>
-            </tr>
-          </thead>
-          <tbody>
-            {draftNonConf.map((g) => (
-              <ScheduleRow key={g.id} g={g} teamConf={team.conf} rankById={rankById} isRival={false}
-                takenOppIds={new Set(draftNonConf.map((d) => d.oppId))}
-                onViewTeam={onViewTeam} onEditGame={onEditGame} onViewBox={null} />
-            ))}
-          </tbody>
-        </table>
-      </Panel>
+          <div style={{ fontSize: 12, color: C.wood, fontWeight: 600, letterSpacing: "0.06em", margin: "22px 0 8px" }}>ROSTER &amp; CUTS</div>
+          <CutsPanel roster={roster} scholarshipInfo={scholarshipInfo} onCut={onCut} onViewPlayer={onViewPlayer} />
+
+          <div style={{ fontSize: 12, color: C.wood, fontWeight: 600, letterSpacing: "0.06em", margin: "22px 0 8px" }}>TRANSFER PORTAL</div>
+          <RecruitBoard
+            board={offseason.transferBoard}
+            otherBoard={hsBoard}
+            committedIds={committed}
+            points={offseason.points}
+            weekIndex={offseason.week}
+            totalWeeks={OFFSEASON_WEEKS}
+            onAction={onAction}
+            onSign={onSign}
+            onNilOffer={onNilOffer}
+            nilBudget={nilBudget}
+            team={team}
+            emptyLabel="No transfers match those filters."
+          />
+
+          <div style={{ fontSize: 12, color: C.wood, fontWeight: 600, letterSpacing: "0.06em", margin: "22px 0 8px" }}>SCHEDULE SETUP — {seasonLabel(nextYear)} NON-CONFERENCE</div>
+          <div style={{ fontSize: 11.5, color: C.dimmer, marginBottom: 10 }}>Set next season&apos;s non-conference slate now. Use Change to pick an opponent or flip home/away; your conference games are assigned automatically.</div>
+          <Panel style={{ overflow: "hidden" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13.5 }}>
+              <thead>
+                <tr style={{ borderBottom: `1px solid ${C.line}`, color: C.dim, fontSize: 11, textAlign: "left" }}>
+                  <th style={{ padding: "10px 14px" }}>Wk</th><th style={{ padding: "10px 14px" }}>Opponent</th><th style={{ padding: "10px 14px" }}>Site</th><th style={{ padding: "10px 14px" }}>Result</th><th style={{ padding: "10px 14px" }}></th>
+                </tr>
+              </thead>
+              <tbody>
+                {draftNonConf.map((g) => (
+                  <ScheduleRow key={g.id} g={g} teamConf={team.conf} rankById={rankById} isRival={false}
+                    takenOppIds={new Set(draftNonConf.map((d) => d.oppId))}
+                    onViewTeam={onViewTeam} onEditGame={onEditGame} onViewBox={null} />
+                ))}
+              </tbody>
+            </table>
+          </Panel>
+        </>
+      )}
     </div>
   );
 }
@@ -8257,7 +8659,7 @@ function TeamRosterModal({ teamId, year, strengths, rank, poached = [], history:
 // the user unsolicited — see poachingOffer(). Purely optional: declining
 // just leaves that vacancy to be filled the normal way (a fresh CPU hire)
 // and the user keeps their current job with no penalty.
-function PoachOfferModal({ offer, currentTeamName, onAccept, onDecline }) {
+function PoachOfferModal({ offer, currentTeamName, flavorText, onAccept, onDecline }) {
   const team = TEAM_MAP[offer.teamId];
   return (
     <Modal title="A job is calling" subtitle={`${team.name} wants to talk to you`} onClose={onDecline} maxWidth={480}>
@@ -8272,7 +8674,7 @@ function PoachOfferModal({ offer, currentTeamName, onAccept, onDecline }) {
         </div>
       </div>
       <div style={{ fontSize: 13, color: C.dim, lineHeight: 1.6, marginBottom: 20 }}>
-        {team.name} just moved on from their coach and their AD called about you directly — no search, no application. Take the job and your roster at {currentTeamName} stays behind for the next coach; turn it down and you keep your job with no hard feelings.
+        {flavorText || <>{team.name} just moved on from their coach and their AD called about you directly — no search, no application. Take the job and your roster at {currentTeamName} stays behind for the next coach; turn it down and you keep your job with no hard feelings.</>}
       </div>
       <div style={{ display: "flex", gap: 10 }}>
         <button onClick={onAccept} className="cbb-btn" style={{ ...btnStyle(C.gold, "#221a00"), flex: 1, justifyContent: "center" }}>Take the {team.name} job</button>
@@ -8649,7 +9051,11 @@ function SeasonRecapModal({ recap, onClose }) {
             <div style={{ fontSize: 11, color: C.dim, letterSpacing: "0.08em", marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}><TrendingDown size={13} color={C.red} /> TRANSFERRING OUT</div>
             {recap.unhappyDepartures.map((d, i) => (
               <div key={i} style={{ fontSize: 12.5, marginBottom: 2 }}>
-                {d.name} <span style={{ color: C.dim }}>{d.pos} · OVR {d.overall} · {d.class} · wanted more playing time</span>
+                {d.name} <span style={{ color: C.dim }}>{d.pos} · OVR {d.overall} · {d.class} · {
+                  d.reason === "both" ? "underpaid and wanted more playing time"
+                    : d.reason === "nil" ? "underpaid relative to their market value"
+                    : "wanted more playing time"
+                }</span>
               </div>
             ))}
           </div>
