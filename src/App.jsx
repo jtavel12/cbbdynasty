@@ -1746,15 +1746,34 @@ function recruitToPlayer(recruit, team) {
 // the user's own team is overlaid with the stats their players ACTUALLY put up
 // in the dynasty being played — so the coach's guys compete on the same board
 // as the rest of the country.
-// Real box scores seed a CPU player's identity and baseline production, but
+// Real box scores seed a CPU player's identity and baseline talent, but
 // showing that production verbatim would just be reprinting history \u2014 no
 // different from any other season, and no tie to how THIS dynasty's sim is
-// actually playing out. So each CPU player's line gets run through the same
-// deterministic per-team-season RNG that drives their team's emergent
-// win/loss record, giving them their own year that moves with the save
-// (stable across re-renders, different across playthroughs) instead of a
-// copy-paste of the real stat sheet.
-function buildLeaderboard(year, userTeamId, userRoster, seasonSeed) {
+// actually playing out. So each CPU player's line is built game-by-game from
+// the same deterministic per-team-season RNG that drives their team's
+// emergent win/loss record: a season multiplier gives them their own year
+// (stable across re-renders, different across playthroughs), then each of
+// the `gamesPlayed` games so far (the same league-wide clock the standings
+// and rankings already use \u2014 see accruedRecordTable) contributes its own
+// noisy stat line. A player with zero games logged this season doesn't
+// appear at all, and an early "week 1" leaderboard is a small, volatile
+// sample exactly like a real one \u2014 not a full-season average shown early.
+function cpuPlayerSeasonLine(basePpg, baseRpg, baseApg, seasonSeed, teamId, playerName, year, gamesPlayed) {
+  const k = Math.min(Math.max(0, gamesPlayed), NONCONF_GAMES + CONF_GAMES);
+  if (k <= 0) return null;
+  const rng = seasonRngFor(seasonSeed, `${teamId}:${playerName}`, year);
+  const seasonMult = 0.85 + rng() * 0.3; // this dynasty's version of their talent level
+  let pts = 0, reb = 0, ast = 0;
+  for (let i = 0; i < k; i++) {
+    const gameMult = 0.45 + rng() * 1.1; // single-game variance \u2014 real box scores swing hard
+    pts += basePpg * seasonMult * gameMult;
+    reb += baseRpg * seasonMult * gameMult;
+    ast += baseApg * seasonMult * gameMult;
+  }
+  return { gp: k, ppg: pts / k, rpg: reb / k, apg: ast / k };
+}
+
+function buildLeaderboard(year, userTeamId, userRoster, seasonSeed, gamesPlayed) {
   const rows = torvikPlayers[String(year)] || [];
   // O(1) torvik-team-name -> our team lookup (mirrors findOurTeamByRealName).
   const teamByKey = new Map();
@@ -1765,17 +1784,20 @@ function buildLeaderboard(year, userTeamId, userRoster, seasonSeed) {
   for (const r of rows) {
     const team = teamByKey.get(normalizeTeamKey(r.team));
     if (!team || team.id === userTeamId) continue; // user's team handled below
-    const gp = Number(r.gp) || 0;
-    if (gp < 5) continue;
+    const realGp = Number(r.gp) || 0;
+    if (realGp < 5) continue; // not a real rotation player, no baseline to seed from
     const key = `${r.player}|${team.id}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    const rng = seasonRngFor(seasonSeed, `${team.id}:${r.player}`, year);
-    const mult = 0.82 + rng() * 0.36; // this dynasty's version of their season, not a rerun of history
+    const line = cpuPlayerSeasonLine(
+      perGame(r.ppg, realGp), perGame(r.rpg, realGp), perGame(r.apg, realGp),
+      seasonSeed, team.id, r.player, year, gamesPlayed
+    );
+    if (!line) continue; // no games simulated yet this season \u2014 not on the board
     out.push({
       id: key, name: r.player, teamId: team.id, teamName: team.name,
-      pos: resolvePosition(r) || "\u2014", gp,
-      ppg: perGame(r.ppg, gp) * mult, rpg: perGame(r.rpg, gp) * mult, apg: perGame(r.apg, gp) * mult,
+      pos: resolvePosition(r) || "\u2014", gp: line.gp,
+      ppg: line.ppg, rpg: line.rpg, apg: line.apg,
       isUser: false,
     });
   }
@@ -3558,8 +3580,8 @@ function DynastyApp({ initial, onExit }) {
   const reputation = reputationOf(state.coach);
   const nilBudget = (state.nilBudgetById || baselineNilBudgetById())[state.teamId] ?? nilBudgetForTeam(team);
   const leaders = useMemo(
-    () => buildLeaderboard(state.year, state.teamId, state.roster, state.seasonSeed),
-    [state.year, state.teamId, state.roster, state.seasonSeed]
+    () => buildLeaderboard(state.year, state.teamId, state.roster, state.seasonSeed, record.w + record.l),
+    [state.year, state.teamId, state.roster, state.seasonSeed, record]
   );
   const rivalIds = useMemo(() => rivalTeamIds(state.teamId), [state.teamId]);
   const needs = useMemo(() => positionNeeds(state.roster), [state.roster]);
@@ -7582,7 +7604,7 @@ function LeaderboardTab({ leaders, userTeamId, year, onViewTeam }) {
   return (
     <div>
       <SectionIntro>
-        National per-game leaders across every Division I program for the {seasonLabel(year)} season — real rosters, but every team's production is this dynasty's own emergent season, not a replay of history. Your own players carry the stats they&apos;ve actually put up in your dynasty so far, so your guys rise up the board as you play.
+        National per-game leaders across every Division I program for the {seasonLabel(year)} season — real rosters, but every team's production is this dynasty's own emergent season, not a replay of history. Nobody posts a stat before their team has actually played a game; the board fills in and shifts week by week as the season is simulated, same as your own players' numbers.
       </SectionIntro>
 
       <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
@@ -7643,7 +7665,7 @@ function LeaderboardTab({ leaders, userTeamId, year, onViewTeam }) {
           </div>
         ))}
         {ranked.length === 0 && (
-          <div style={{ padding: 20, textAlign: "center", color: C.dimmer, fontSize: 12.5 }}>No player data available for this season.</div>
+          <div style={{ padding: 20, textAlign: "center", color: C.dimmer, fontSize: 12.5 }}>Nobody's played a game yet this season — check back after Week 1.</div>
         )}
       </Panel>
     </div>
