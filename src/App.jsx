@@ -777,6 +777,17 @@ function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 function uid() { return Math.random().toString(36).slice(2, 10); }
 function fullName() { return `${pick(FIRST_NAMES)} ${pick(LAST_NAMES)}`; }
 
+// A deterministic stand-in for pick() wherever the choice needs to be stable
+// for a given real identity (e.g. a real player's position) rather than
+// re-rolled with Math.random() on every fresh dynasty — the same real name
+// should always resolve to the same pick.
+function deterministicPick(arr, seedStr) {
+  let h = 2166136261;
+  const s = String(seedStr || "");
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return arr[Math.abs(h) % arr.length];
+}
+
 /* =========================================================================
    PLAYER / ATTRIBUTE GENERATION
    ========================================================================= */
@@ -1061,8 +1072,11 @@ function inferPositionFromStats(real) {
 // Power/Center) is trusted unless stats make it clearly implausible — a
 // "big" who never rebounds and dishes like a guard gets reclassified. A
 // GENERIC/combo tag is split with the calibrated stat rules above. With no
-// usable tag at all AND no production to read either, an even random pick
-// keeps a total unknown from skewing the roster any one direction.
+// usable tag at all AND no production to read either, a pick keeps a total
+// unknown from skewing the roster any one direction — but it must be
+// deterministic (keyed off the player's own name), never Math.random(), or
+// the same real player reads as a different position — and therefore a
+// different overall — every time a fresh dynasty starts.
 function resolvePosition(real) {
   const specific = mapRealPosition(real?.position);
   const gp = Number(real?.gp) || 0;
@@ -1086,10 +1100,11 @@ function resolvePosition(real) {
     if (gp === 0) {
       // No production to read at all — split the bucket evenly rather than
       // let an all-zero stat line default one direction.
-      if (broad === "GUARD") return pick(["PG", "SG"]);
-      if (broad === "FORWARD") return pick(["SF", "PF"]);
-      if (broad === "BIG") return pick(["PF", "C"]);
-      if (broad === "WING") return pick(["SG", "SF"]);
+      const seed = real?.player || "";
+      if (broad === "GUARD") return deterministicPick(["PG", "SG"], seed);
+      if (broad === "FORWARD") return deterministicPick(["SF", "PF"], seed);
+      if (broad === "BIG") return deterministicPick(["PF", "C"], seed);
+      if (broad === "WING") return deterministicPick(["SG", "SF"], seed);
       return broad; // "C" already specific
     }
     if (broad === "GUARD") return splitGuard(apg, ppg);
@@ -1099,7 +1114,7 @@ function resolvePosition(real) {
     return broad; // "C"
   }
 
-  return inferPositionFromStats(real) || pick(POSITIONS);
+  return inferPositionFromStats(real) || deterministicPick(POSITIONS, real?.player || "");
 }
 
 // Drop rows that don't look like real men's-D1 roster members — the source
@@ -1114,8 +1129,20 @@ function isPlausibleRosterRow(r) {
   return true;
 }
 
+// Discrete steps a real player's tier jitter is drawn from (see makePlayer) —
+// deterministic per identity rather than a fresh Math.random() roll.
+const TIER_JITTER_STEPS = [-0.12, -0.10, -0.08, -0.06, -0.04, -0.02, 0, 0.02, 0.04, 0.06, 0.08, 0.10, 0.12];
+
 function makePlayer({ pos, classYear, prestige, starsAtSigning, real, walkOn }) {
-  const tier = clamp((prestige - 1) / 4 + rand(-0.12, 0.12), 0, 1);
+  // A little jitter around the program's baseline prestige feels more organic
+  // than the raw formula — but for a REAL player it must be deterministic
+  // (keyed to their own identity), never Math.random(), or the same real
+  // player's tier — and therefore their derived attributes and overall —
+  // would shift every time a fresh dynasty starts on that team/year.
+  const jitter = real?.player
+    ? deterministicPick(TIER_JITTER_STEPS, `${real.player}|${real.team || ""}|${real.year || ""}`)
+    : rand(-0.12, 0.12);
+  const tier = clamp((prestige - 1) / 4 + jitter, 0, 1);
   const gp = Number(real?.gp) || 0;
   // A real player only rates off their box score if they actually PRODUCED —
   // a meaningful sample (5+ games) and non-trivial combined per-game output.
@@ -1179,7 +1206,7 @@ function buildInitialRoster(team, year) {
   // Every real player on the team makes the roster — no position-slot cap can
   // drop a genuine contributor (the bug that hid Tulane's Rowan Brumbaugh).
   let roster = shuffled(realPlayersFor(team, year)).map((r, i) => {
-    const pos = resolvePosition(r) || pick(POSITIONS);
+    const pos = resolvePosition(r) || deterministicPick(POSITIONS, r?.player || String(i));
     return makePlayer({ pos, classYear: realClassFor(r) || classesForSlot[i % classesForSlot.length], prestige: team.prestige, real: r });
   });
 
@@ -1369,7 +1396,7 @@ function buildRealNewcomer(r, year) {
   return {
     id: uid(),
     name: r.player,
-    pos: resolvePosition(r) || pick(POSITIONS),
+    pos: resolvePosition(r) || deterministicPick(POSITIONS, r?.player || ""),
     state: ht.state,
     hometown: ht.label,
     hometownPlace: ht.place || ht.label,
