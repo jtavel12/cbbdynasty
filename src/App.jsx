@@ -3810,6 +3810,126 @@ function Panel({ children, style, className }) {
 }
 
 /* =========================================================================
+   COACH ONBOARDING — name your coach, then a quick how-to-play guide,
+   shown once right after a team's picked and before the dynasty actually
+   starts (see CBBDynasty's `onboarding` state).
+   ========================================================================= */
+const PLAY_GUIDE_SECTIONS = [
+  {
+    Icon: Search, title: "Recruiting",
+    body: "Spend weekly points on Calls, Home Visits, Official Visits, and Scholarship Offers to build interest, then Attempt to Sign once a prospect is above 50%. NIL money is a separate, powerful lever — pledge it to close a recruit who's on the fence. Scout a recruit (10 points) to reveal their real production before you commit resources.",
+  },
+  {
+    Icon: Swords, title: "Transfer Portal",
+    body: "Opens during the offseason only, and works exactly like high-school recruiting — same points, visits, and NIL — except every prospect already has a college track record.",
+  },
+  {
+    Icon: ListOrdered, title: "Depth Chart & Minutes",
+    body: "Slot players into PG/SG/SF/PF/C and hand out up to 40 minutes per position group. Playing someone out of position dents their effective rating, so a natural point guard backing up the two isn't quite as good there as he is at the one.",
+  },
+  {
+    Icon: Users, title: "Roster & Development",
+    body: "Change a player's actual position from the Roster tab any time. Each offseason, spend development points growing your roster's attributes, and decide who to cut versus who simply graduates on their own.",
+  },
+  {
+    Icon: Play, title: "Sim vs. Coach Mode",
+    body: "Sim Game resolves a game instantly; Play Game drops you into live, possession-by-possession Coach Mode where you set tempo, offensive/defensive gameplans, and make in-game substitutions.",
+  },
+  {
+    Icon: GraduationCap, title: "The Offseason",
+    body: "Once the champion's crowned: work the transfer portal, persuade any underclassmen who declared for the NBA Draft to stay (their draft stock, your program's trajectory, and NIL money all matter), set next season's schedule, and weigh any coaching offers before beginning the next season.",
+  },
+];
+
+function CoachOnboarding({ team, onComplete }) {
+  const [step, setStep] = useState("name");
+  const [name, setName] = useState("");
+
+  if (step === "name") {
+    return (
+      <div className="cbb-root cbb-scroll" style={{ minHeight: "100vh", background: C.bg, color: C.cream, padding: "40px 24px", display: "flex", alignItems: "center", justifyContent: "center", position: "relative", overflow: "hidden" }}>
+        <GlobalStyle />
+        <div
+          className="cbb-hero-glow"
+          style={{
+            position: "absolute", top: -180, left: "50%", transform: "translateX(-50%)",
+            width: 900, height: 500, pointerEvents: "none",
+            background: `radial-gradient(closest-side, rgba(216,168,58,0.16), rgba(193,101,47,0.08) 55%, transparent 75%)`,
+          }}
+        />
+        <div style={{ maxWidth: 460, width: "100%", position: "relative" }}>
+          <div className="cbb-num" style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, letterSpacing: "0.22em", color: C.wood, fontWeight: 600, marginBottom: 12 }}>
+            <Flame size={14} color={C.gold} /> WELCOME TO {team.name.toUpperCase()}
+          </div>
+          <h1 className="cbb-display" style={{ fontSize: "clamp(34px, 5vw, 50px)", margin: "0 0 14px" }}>
+            <span style={{ color: C.cream }}>Name your </span>
+            <span className="cbb-gradient-text">coach.</span>
+          </h1>
+          <p style={{ color: C.dim, fontSize: 14.5, lineHeight: 1.6, marginBottom: 24, maxWidth: 420 }}>
+            This is who you'll build a career as — tracked across every job you take, every trophy you win, and every reputation point you earn along the way.
+          </p>
+          <input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter" && name.trim()) setStep("guide"); }}
+            placeholder="Coach name"
+            autoFocus
+            className="cbb-input-glow"
+            style={{ width: "100%", background: C.panel, border: `1px solid ${C.line}`, color: C.cream, padding: "12px 14px", fontSize: 16, marginBottom: 20, outline: "none" }}
+          />
+          <button
+            onClick={() => setStep("guide")}
+            disabled={!name.trim()}
+            className="cbb-btn"
+            style={{ ...btnStyle(C.gold, "#221a00"), width: "100%", justifyContent: "center", fontSize: 14, padding: "12px 0", opacity: name.trim() ? 1 : 0.5, cursor: name.trim() ? "pointer" : "not-allowed" }}
+          >
+            Continue
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="cbb-root cbb-scroll" style={{ minHeight: "100vh", background: C.bg, color: C.cream, padding: "40px 24px", overflowY: "auto" }}>
+      <GlobalStyle />
+      <div style={{ maxWidth: 760, margin: "0 auto" }}>
+        <div className="cbb-num" style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, letterSpacing: "0.22em", color: C.wood, fontWeight: 600, marginBottom: 12 }}>
+          <Flame size={14} color={C.gold} /> COACH {name.trim().toUpperCase()} · {team.name.toUpperCase()}
+        </div>
+        <h1 className="cbb-display" style={{ fontSize: "clamp(30px, 4.4vw, 42px)", margin: "0 0 14px" }}>
+          <span style={{ color: C.cream }}>How to </span>
+          <span className="cbb-gradient-text">coach.</span>
+        </h1>
+        <p style={{ color: C.dim, fontSize: 14, lineHeight: 1.6, marginBottom: 26, maxWidth: 620 }}>
+          A quick tour of the six things you'll touch most. All of it's revisitable in-game any time — nothing here is a one-shot decision.
+        </p>
+        <div style={{ display: "flex", flexDirection: "column", gap: 14, marginBottom: 28 }}>
+          {PLAY_GUIDE_SECTIONS.map(({ Icon, title, body }) => (
+            <Panel key={title} style={{ padding: "14px 16px", display: "flex", gap: 14, alignItems: "flex-start" }}>
+              <div style={{ flexShrink: 0, width: 30, height: 30, borderRadius: 6, background: C.panelAlt, border: `1px solid ${C.line}`, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                <Icon size={15} color={C.gold} />
+              </div>
+              <div>
+                <div style={{ fontWeight: 600, fontSize: 13.5, marginBottom: 3 }}>{title}</div>
+                <div style={{ color: C.dim, fontSize: 12.5, lineHeight: 1.55 }}>{body}</div>
+              </div>
+            </Panel>
+          ))}
+        </div>
+        <button
+          onClick={() => onComplete(name)}
+          className="cbb-btn"
+          style={{ ...btnStyle(C.gold, "#221a00"), fontSize: 14, padding: "12px 22px" }}
+        >
+          <Play size={14} /> Let&apos;s Coach
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* =========================================================================
    TEAM SELECT SCREEN
    ========================================================================= */
 function TeamSelect({ onPick }) {
@@ -7728,6 +7848,9 @@ function ProgramTab({ state, team, record, reputation, rivalIds, rankById }) {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20, maxWidth: 940 }}>
+      {coach.name && (
+        <div className="cbb-num" style={{ fontSize: 22, fontWeight: 700 }}>Coach {coach.name}</div>
+      )}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 14 }}>
         <StatBlock label="Career Record" value={`${careerW}-${careerL}`} />
         <StatBlock label="Win %" value={winPct} />
@@ -8543,6 +8666,7 @@ export default function CBBDynasty() {
   const [slots, setSlots] = useState({}); // { 1: state|null, 2: ..., 3: ... }
   const [session, setSession] = useState(null); // active dynasty state
   const [pickingTeamFor, setPickingTeamFor] = useState(null); // slot number when choosing a team
+  const [onboarding, setOnboarding] = useState(null); // { team, slot, year } once a team's picked, before naming your coach + the how-to-play guide
 
   useEffect(() => {
     (async () => {
@@ -8551,7 +8675,7 @@ export default function CBBDynasty() {
     })();
   }, []);
 
-  function startDynasty(team, slot, year = FIRST_YEAR) {
+  function startDynasty(team, slot, year = FIRST_YEAR, coachName) {
     // Reset the league to its history-seeded baseline (a prior dynasty this
     // session may have drifted the live values) before building the roster.
     const prestigeById = baselinePrestigeById();
@@ -8579,7 +8703,7 @@ export default function CBBDynasty() {
       history: [],
       postseason: null,
       offseason: null,
-      coach: { ...EMPTY_COACH },
+      coach: { ...EMPTY_COACH, name: (coachName && coachName.trim()) || fullName() },
       coachesById: baselineCoachesById(team.id, year),
       awardsHistory: [],
       draftHistory: [],
@@ -8606,14 +8730,26 @@ export default function CBBDynasty() {
     return <DynastyApp initial={session} onExit={exitToSelect} />;
   }
 
+  if (onboarding) {
+    return (
+      <CoachOnboarding
+        team={onboarding.team}
+        onComplete={(coachName) => {
+          startDynasty(onboarding.team, onboarding.slot, onboarding.year, coachName);
+          setOnboarding(null);
+        }}
+      />
+    );
+  }
+
   if (pickingTeamFor) {
-    return <TeamSelect onPick={(team, year) => startDynasty(team, pickingTeamFor, year)} />;
+    return <TeamSelect onPick={(team, year) => setOnboarding({ team, slot: pickingTeamFor, year })} />;
   }
 
   const anySave = SAVE_SLOTS.some((s) => slots[s]);
   if (!anySave) {
     // First-ever run: go straight to team select in slot 1.
-    return <TeamSelect onPick={(team, year) => startDynasty(team, 1, year)} />;
+    return <TeamSelect onPick={(team, year) => setOnboarding({ team, slot: 1, year })} />;
   }
 
   return (
