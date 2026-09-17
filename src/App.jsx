@@ -1475,6 +1475,40 @@ function genTransferBoard(year) {
   return rankBoard(real.length > 0 ? real : genSyntheticPool("transfer"));
 }
 
+// A recruit's class-value contribution — quality-weighted, like real
+// recruiting-site team rankings.
+const CLASS_RANK_STAR_POINTS = { 5: 100, 4: 88, 3: 75, 2: 60, 1: 45 };
+
+// Ranks the user's currently-committed signing class against what every
+// other D-I program's class actually looked like that real year — each
+// uncommitted real recruit is assumed to land at their real destination (see
+// buildRealNewcomer's `originalTeam`), so poaching a blue blood's real
+// signee both lifts your class and knocks theirs down the board, same as it
+// would in reality. Returns null when there isn't enough real-class coverage
+// for the year (e.g. outside the imported data range) to make it meaningful.
+function computeClassRank(board, committedIds, userTeamId) {
+  const committedSet = new Set(committedIds);
+  const classTotal = new Map(); // teamId -> points
+  const bump = (teamId, pts) => classTotal.set(teamId, (classTotal.get(teamId) || 0) + pts);
+
+  for (const r of board) {
+    const pts = CLASS_RANK_STAR_POINTS[r.stars] || 45;
+    if (committedSet.has(r.id)) {
+      bump(userTeamId, pts);
+      continue; // pulled away from wherever they'd really have signed
+    }
+    if (!r.real || !r.originalTeam) continue;
+    const realTeam = findOurTeamByRealName(r.originalTeam);
+    if (!realTeam || realTeam.id === userTeamId) continue;
+    bump(realTeam.id, pts);
+  }
+
+  if (classTotal.size < 40 || !classTotal.has(userTeamId)) return null;
+  const ranked = [...classTotal.entries()].sort((a, b) => b[1] - a[1]);
+  const rank = ranked.findIndex(([id]) => id === userTeamId) + 1;
+  return { rank, total: ranked.length };
+}
+
 // Seed each recruit's STARTING interest relative to the coach's program: a
 // recruit who (in real life) chose this exact program starts warm (50-75%),
 // one who chose a similar-caliber program starts warmer than one who chose a
@@ -2677,9 +2711,33 @@ function boxArray(boxByPlayer, roster) {
 /* =========================================================================
    YEAR-END PROGRESSION
    ========================================================================= */
-function progressRosterForNewYear(roster, incoming, team, newYear) {
-  const survivors = roster
-    .filter((p) => p.class !== "SR")
+// A bench player who barely saw the floor has real reason to walk — real
+// dynasties live and die by managing minutes so guys don't quietly leave.
+// True freshmen get a full season before this applies; upperclassmen with
+// one shot left to start somewhere (juniors especially) are the likeliest
+// to transfer out on their own, separate from anyone the user cuts or loses
+// to the draft.
+function unhappyDepartureChance(p, seasonSeed, newYear) {
+  if (p.class === "FR") return 0;
+  const playRate = clamp((p.season.gp || 0) / TOTAL_SEASON_WEEKS, 0, 1);
+  if (playRate >= 0.5) return 0; // real rotation minutes — no reason to bolt
+  const classMult = p.class === "JR" ? 1.15 : 0.85; // SO
+  return clamp((0.5 - playRate) * 0.7 * classMult, 0, 0.42);
+}
+
+function progressRosterForNewYear(roster, incoming, team, newYear, seasonSeed) {
+  const departed = [];
+  const staying = roster.filter((p) => p.class !== "SR").filter((p) => {
+    const chance = unhappyDepartureChance(p, seasonSeed, newYear);
+    if (chance <= 0) return true;
+    const rng = seasonRngFor(seasonSeed ?? 0, `leave:${p.id}`, newYear);
+    if (rng() < chance) {
+      departed.push({ id: p.id, name: p.name, pos: p.pos, class: p.class, overall: p.overall });
+      return false;
+    }
+    return true;
+  });
+  const survivors = staying
     .map((p) => {
       const nextClass = CLASS_ORDER[CLASS_ORDER.indexOf(p.class) + 1];
       const rolledCareer = {
@@ -2731,7 +2789,7 @@ function progressRosterForNewYear(roster, incoming, team, newYear) {
     combined.push(makePlayer({ pos: thinnest, classYear: "FR", prestige: team?.prestige ?? 2, walkOn: true }));
   }
 
-  return assignScholarships(combined);
+  return { roster: assignScholarships(combined), departed };
 }
 
 /* =========================================================================
@@ -4371,7 +4429,7 @@ function DynastyApp({ initial, onExit }) {
 
     const newYear = state.year + 1;
     const surviving = state.roster.filter((p) => !earlyIds.has(p.id));
-    const newRoster = progressRosterForNewYear(surviving, incomingRecruits, team, newYear);
+    const { roster: newRoster, departed: unhappyDepartures } = progressRosterForNewYear(surviving, incomingRecruits, team, newYear, state.seasonSeed);
     const newStrengths = genSeasonStrengths();
     const psSummary = postseasonSummary(state.postseason, state.teamId);
 
@@ -4414,8 +4472,10 @@ function DynastyApp({ initial, onExit }) {
       year: state.year, teamName: team.name,
       record: { ...record }, postseason: psSummary, awards, draft,
       early: early.map((p) => ({ name: p.name, pos: p.pos, class: p.class, overall: p.overall })),
+      unhappyDepartures,
       seniorCount: seniors.length,
       incomingCount: incomingRecruits.length,
+      classRank: computeClassRank(state.recruitingBoard, state.incomingCommits, state.teamId),
       repBefore: reputationOf(state.coach), repAfter: reputationOf(coach),
       nilObjectivesMet: nilMet,
       nilBoostPct: nilBoost,
@@ -5621,6 +5681,7 @@ function RecruitingTab({ board, otherBoard, committedIds, targets, onToggleTarge
   const nilPending = [...board, ...(otherBoard || [])].reduce((sum, r) =>
     sum + ((r.committedTo === team.id || !r.committedTo) ? (r.nilOffer || 0) : 0), 0);
   const nilAvailable = Math.max(0, (nilBudget || 0) - nilPending);
+  const classRank = useMemo(() => computeClassRank(board, committedIds, team.id), [board, committedIds, team.id]);
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
@@ -5630,6 +5691,11 @@ function RecruitingTab({ board, otherBoard, committedIds, targets, onToggleTarge
           </div>
           <div style={{ fontSize: 13, color: C.dim }}>Open scholarships: <strong style={{ color: open > 0 ? C.gold : C.red }}>{open}</strong> / {SCHOLARSHIP_LIMIT}</div>
           <div style={{ fontSize: 13, color: C.dim }}>Committed: <strong style={{ color: C.cream }}>{committedIds.length}</strong></div>
+          {classRank && (
+            <div style={{ fontSize: 13, color: C.dim }}>
+              Class rank: <strong style={{ color: C.gold }}>No. {classRank.rank}</strong> of {classRank.total}
+            </div>
+          )}
           <div style={{ fontSize: 13, color: C.dim }}>Points this week: <strong style={{ color: C.gold }}>{points}</strong> / {budget}</div>
           <div style={{ fontSize: 13, color: C.dim }}>Signing period: <strong style={{ color: C.cream }}>{pct}%</strong> elapsed</div>
         </div>
@@ -6958,7 +7024,7 @@ function SeasonRecapModal({ recap, onClose }) {
           <RecapChip label="Record" value={`${recap.record.w}-${recap.record.l}`} />
           <RecapChip label="Postseason" value={recap.postseason || "None"} gold={recap.postseason === "National Champions"} />
           <RecapChip label="Reputation" value={`${recap.repAfter}${repDelta ? ` (+${repDelta})` : ""}`} />
-          <RecapChip label="Incoming class" value={`${recap.incomingCount} signed`} />
+          <RecapChip label="Incoming class" value={`${recap.incomingCount} signed${recap.classRank ? ` · No. ${recap.classRank.rank}` : ""}`} />
           {recap.coyAwarded && <RecapChip label="Coach of the Year" value="Won" gold />}
           {recap.regSeasonConfChamp && <RecapChip label="Regular Season" value="Conf. Champs" gold />}
         </div>
@@ -7037,6 +7103,17 @@ function SeasonRecapModal({ recap, onClose }) {
             {recap.draft.map((d, i) => (
               <div key={i} style={{ fontSize: 12.5, marginBottom: 2 }}>
                 <span className="cbb-num" style={{ color: C.wood }}>#{d.pick}</span> {d.name} <span style={{ color: C.dim }}>{d.pos} · OVR {d.overall} · {d.early ? `${d.class} (early entry)` : "senior"}</span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {recap.unhappyDepartures && recap.unhappyDepartures.length > 0 && (
+          <div>
+            <div style={{ fontSize: 11, color: C.dim, letterSpacing: "0.08em", marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}><TrendingDown size={13} color={C.red} /> TRANSFERRING OUT</div>
+            {recap.unhappyDepartures.map((d, i) => (
+              <div key={i} style={{ fontSize: 12.5, marginBottom: 2 }}>
+                {d.name} <span style={{ color: C.dim }}>{d.pos} · OVR {d.overall} · {d.class} · wanted more playing time</span>
               </div>
             ))}
           </div>
