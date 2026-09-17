@@ -3628,6 +3628,24 @@ function advanceCoachingCarousel(coachesById, ranked, postseason, prestigeById, 
   return { coachesById: next, fires };
 }
 
+// Whether a program that just fired its coach this same transition comes
+// calling for the user instead of hiring a random name. Only a genuine step
+// up in prestige draws attention, and only if the user's reputation actually
+// clears that program's bar — same reputation gate a voluntary job search
+// uses. A bigger jump gets more attention, but it's never a lock; the pick
+// is the single most attractive qualifying opening, since a coach doesn't
+// field five simultaneous offers in one afternoon.
+function poachingOffer(coachingFires, userTeamId, userPrestige, userReputation) {
+  const candidates = coachingFires
+    .filter((f) => f.teamId !== userTeamId && f.prestige > userPrestige && userReputation >= (JOB_REP_REQ[f.prestige] ?? 0))
+    .sort((a, b) => b.prestige - a.prestige);
+  if (!candidates.length) return null;
+  const best = candidates[0];
+  const stepUp = best.prestige - userPrestige;
+  const chance = clamp(0.16 + stepUp * 0.11, 0.15, 0.5);
+  return Math.random() < chance ? best : null;
+}
+
 /* =========================================================================
    BRACKETOLOGY / RIVALRIES / ROSTER NEEDS
    ========================================================================= */
@@ -5078,6 +5096,13 @@ function DynastyApp({ initial, onExit }) {
     if (wonCoy) coach.coyAwards = (coach.coyAwards || 0) + 1;
     coach.repPenalty = (coach.repPenalty || 0) + reputationErosion(evalRes, fired);
 
+    // A blue-blood that just fired its own coach this same offseason might
+    // come after the user instead of hiring a random name — never when the
+    // user is already being fired themselves (that flow takes priority).
+    const poachOffer = fired ? null : poachingOffer(
+      coachingFires, state.teamId, nextPrestige[state.teamId] ?? team.prestige, reputationOf(coach)
+    );
+
     // NIL: grade this season's 3 objectives, compound the budget, and pick
     // next season's 3 off the program's drifted prestige.
     const confChampionId = state.postseason?.confChampions?.[team.conf] ?? null;
@@ -5159,6 +5184,7 @@ function DynastyApp({ initial, onExit }) {
       // the firedFlow early-return above), so a fired coach can't dodge the
       // consequence by refreshing before the job-change modal even opens.
       coachFired: fired,
+      poachOffer,
     });
     setRecap(recapData);
     if (fired) {
@@ -5260,6 +5286,7 @@ function DynastyApp({ initial, onExit }) {
         careers: [...(state.programRecords?.careers || []), ...newCareerRecords],
       },
       coachFired: false,
+      poachOffer: null,
     });
     setJobPickerOpen(false);
     setTab("dashboard");
@@ -5490,6 +5517,17 @@ function DynastyApp({ initial, onExit }) {
       )}
       {recap && (
         <SeasonRecapModal recap={recap} onClose={() => setRecap(null)} />
+      )}
+      {!recap && state.poachOffer && (
+        <PoachOfferModal
+          offer={state.poachOffer}
+          currentTeamName={team.name}
+          onAccept={() => changeJob(TEAM_MAP[state.poachOffer.teamId])}
+          onDecline={() => {
+            setState((s) => ({ ...s, poachOffer: null }));
+            flash(`You're staying at ${team.name}.`);
+          }}
+        />
       )}
       {livePlay && (
         <LiveGame
@@ -7545,6 +7583,36 @@ function TeamRosterModal({ teamId, year, strengths, rank, poached = [], history:
           </table>
         </Panel>
       )}
+    </Modal>
+  );
+}
+
+/* ---------- Poaching Offer ---------- */
+// A program that just fired its own coach this same offseason coming after
+// the user unsolicited — see poachingOffer(). Purely optional: declining
+// just leaves that vacancy to be filled the normal way (a fresh CPU hire)
+// and the user keeps their current job with no penalty.
+function PoachOfferModal({ offer, currentTeamName, onAccept, onDecline }) {
+  const team = TEAM_MAP[offer.teamId];
+  return (
+    <Modal title="A job is calling" subtitle={`${team.name} wants to talk to you`} onClose={onDecline} maxWidth={480}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}>
+        <div style={{ width: 10, height: 10, background: team.primary }} />
+        <span style={{ fontWeight: 600, fontSize: 15 }}>{team.name}</span>
+        <span style={{ color: C.dim, fontSize: 12.5 }}>· {team.conf}</span>
+        <div style={{ display: "flex", gap: 2, marginLeft: 4 }}>
+          {Array.from({ length: 5 }).map((_, i) => (
+            <div key={i} style={{ width: 12, height: 4, background: i < team.prestige ? C.wood : C.line }} />
+          ))}
+        </div>
+      </div>
+      <div style={{ fontSize: 13, color: C.dim, lineHeight: 1.6, marginBottom: 20 }}>
+        {team.name} just moved on from their coach and their AD called about you directly — no search, no application. Take the job and your roster at {currentTeamName} stays behind for the next coach; turn it down and you keep your job with no hard feelings.
+      </div>
+      <div style={{ display: "flex", gap: 10 }}>
+        <button onClick={onAccept} className="cbb-btn" style={{ ...btnStyle(C.gold, "#221a00"), flex: 1, justifyContent: "center" }}>Take the {team.name} job</button>
+        <button onClick={onDecline} className="cbb-btn" style={{ ...btnStyle(C.panelAlt, C.cream), flex: 1, justifyContent: "center", border: `1px solid ${C.line}` }}>Stay at {currentTeamName}</button>
+      </div>
     </Modal>
   );
 }
