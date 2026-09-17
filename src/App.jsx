@@ -1566,6 +1566,7 @@ const RECRUIT_ACTIONS = {
   OFFER: { key: "OFFER", label: "Scholarship Offer", cost: 5,  gain: [6, 10],  oneTime: true },
   VISIT: { key: "VISIT", label: "Official Visit",    cost: 12, gain: [16, 26], maxUses: 1 },
   HOME:  { key: "HOME",  label: "Home Visit",        cost: 9,  gain: [11, 18], maxSeason: 2 },
+  SCOUT: { key: "SCOUT", label: "Scout",             cost: 10, oneTime: true },
 };
 
 // Visit pricing scales with how far a recruit's hometown is from campus. Within
@@ -1619,6 +1620,7 @@ function canTakeAction(recruit, actionKey, pointsLeft, weekIndex = 0, team = nul
   if (actionKey === "CALL") return (recruit.callsThisWeek || 0) < action.perWeek;
   if (actionKey === "VISIT") return (recruit.visitsUsed || 0) < action.maxUses;
   if (actionKey === "HOME") return (recruit.homeVisitsUsed || 0) < action.maxSeason && recruit.homeVisitWeek !== weekIndex;
+  if (actionKey === "SCOUT") return !recruit.scouted;
   return false;
 }
 
@@ -1628,6 +1630,7 @@ const INTEREST_GAIN_MULT = 0.7;
 
 function applyRecruitAction(recruit, actionKey, weekIndex = 0) {
   const action = RECRUIT_ACTIONS[actionKey];
+  if (actionKey === "SCOUT") return { ...recruit, scouted: true };
   const gain = Math.max(1, Math.round(rand(action.gain[0], action.gain[1]) * INTEREST_GAIN_MULT));
   const next = { ...recruit, interest: clamp(recruit.interest + gain, 0, 100) };
   if (actionKey === "OFFER") next.offerExtended = true;
@@ -3164,8 +3167,86 @@ function computeAwards(state, rankById, ranked, powerById) {
 // below the floor for their class cannot leave early at all.
 const EARLY_DEPARTURE_MIN = { FR: 75, SO: 80, JR: 83 };
 
+// Real draft-stock read, 0 (marginal early-entry) to 1 (lottery-lock talent).
+// This is the dominant input to persuasion difficulty below — nothing (no
+// pitch, no NIL check) meaningfully overcomes a true lottery prospect.
+function draftStockScore(p) {
+  const o = p.overall || 0;
+  if (o >= 92) return 1.0;
+  if (o >= 88) return 0.85;
+  if (o >= 84) return 0.6;
+  if (o >= 80) return 0.35;
+  return 0.15;
+}
+function draftStockLabel(stock) {
+  if (stock >= 0.85) return "Lottery talent";
+  if (stock >= 0.6) return "First-round";
+  if (stock >= 0.35) return "Second-round";
+  return "Marginal prospect";
+}
+// Theoretical room left to grow before hitting a ceiling — younger
+// underclassmen have more of it. It only sways someone whose draft stock
+// hasn't already locked in; a lottery-grade freshman gains nothing by
+// "waiting to develop," so upside can't rescue a persuasion pitch there.
+function developmentUpside(p) {
+  if (p.class === "FR") return 1.0;
+  if (p.class === "SO") return 0.6;
+  return 0.25;
+}
+const POSTSEASON_TRAJECTORY_BONUS = {
+  "National Champions": 1.0, "Runner-up": 0.85, "Final Four": 0.7,
+  "NCAA Tournament": 0.5, "NIT Champions": 0.35, "NIT": 0.25, "Conference Champions": 0.3,
+};
+// How hot the program is right now — this season's win rate blended with how
+// deep the postseason run went. A team on the rise gives a departing player
+// a real reason to stick around for more exposure and a longer run next year.
+function teamTrajectoryScore(record, postseasonLabel) {
+  const games = (record?.w || 0) + (record?.l || 0);
+  const winPct = games > 0 ? record.w / games : 0.5;
+  const psBonus = POSTSEASON_TRAJECTORY_BONUS[postseasonLabel] || 0;
+  return clamp(winPct * 0.6 + psBonus * 0.4, 0, 1);
+}
+// Dollar ask that would meaningfully move a departing player's calculus,
+// scaled by how good they already are. Cheap to flatter a fringe prospect;
+// no realistic NIL check competes with actual lottery-pick rookie money.
+function stayNilAsk(player) {
+  const o = player.overall || 70;
+  return Math.round(clamp((o - 70) / 30, 0, 1) * 900000 + 150000);
+}
+// How well a chosen pitch actually fits the player's real situation — a
+// modest nudge, not the deciding factor. Playing the "you'll develop and
+// rise" card only lands on someone whose stock isn't already locked in;
+// telling a legitimate prospect "scouts say you won't be drafted" is an
+// obvious, insulting lie and backfires.
+function pitchModifier(pitchIndex, player, stock) {
+  if (pitchIndex === 0) return (player.class !== "JR" && stock < 0.85) ? 0.08 : 0;
+  if (pitchIndex === 1) return stock <= 0.4 ? 0.06 : -0.03;
+  if (pitchIndex === 2) return stock <= 0.4 ? 0.08 : -0.12;
+  return 0;
+}
+// The full persuasion read: draft stock (dominant — caps the ceiling no
+// matter what else is thrown at it), remaining development upside, the
+// program's recent trajectory, the coach's reputation, an NIL counter-offer,
+// and pitch fit. A borderline prospect can genuinely be talked into staying;
+// a projected lottery pick stays very hard to keep regardless of any of it.
+function persuadeChance(player, { trajectory, coachRepScore, nilPledge, pitchIndex }) {
+  const stock = draftStockScore(player);
+  const upside = developmentUpside(player);
+  const upsideBoost = upside * (1 - stock) * 0.30;
+  const trajectoryBoost = clamp(trajectory, 0, 1) * 0.15;
+  const coachBoost = clamp(coachRepScore, 0, 1) * 0.15;
+  const nilRatio = clamp((nilPledge || 0) / stayNilAsk(player), 0, 1.5);
+  const nilBoost = nilRatio * 0.25;
+  const pitchBonus = pitchModifier(pitchIndex, player, stock);
+  const raw = 0.22 + upsideBoost + trajectoryBoost + coachBoost + nilBoost + pitchBonus;
+  const ceiling = clamp(1 - stock * 0.85, 0.06, 0.92);
+  return clamp(Math.min(raw, ceiling), 0.03, 0.95);
+}
+
 // The three pitches a coach can use to persuade a declared player to return.
-// Exactly one is correct for each player (assigned at random when they declare).
+// Which one lands best depends on the player's actual situation — see
+// pitchModifier — but the outcome is decided by persuadeChance as a whole,
+// not a single hidden "correct" answer.
 const PERSUADE_PITCHES = [
   "Develop more before you leave and we can get you drafted higher",
   "You need to finish your degree.",
@@ -3184,9 +3265,8 @@ function seasonProductionScore(p) {
 
 // Decide which underclassmen declare for the draft this offseason. Only players
 // at/above their class's overall floor are eligible; among those, better and
-// more productive players are likelier to go. Each declaration carries a
-// randomly-assigned correct pitch and its persuasion state so the coach gets
-// one attempt to talk them back.
+// more productive players are likelier to go. Each declaration starts
+// unresolved — see persuadeChance for how a coach's pitch actually plays out.
 function decideEarlyDeclarations(roster) {
   const out = [];
   roster.forEach((p) => {
@@ -3200,7 +3280,6 @@ function decideEarlyDeclarations(roster) {
     if (Math.random() < clamp(chance, 0, 0.97)) {
       out.push({
         id: p.id, name: p.name, pos: p.pos, class: p.class, overall: o,
-        correctPitch: randInt(0, PERSUADE_PITCHES.length - 1),
         attempted: false, kept: false, pitch: null,
       });
     }
@@ -3993,7 +4072,7 @@ function DynastyApp({ initial, onExit }) {
     const opp = TEAM_MAP[nextGame.oppId];
     const oppPower = teamPowerRating(opp, state.strengths, state.year);
     const mom = momentumMod(currentStreak(state.schedule));
-    setLivePlay({ teamId: state.teamId, opp, oppId: nextGame.oppId, oppPower, oppRank: rankById[nextGame.oppId] || null, home: nextGame.home, momentum: mom, roster: state.roster, dc: state.depthChart, minutes: state.minutes, powerBaseline });
+    setLivePlay({ teamId: state.teamId, opp, oppId: nextGame.oppId, oppPower, oppRank: rankById[nextGame.oppId] || null, home: nextGame.home, momentum: mom, roster: state.roster, dc: state.depthChart, minutes: state.minutes, powerBaseline, year: state.year });
   }
 
   function simToEndOfSeason() {
@@ -4131,24 +4210,45 @@ function DynastyApp({ initial, onExit }) {
     }));
   }
 
-  // One persuasion attempt per declared player: pick a pitch, and if it's the
-  // (randomly assigned) correct one, the player withdraws and stays.
-  function persuadePlayer(playerId, pitchIndex) {
+  // One persuasion attempt per declared player, weighed by their real draft
+  // stock, remaining upside, the program's trajectory, the coach's
+  // reputation, an optional NIL counter-offer, and pitch fit — see
+  // persuadeChance. The NIL money is only actually spent if it works: no
+  // deal was struck if they walk anyway.
+  function persuadePlayer(playerId, pitchIndex, nilPledge = 0) {
     const os = state.offseason;
     if (!os || !os.draftDeclarations) return;
     const decl = os.draftDeclarations.find((d) => d.id === playerId);
     if (!decl || decl.attempted) return;
-    const kept = pitchIndex === decl.correctPitch;
-    setState((s) => ({
-      ...s,
-      offseason: {
-        ...s.offseason,
-        draftDeclarations: s.offseason.draftDeclarations.map((d) =>
-          d.id === playerId ? { ...d, attempted: true, kept, pitch: pitchIndex } : d),
-      },
-    }));
+    const player = state.roster.find((p) => p.id === playerId);
+    if (!player) return;
+    // budget already reflects every prior successful persuasion pledge (each
+    // one permanently deducted below when it lands) — only pending recruiting
+    // offers, which haven't actually been spent yet, need to be reserved here.
+    const budget = (state.nilBudgetById || baselineNilBudgetById())[state.teamId] ?? 0;
+    const committedElsewhere = [...os.transferBoard, ...state.recruitingBoard].reduce((sum, r) =>
+      sum + ((r.committedTo === state.teamId || !r.committedTo) ? (r.nilOffer || 0) : 0), 0);
+    const pledge = clamp(Math.round(Number(nilPledge) || 0), 0, Math.max(0, budget - committedElsewhere));
+    const trajectory = teamTrajectoryScore(record, postseasonSummary(state.postseason, state.teamId));
+    const coachRepScore = clamp(reputation / 150, 0, 1);
+    const chance = persuadeChance(player, { trajectory, coachRepScore, nilPledge: pledge, pitchIndex });
+    const kept = Math.random() < chance;
+    setState((s) => {
+      const nextNilById = (kept && pledge > 0)
+        ? { ...(s.nilBudgetById || baselineNilBudgetById()), [s.teamId]: Math.max(0, ((s.nilBudgetById || baselineNilBudgetById())[s.teamId] ?? budget) - pledge) }
+        : s.nilBudgetById;
+      return {
+        ...s,
+        ...(nextNilById ? { nilBudgetById: nextNilById } : {}),
+        offseason: {
+          ...s.offseason,
+          draftDeclarations: s.offseason.draftDeclarations.map((d) =>
+            d.id === playerId ? { ...d, attempted: true, kept, pitch: pitchIndex, nilPledge: pledge, chance } : d),
+        },
+      };
+    });
     flash(kept
-      ? `${decl.name} is withdrawing from the draft and returning!`
+      ? `${decl.name} is withdrawing from the draft and returning!${pledge > 0 ? ` (${formatNil(pledge)} NIL deal)` : ""}`
       : `${decl.name} thanked you but is staying in the draft.`);
   }
 
@@ -4348,7 +4448,7 @@ function DynastyApp({ initial, onExit }) {
       teamId: state.teamId, opp, oppId, oppPower,
       oppRank: rankById[oppId] || null, home: true, momentum: 0,
       roster: state.roster, dc: state.depthChart, minutes: state.minutes, powerBaseline,
-      isPostseason: true, loc,
+      isPostseason: true, loc, year: state.year,
     });
   }
 
@@ -4581,6 +4681,26 @@ function DynastyApp({ initial, onExit }) {
     flash("Player cut — a scholarship has opened up.");
   }
 
+  // Re-designate a player's actual position (not just their depth-chart slot).
+  // Overall is position-weighted, so it's recomputed against the same attrs
+  // at the new position — and the depth chart bucket they occupy moves with
+  // them so minutes allocation and out-of-position math stay consistent.
+  function changePlayerPosition(playerId, newPos) {
+    setState((s) => {
+      const player = s.roster.find((p) => p.id === playerId);
+      if (!player || player.pos === newPos) return s;
+      const roster = s.roster.map((p) =>
+        p.id === playerId ? { ...p, pos: newPos, overall: computeOverall(newPos, p.attrs) } : p
+      );
+      const dc = {};
+      POSITIONS.forEach((p) => { dc[p] = (s.depthChart[p] || []).filter((id) => id !== playerId); });
+      dc[newPos] = [...dc[newPos], playerId];
+      const minutes = { ...(s.minutes || defaultMinutesFor(s.depthChart)), [playerId]: 0 };
+      return { ...s, roster, depthChart: dc, minutes };
+    });
+    flash("Position updated.");
+  }
+
   // Spend (or refund) a development point on one attribute. Enforces the shared
   // pool, the per-attribute cap, and the 40-99 attribute range. Boosts are
   // recorded on the player so real players keep the gain after next year's
@@ -4694,7 +4814,7 @@ function DynastyApp({ initial, onExit }) {
       record: { ...record }, postseason: psSummary, awards, draft,
       early: early.map((p) => ({ name: p.name, pos: p.pos, class: p.class, overall: p.overall })),
       unhappyDepartures,
-      seniorCount: seniors.length,
+      graduated: seniors.filter((p) => p.overall < 80).map((p) => ({ name: p.name, pos: p.pos, overall: p.overall })),
       incomingCount: incomingRecruits.length,
       classRank: computeClassRank(state.recruitingBoard, state.incomingCommits, state.teamId),
       repBefore: reputationOf(state.coach), repAfter: reputationOf(coach),
@@ -4939,7 +5059,7 @@ function DynastyApp({ initial, onExit }) {
               headlines={headlines}
               onViewPlayer={setPlayerViewId} />
           )}
-          {tab === "roster" && <RosterTab roster={state.roster} onViewPlayer={setPlayerViewId} />}
+          {tab === "roster" && <RosterTab roster={state.roster} onViewPlayer={setPlayerViewId} onChangePosition={changePlayerPosition} />}
           {tab === "depth" && <DepthChartTab roster={state.roster} depthChart={state.depthChart} minutes={state.minutes} onMove={moveInDepthChart} onAssign={assignPosition} onRemove={removeFromDepth} onSetMinutes={setPlayerMinutes} />}
           {tab === "recruiting" && (
             <RecruitingTab
@@ -4990,6 +5110,8 @@ function DynastyApp({ initial, onExit }) {
               onSign={attemptSignTransfer}
               onNilOffer={doNilOfferTransfer}
               nilBudget={nilBudget}
+              trajectory={teamTrajectoryScore(record, postseasonSummary(state.postseason, state.teamId))}
+              coachRepScore={clamp(reputation / 150, 0, 1)}
               onPersuade={persuadePlayer}
               onAdvanceWeek={advanceOffseasonWeek}
               onEditGame={editDraftGame}
@@ -5431,14 +5553,14 @@ function avg(total, gp) { return gp ? ((total || 0) / gp).toFixed(1) : "0.0"; }
 function pct(made, attempted) { return attempted ? `${Math.round((made / attempted) * 100)}%` : "—"; }
 
 /* ---------- Roster ---------- */
-function RosterTab({ roster, onViewPlayer }) {
+function RosterTab({ roster, onViewPlayer, onChangePosition }) {
   const sorted = [...roster].sort((a, b) => b.overall - a.overall);
   const realCount = roster.filter((p) => p.realName).length;
   return (
     <div>
       <div style={{ fontSize: 11.5, color: C.dimmer, marginBottom: 10 }}>
         {realCount > 0 ? `${realCount} of ${roster.length} names came from real Torvik data (marked with •). ` : ""}
-        Click any player for a full profile and game log.
+        Click any player for a full profile and game log. Changing a player&apos;s position here moves them to that position&apos;s depth-chart slot and recalculates their overall.
       </div>
       <Panel style={{ overflow: "hidden" }}>
       <div style={{ overflowX: "auto" }}>
@@ -5451,16 +5573,26 @@ function RosterTab({ roster, onViewPlayer }) {
         </thead>
         <tbody>
           {sorted.map((p) => (
-            <tr key={p.id} className="cbb-row" style={{ borderBottom: `1px solid ${C.line}`, cursor: "pointer" }}
-              onClick={() => onViewPlayer && onViewPlayer(p.id)}>
-              <td style={td}>
+            <tr key={p.id} className="cbb-row" style={{ borderBottom: `1px solid ${C.line}` }}>
+              <td style={{ ...td, cursor: onViewPlayer ? "pointer" : "default" }} onClick={() => onViewPlayer && onViewPlayer(p.id)}>
                 <div style={{ fontWeight: 600 }}>
                   {p.realName ? "• " : ""}{p.name}
                   {isHurt(p) && <span style={{ fontSize: 9.5, color: C.red, marginLeft: 6, letterSpacing: "0.06em", border: `1px solid ${C.red}`, padding: "1px 4px" }}>OUT {p.injuredGames}</span>}
                 </div>
                 {p.starsAtSigning != null && <StarRow stars={p.starsAtSigning} />}
               </td>
-              <td style={td}>{p.pos}</td>
+              <td style={td}>
+                {onChangePosition ? (
+                  <select
+                    value={p.pos}
+                    onClick={(e) => e.stopPropagation()}
+                    onChange={(e) => onChangePosition(p.id, e.target.value)}
+                    style={{ background: C.panel, border: `1px solid ${C.line}`, color: C.cream, fontSize: 12, padding: "3px 4px" }}
+                  >
+                    {POSITIONS.map((pos) => <option key={pos} value={pos}>{pos}</option>)}
+                  </select>
+                ) : p.pos}
+              </td>
               <td style={td}>{p.class}</td>
               <td style={{ ...td, fontWeight: 700 }} className="cbb-num">{p.overall}</td>
               <td style={td}>{avg(p.season.pts, p.season.gp)}</td>
@@ -5840,7 +5972,13 @@ function RecruitBoard({ board, otherBoard, committedIds, targets, onToggleTarget
                       )}
                     </div>
                     <div style={{ fontSize: 11, color: C.dim }} title={r.international ? r.hometownPlace : undefined}>
-                      {r.pos} · <span title={r.international ? r.hometownPlace : undefined}>{r.hometown || r.state}</span> · {r.hsStatline.ppg} ppg
+                      {r.pos} · <span title={r.international ? r.hometownPlace : undefined}>{r.hometown || r.state}</span>
+                      {r.scouted && (
+                        <span style={{ color: C.gold }}>
+                          {" "}· {r.hsStatline.ppg} ppg / {r.hsStatline.rpg} rpg
+                          {r.realStats ? ` / ${perGame(r.realStats.apg, r.realStats.gp).toFixed(1)} apg (${r.realStats.gp} real GP)` : ""}
+                        </span>
+                      )}
                     </div>
                   </div>
                   <StarRow stars={r.stars} />
@@ -5867,6 +6005,7 @@ function RecruitBoard({ board, otherBoard, committedIds, targets, onToggleTarget
                     else if (action.key === "HOME") sub = ` (${r.homeVisitsUsed || 0}/${action.maxSeason})`;
                     else if (action.key === "VISIT") sub = ` (${r.visitsUsed || 0}/${action.maxUses})`;
                     else if (action.key === "OFFER" && r.offerExtended) sub = " ✓";
+                    else if (action.key === "SCOUT" && r.scouted) sub = " ✓";
                     const isVisit = action.key === "VISIT" || action.key === "HOME";
                     const miles = isVisit ? recruitDistanceMiles(r, team) : null;
                     const distTip = isVisit
@@ -6035,7 +6174,8 @@ function ProgressionPanel({ roster, devPoints, devSpent, onDev, onViewPlayer }) 
 }
 
 function CutsPanel({ roster, scholarshipInfo, onCut, onViewPlayer }) {
-  const sorted = [...roster].sort((a, b) => b.overall - a.overall);
+  const cuttable = roster.filter((p) => p.class !== "SR").sort((a, b) => b.overall - a.overall);
+  const graduating = roster.filter((p) => p.class === "SR").sort((a, b) => b.overall - a.overall);
   return (
     <div>
       <div style={{ fontSize: 11.5, color: C.dimmer, marginBottom: 10, maxWidth: 720 }}>
@@ -6049,7 +6189,7 @@ function CutsPanel({ roster, scholarshipInfo, onCut, onViewPlayer }) {
             </tr>
           </thead>
           <tbody>
-            {sorted.map((p) => (
+            {cuttable.map((p) => (
               <tr key={p.id} className="cbb-row" style={{ borderBottom: `1px solid ${C.line}` }}>
                 <td style={{ ...td, cursor: onViewPlayer ? "pointer" : "default", fontWeight: 600 }} onClick={() => onViewPlayer && onViewPlayer(p.id)}>{p.realName ? "• " : ""}{p.name}</td>
                 <td style={td}>{p.pos}</td>
@@ -6071,6 +6211,35 @@ function CutsPanel({ roster, scholarshipInfo, onCut, onViewPlayer }) {
           </tbody>
         </table>
       </Panel>
+      {graduating.length > 0 && (
+        <div style={{ marginTop: 16 }}>
+          <div style={{ fontSize: 11, color: C.dim, letterSpacing: "0.06em", marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}>
+            <GraduationCap size={13} /> GRADUATING — leaving on their own, not cuttable
+          </div>
+          <Panel style={{ overflow: "hidden", opacity: 0.75 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13.5 }}>
+              <thead>
+                <tr style={{ borderBottom: `1px solid ${C.line}`, color: C.dim, fontSize: 11, textAlign: "left" }}>
+                  <th style={th}>Player</th><th style={th}>Pos</th><th style={th}>Class</th><th style={th}>OVR</th><th style={th}></th>
+                </tr>
+              </thead>
+              <tbody>
+                {graduating.map((p) => (
+                  <tr key={p.id} className="cbb-row" style={{ borderBottom: `1px solid ${C.line}` }}>
+                    <td style={{ ...td, cursor: onViewPlayer ? "pointer" : "default", fontWeight: 600 }} onClick={() => onViewPlayer && onViewPlayer(p.id)}>{p.realName ? "• " : ""}{p.name}</td>
+                    <td style={td}>{p.pos}</td>
+                    <td style={td}>{p.class}</td>
+                    <td style={{ ...td, fontWeight: 700 }} className="cbb-num">{p.overall}</td>
+                    <td style={td}>
+                      <span style={{ fontSize: 10.5, color: C.dim, border: `1px solid ${C.line}`, padding: "1px 6px" }}>GRADUATING</span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </Panel>
+        </div>
+      )}
     </div>
   );
 }
@@ -6129,8 +6298,9 @@ function TransferPortalTab({ offseason, hsBoard, team, scholarshipInfo, committe
 
 // Off-season draft decisions: each declared underclassman gets one persuasion
 // attempt. Pick the pitch that lands and they withdraw and return next season.
-function DraftDecisionsPanel({ declarations, onPersuade }) {
+function DraftDecisionsPanel({ declarations, onPersuade, trajectory = 0.5, coachRepScore = 0, nilBudget = 0, recruitingNilPending = 0 }) {
   const [pitchChoice, setPitchChoice] = useState({});
+  const [pledgeChoice, setPledgeChoice] = useState({});
   if (!declarations || declarations.length === 0) {
     return (
       <Panel style={{ padding: "14px 16px" }}>
@@ -6139,26 +6309,36 @@ function DraftDecisionsPanel({ declarations, onPersuade }) {
     );
   }
   const pending = declarations.filter((d) => !d.attempted).length;
+  // nilBudget already reflects every successful persuasion pledge (each one
+  // permanently deducted the moment it lands) — only still-pending recruiting
+  // offers need to be reserved out of it here.
+  const nilAvailable = Math.max(0, nilBudget - recruitingNilPending);
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
       <div style={{ fontSize: 11.5, color: C.dimmer, marginBottom: 2, maxWidth: 720 }}>
         {pending > 0
-          ? "Each player will hear you out once. Choose the pitch you think will resonate — only one works, and you get a single attempt per player."
+          ? `Each player hears you out once. Their real draft stock is the biggest factor — a lottery talent is very hard to keep no matter what you offer, but a borderline prospect can genuinely be swayed. NIL available for counter-offers: ${formatNil(nilAvailable)}.`
           : "Every declared player has heard your pitch."}
       </div>
       {declarations.map((d) => {
         const decided = d.attempted;
         const sel = pitchChoice[d.id];
+        const pledge = pledgeChoice[d.id] ?? 0;
+        const stock = draftStockScore(d);
+        const preview = sel != null
+          ? persuadeChance(d, { trajectory, coachRepScore, nilPledge: pledge, pitchIndex: sel })
+          : null;
         return (
           <Panel key={d.id} style={{ padding: "12px 16px" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
               <div>
                 <span style={{ fontWeight: 600, fontSize: 13.5 }}>{d.name}</span>
                 <span className="cbb-num" style={{ fontSize: 11, color: C.dim, marginLeft: 8 }}>{d.pos} · {d.class} · {d.overall} OVR</span>
+                <span style={{ fontSize: 10.5, color: C.wood, marginLeft: 8, border: `1px solid ${C.line}`, padding: "1px 6px" }}>{draftStockLabel(stock)}</span>
               </div>
               {decided ? (
                 <span style={{ fontSize: 12, color: d.kept ? C.green : C.red, display: "flex", alignItems: "center", gap: 4 }}>
-                  {d.kept ? <><Check size={13} /> Returning</> : "Staying in draft"}
+                  {d.kept ? <><Check size={13} /> Returning{d.nilPledge > 0 ? ` — ${formatNil(d.nilPledge)} NIL` : ""}</> : "Staying in draft"}
                 </span>
               ) : (
                 <span style={{ fontSize: 11, color: C.gold, letterSpacing: "0.05em" }}>DECLARED</span>
@@ -6173,8 +6353,18 @@ function DraftDecisionsPanel({ declarations, onPersuade }) {
                     <span>&ldquo;{pitch}&rdquo;</span>
                   </label>
                 ))}
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 4, flexWrap: "wrap" }}>
+                  <span style={{ fontSize: 11.5, color: C.dim }}>NIL counter-offer</span>
+                  <input type="number" min={0} max={nilAvailable} step={10000} value={pledge || ""}
+                    placeholder="0"
+                    onChange={(e) => setPledgeChoice((p) => ({ ...p, [d.id]: clamp(Math.round(Number(e.target.value) || 0), 0, nilAvailable) }))}
+                    style={{ width: 100, background: C.panel, border: `1px solid ${C.line}`, color: C.cream, fontSize: 12, padding: "3px 6px" }} />
+                  {preview != null && (
+                    <span style={{ fontSize: 11.5, color: C.dimmer }}>Est. {Math.round(preview * 100)}% to return</span>
+                  )}
+                </div>
                 <div>
-                  <button className="cbb-btn" disabled={sel == null} onClick={() => onPersuade(d.id, sel)}
+                  <button className="cbb-btn" disabled={sel == null} onClick={() => onPersuade(d.id, sel, pledge)}
                     style={{ ...btnStyle(sel == null ? C.line : C.wood), fontSize: 12, padding: "6px 12px", marginTop: 4, cursor: sel == null ? "not-allowed" : "pointer" }}>
                     Make Pitch
                   </button>
@@ -6188,7 +6378,7 @@ function DraftDecisionsPanel({ declarations, onPersuade }) {
   );
 }
 
-function OffseasonTab({ stage, offseason, hsBoard, team, roster, nextYear, committedFreshmen, scholarshipInfo, rankById, onAction, onSign, onNilOffer, nilBudget, onPersuade, onAdvanceWeek, onEditGame, onChangeJob, onAdvanceYear, onViewTeam, onViewPlayer, onCut, onDev }) {
+function OffseasonTab({ stage, offseason, hsBoard, team, roster, nextYear, committedFreshmen, scholarshipInfo, rankById, onAction, onSign, onNilOffer, nilBudget, trajectory, coachRepScore, onPersuade, onAdvanceWeek, onEditGame, onChangeJob, onAdvanceYear, onViewTeam, onViewPlayer, onCut, onDev }) {
   if (!offseason) {
     return (
       <div>
@@ -6237,7 +6427,15 @@ function OffseasonTab({ stage, offseason, hsBoard, team, roster, nextYear, commi
       <CutsPanel roster={roster} scholarshipInfo={scholarshipInfo} onCut={onCut} onViewPlayer={onViewPlayer} />
 
       <div style={{ fontSize: 12, color: C.wood, fontWeight: 600, letterSpacing: "0.06em", margin: "22px 0 8px" }}>NBA DRAFT DECISIONS</div>
-      <DraftDecisionsPanel declarations={offseason.draftDeclarations} onPersuade={onPersuade} />
+      <DraftDecisionsPanel
+        declarations={offseason.draftDeclarations}
+        onPersuade={onPersuade}
+        trajectory={trajectory}
+        coachRepScore={coachRepScore}
+        nilBudget={nilBudget}
+        recruitingNilPending={[...offseason.transferBoard, ...(hsBoard || [])].reduce((sum, r) =>
+          sum + ((r.committedTo === team.id || !r.committedTo) ? (r.nilOffer || 0) : 0), 0)}
+      />
 
       <div style={{ fontSize: 12, color: C.wood, fontWeight: 600, letterSpacing: "0.06em", margin: "22px 0 8px" }}>TRANSFER PORTAL</div>
       <RecruitBoard
@@ -6404,7 +6602,7 @@ function stepLive(g, ctx) {
     if (res.made) { my += res.pts; const who = pickScorer(ctx.roster, ctx.dc, ctx.minutes); text = res.three ? `${who} drains a three` : `${who} scores${res.pts === 2 ? "" : ""} inside`; }
     else text = pick(["Shot rims out", "Turnover", "Contested miss", "Shot clock violation"]);
   } else {
-    if (res.made) { opp += res.pts; text = `${ctx.oppName} ${res.three ? "hits from deep" : "answers with a bucket"}`; }
+    if (res.made) { opp += res.pts; const who = pickScorer(ctx.oppRoster, ctx.oppDc, ctx.oppMinutes); text = `${who} (${ctx.oppName}) ${res.three ? "hits from deep" : "answers with a bucket"}`; }
     else text = pick([`${ctx.oppName} misses`, `Stop! ${ctx.oppName} turns it over`, `${ctx.oppName} bricks it`]);
   }
   const event = e + 1;
@@ -6657,10 +6855,19 @@ function LiveGame({ ctxInit, onFinish, onClose }) {
     () => userGamePower(ctxInit.roster, liveDc, ctxInit.powerBaseline, liveMinutes) + ctxInit.momentum,
     [ctxInit.roster, liveDc, ctxInit.powerBaseline, liveMinutes, ctxInit.momentum]
   );
+  // A lightweight opponent roster so their made shots can be credited to an
+  // actual named player in the play-by-play, same as the user's side — built
+  // once per game, purely for narration (not persisted to any CPU tracking).
+  const oppTeamState = useMemo(() => {
+    const oppRoster = buildInitialRoster(ctxInit.opp, ctxInit.year);
+    const oppDc = defaultDepthChart(oppRoster);
+    const oppMinutes = defaultMinutesFor(oppDc);
+    return { oppRoster, oppDc, oppMinutes };
+  }, [ctxInit.opp, ctxInit.year]);
   const ctx = useMemo(() => ({
     roster: ctxInit.roster, dc: liveDc, minutes: liveMinutes, oppName: ctxInit.opp.name,
-    oppPower: ctxInit.oppPower, myPower, tend,
-  }), [ctxInit.roster, liveDc, liveMinutes, ctxInit.opp.name, ctxInit.oppPower, myPower, tend]);
+    oppPower: ctxInit.oppPower, myPower, tend, ...oppTeamState,
+  }), [ctxInit.roster, liveDc, liveMinutes, ctxInit.opp.name, ctxInit.oppPower, myPower, tend, oppTeamState]);
   const gctx = useMemo(() => ({ ...ctx, T: totalPoss }), [ctx, totalPoss]);
 
   // Swap `outId` for `inId` at `pos`: the incoming player takes over the
@@ -7375,6 +7582,17 @@ function SeasonRecapModal({ recap, onClose }) {
             {recap.unhappyDepartures.map((d, i) => (
               <div key={i} style={{ fontSize: 12.5, marginBottom: 2 }}>
                 {d.name} <span style={{ color: C.dim }}>{d.pos} · OVR {d.overall} · {d.class} · wanted more playing time</span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {recap.graduated && recap.graduated.length > 0 && (
+          <div>
+            <div style={{ fontSize: 11, color: C.dim, letterSpacing: "0.08em", marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}><GraduationCap size={13} /> GRADUATED</div>
+            {recap.graduated.map((d, i) => (
+              <div key={i} style={{ fontSize: 12.5, marginBottom: 2 }}>
+                {d.name} <span style={{ color: C.dim }}>{d.pos} · OVR {d.overall}</span>
               </div>
             ))}
           </div>
