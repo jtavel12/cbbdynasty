@@ -4462,6 +4462,7 @@ function TeamSelect({ onPick }) {
       />
       <div style={{ maxWidth: 980, margin: "0 auto", position: "relative" }}>
         <div style={{ paddingBottom: 22, marginBottom: 28 }}>
+          <img src="/images/logo.png" alt="CBB Dynasty" className="cbb-hero-in" style={{ width: 72, height: 72, borderRadius: "50%", marginBottom: 16 }} />
           <div className="cbb-num cbb-hero-in" style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, letterSpacing: "0.22em", color: C.wood, fontWeight: 600 }}>
             <Flame size={14} color={C.gold} />
             DYNASTY MODE <span style={{ color: C.dimmer }}>·</span> <span style={{ color: C.gold }}>TIP-OFF {seasonLabel(year)}</span>
@@ -10155,7 +10156,7 @@ export default function CBBDynasty() {
     <div className="cbb-root" style={{ minHeight: "100vh", background: C.bg, color: C.cream, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
       <GlobalStyle />
       <Panel style={{ padding: 30, maxWidth: 560, width: "100%" }}>
-        <div style={{ fontSize: 11, color: C.dim, letterSpacing: "0.08em", marginBottom: 4 }}>CBB DYNASTY</div>
+        <img src="/images/logo.png" alt="CBB Dynasty" style={{ width: 48, height: 48, borderRadius: "50%", marginBottom: 10 }} />
         <h2 className="cbb-num" style={{ fontSize: 24, fontWeight: 700, marginBottom: 6 }}>Choose a save slot</h2>
         <div style={{ fontSize: 12, color: C.dimmer, marginBottom: 18 }}>
           {SAVE_SLOTS.length} dynasty saves at a time — delete one below to free it up for a new one.
