@@ -2883,6 +2883,33 @@ function rollCareerStats(career, season) {
 }
 
 /* =========================================================================
+   ALL-TIME PROGRAM RECORDS
+   The book only ever knows what happened under THIS coach — same scope as
+   the coach's own tracked win-loss record, which also never resets on a job
+   change. Two kinds of entries: one season-line per player per season
+   actually played (for single-season records), and one finalized line per
+   player captured the moment their stint under this coach ends — graduation,
+   an early NBA departure, a cut, a transfer out, or the coach taking a new
+   job — for career records.
+   ========================================================================= */
+const RECORD_BOOK_MIN_GP = 3;
+
+function captureSeasonLines(roster, year) {
+  return roster
+    .filter((p) => (p.season.gp || 0) >= RECORD_BOOK_MIN_GP)
+    .map((p) => ({ id: p.id, name: p.name, pos: p.pos, class: p.class, year, ...p.season }));
+}
+
+function finalizeCareerRecord(p, year, includeCurrentSeason = true) {
+  const career = includeCurrentSeason ? rollCareerStats(p.career, p.season) : { ...p.career };
+  return { id: p.id, name: p.name, pos: p.pos, endYear: year, ...career };
+}
+
+function topRecords(list, key, n = 5) {
+  return [...(list || [])].filter((r) => (r[key] || 0) > 0).sort((a, b) => (b[key] || 0) - (a[key] || 0)).slice(0, n);
+}
+
+/* =========================================================================
    YEAR-END PROGRESSION
    ========================================================================= */
 // A bench player who barely saw the floor has real reason to walk — real
@@ -2900,13 +2927,14 @@ function unhappyDepartureChance(p, seasonSeed, newYear) {
 }
 
 function progressRosterForNewYear(roster, incoming, team, newYear, seasonSeed) {
+  const graduated = roster.filter((p) => p.class === "SR").map((p) => finalizeCareerRecord(p, newYear - 1));
   const departed = [];
   const staying = roster.filter((p) => p.class !== "SR").filter((p) => {
     const chance = unhappyDepartureChance(p, seasonSeed, newYear);
     if (chance <= 0) return true;
     const rng = seasonRngFor(seasonSeed ?? 0, `leave:${p.id}`, newYear);
     if (rng() < chance) {
-      departed.push({ id: p.id, name: p.name, pos: p.pos, class: p.class, overall: p.overall });
+      departed.push({ id: p.id, name: p.name, pos: p.pos, class: p.class, overall: p.overall, careerRecord: finalizeCareerRecord(p, newYear - 1) });
       return false;
     }
     return true;
@@ -2963,7 +2991,7 @@ function progressRosterForNewYear(roster, incoming, team, newYear, seasonSeed) {
     combined.push(makePlayer({ pos: thinnest, classYear: "FR", prestige: team?.prestige ?? 2, walkOn: true }));
   }
 
-  return { roster: assignScholarships(combined), departed };
+  return { roster: assignScholarships(combined), departed, graduated };
 }
 
 /* =========================================================================
@@ -4918,7 +4946,11 @@ function DynastyApp({ initial, onExit }) {
         delete devSpent[playerId];
         offseason = { ...offseason, devPoints: (offseason.devPoints || 0) + refunded, devSpent };
       }
-      return { ...s, roster, depthChart: dc, offseason };
+      const programRecords = {
+        seasons: s.programRecords?.seasons || [],
+        careers: [...(s.programRecords?.careers || []), finalizeCareerRecord(player, s.year)],
+      };
+      return { ...s, roster, depthChart: dc, offseason, programRecords };
     });
     flash("Player cut — a scholarship has opened up.");
   }
@@ -5019,9 +5051,19 @@ function DynastyApp({ initial, onExit }) {
 
     const newYear = state.year + 1;
     const surviving = state.roster.filter((p) => !earlyIds.has(p.id));
-    const { roster: newRoster, departed: unhappyDepartures } = progressRosterForNewYear(surviving, incomingRecruits, team, newYear, state.seasonSeed);
+    const { roster: newRoster, departed: unhappyDepartures, graduated: graduatedRecords } = progressRosterForNewYear(surviving, incomingRecruits, team, newYear, state.seasonSeed);
     const newStrengths = genSeasonStrengths();
     const psSummary = postseasonSummary(state.postseason, state.teamId);
+
+    // Record book: one season-line per player who actually played this
+    // season, plus a finalized career line for anyone whose stint under this
+    // coach just ended (graduated, left early, or transferred out unhappy).
+    const seasonLines = captureSeasonLines(state.roster, state.year);
+    const newCareerRecords = [
+      ...early.map((p) => finalizeCareerRecord(p, state.year)),
+      ...graduatedRecords,
+      ...unhappyDepartures.map((d) => d.careerRecord).filter(Boolean),
+    ];
 
     // Hot seat: grade the season against the AD's bar, swing job security, and
     // set next season's expectation off the program's drifted prestige.
@@ -5107,6 +5149,10 @@ function DynastyApp({ initial, onExit }) {
         ...(draft.length ? [{ year: state.year, teamName: team.name, picks: draft }] : []),
       ],
       history: [...state.history, { year: state.year, wins: record.w, losses: record.l, teamId: state.teamId, postseason: psSummary, awards, draft }],
+      programRecords: {
+        seasons: [...(state.programRecords?.seasons || []), ...seasonLines],
+        careers: [...(state.programRecords?.careers || []), ...newCareerRecords],
+      },
       expectation: nextExp,
       prestigeTrendById,
       // Persisted, not ephemeral — this is what actually gates the app (see
@@ -5174,6 +5220,11 @@ function DynastyApp({ initial, onExit }) {
       state.nilBudgetById || baselineNilBudgetById(), state.teamId, state.nilObjectives, nilCtx, state.year, powerById
     );
 
+    // Record book: the whole roster you're leaving behind had their stint
+    // under you end right here, same as if they'd graduated.
+    const seasonLines = captureSeasonLines(state.roster, state.year);
+    const newCareerRecords = state.roster.map((p) => finalizeCareerRecord(p, state.year));
+
     const newDepthChart = defaultDepthChart(roster);
     setState({
       ...state,
@@ -5204,6 +5255,10 @@ function DynastyApp({ initial, onExit }) {
         ...(awards.userHonors.length ? [{ year: state.year, teamName: team.name, honors: awards.userHonors }] : []),
       ],
       history: [...state.history, { year: state.year, wins: record.w, losses: record.l, teamId: state.teamId, postseason: psSummary, awards }],
+      programRecords: {
+        seasons: [...(state.programRecords?.seasons || []), ...seasonLines],
+        careers: [...(state.programRecords?.careers || []), ...newCareerRecords],
+      },
       coachFired: false,
     });
     setJobPickerOpen(false);
@@ -7905,6 +7960,33 @@ function RecapChip({ label, value, gold }) {
 }
 
 /* ---------- Program (career, trophy case, records) ---------- */
+const RECORD_BOOK_STATS = [
+  { key: "pts", label: "Points" },
+  { key: "reb", label: "Rebounds" },
+  { key: "ast", label: "Assists" },
+];
+
+function RecordCategoryList({ label, rows, statKey, yearField }) {
+  return (
+    <div style={{ marginBottom: 14 }}>
+      <div style={{ fontSize: 11, color: C.wood, fontWeight: 600, marginBottom: 6 }}>{label}</div>
+      {rows.length === 0 ? (
+        <div style={{ fontSize: 11.5, color: C.dimmer }}>No qualifying seasons yet.</div>
+      ) : (
+        rows.map((r, i) => (
+          <div key={r.id + (r[yearField] ?? r.endYear) + i} style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, padding: "3px 0", borderBottom: i < rows.length - 1 ? `1px solid ${C.line}` : "none" }}>
+            <span>
+              <span className="cbb-num" style={{ color: C.dimmer, marginRight: 6 }}>{i + 1}.</span>
+              {r.name} <span style={{ color: C.dim }}>{r.pos} · {seasonLabel(r[yearField] ?? r.endYear)}</span>
+            </span>
+            <span className="cbb-num" style={{ fontWeight: 700 }}>{r[statKey]}</span>
+          </div>
+        ))
+      )}
+    </div>
+  );
+}
+
 function ProgramTab({ state, team, record, reputation, rivalIds, rankById }) {
   const coach = state.coach || EMPTY_COACH;
   const careerW = coach.wins, careerL = coach.losses;
@@ -7960,6 +8042,28 @@ function ProgramTab({ state, team, record, reputation, rivalIds, rankById }) {
         <div style={{ fontSize: 11.5, color: C.dimmer, marginTop: 12 }}>
           {reputationTier(reputation)} — {reputation} reputation. Win games, make deep tournament runs, and cut down nets to unlock jobs at blue-blood programs.
         </div>
+      </Panel>
+
+      <Panel style={{ padding: 20 }}>
+        <div style={{ fontSize: 11, color: C.dim, letterSpacing: "0.08em", marginBottom: 12, display: "flex", alignItems: "center", gap: 6 }}><Medal size={13} color={C.gold} /> RECORD BOOK — UNDER COACH {(coach.name || "YOU").toUpperCase()}</div>
+        {(!state.programRecords || (state.programRecords.careers.length === 0 && state.programRecords.seasons.length === 0)) ? (
+          <div style={{ fontSize: 12.5, color: C.dimmer }}>No players have finished a season under you yet — the record book fills in as careers wrap up.</div>
+        ) : (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 24 }}>
+            <div>
+              <div style={{ fontSize: 11, color: C.dim, letterSpacing: "0.08em", marginBottom: 10 }}>CAREER LEADERS</div>
+              {RECORD_BOOK_STATS.map((s) => (
+                <RecordCategoryList key={s.key} label={s.label} statKey={s.key} yearField="endYear" rows={topRecords(state.programRecords.careers, s.key)} />
+              ))}
+            </div>
+            <div>
+              <div style={{ fontSize: 11, color: C.dim, letterSpacing: "0.08em", marginBottom: 10 }}>SINGLE-SEASON RECORDS</div>
+              {RECORD_BOOK_STATS.map((s) => (
+                <RecordCategoryList key={s.key} label={s.label} statKey={s.key} yearField="year" rows={topRecords(state.programRecords.seasons, s.key)} />
+              ))}
+            </div>
+          </div>
+        )}
       </Panel>
 
       <Panel style={{ padding: 20 }}>
@@ -8779,6 +8883,7 @@ export default function CBBDynasty() {
       offseason: null,
       coach: { ...EMPTY_COACH, name: (coachName && coachName.trim()) || fullName() },
       coachesById: baselineCoachesById(team.id, year),
+      programRecords: { seasons: [], careers: [] },
       awardsHistory: [],
       draftHistory: [],
       expectation: seasonExpectation(team.prestige),
