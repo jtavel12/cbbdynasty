@@ -3483,6 +3483,62 @@ function finalizeCoachSeason(coach, record, postseason, teamId, wonRegSeasonConf
 }
 
 /* =========================================================================
+   COACHING CAROUSEL (CPU programs)
+   Every program other than the one the user coaches gets a lightweight
+   tracked head coach — not a full simulated career, just enough identity and
+   history to make firings and hires feel real. It's graded by the exact same
+   bar the user's own coach answers to (finalizeCoachSeason/evaluateSeason/
+   coachOfYear/reputationErosion), fed by that team's real simulated season
+   (already available via `ranked`) and real postseason result, so a rival
+   program lives or dies by the same rules the user does.
+   ========================================================================= */
+function baselineCoachesById(excludeTeamId, year) {
+  const out = {};
+  for (const t of TEAMS) {
+    if (t.id === excludeTeamId) continue;
+    out[t.id] = { ...EMPTY_COACH, name: fullName(), hireYear: year };
+  }
+  return out;
+}
+
+// Advances every CPU program's coach one season: grades the season that just
+// ended, fires anyone whose job security bottoms out (same <=8 threshold the
+// user is held to) and replaces them with a fresh, unproven hire. Returns the
+// updated table plus the list of firings/hires so the caller can surface them
+// as news.
+function advanceCoachingCarousel(coachesById, ranked, postseason, prestigeById, year, excludeTeamId) {
+  const next = { ...(coachesById || {}) };
+  const fires = [];
+  for (const t of TEAMS) {
+    if (t.id === excludeTeamId) continue;
+    const row = ranked.find((r) => r.team.id === t.id);
+    if (!row) continue;
+    const teamRecord = { w: row.wins, l: row.losses };
+    const wonConf = wonRegularSeasonConf(ranked, t.conf, t.id);
+    const coach = finalizeCoachSeason(next[t.id], teamRecord, postseason, t.id, wonConf);
+    const exp = seasonExpectation(prestigeById[t.id] ?? t.prestige);
+    const psSummary = postseasonSummary(postseason, t.id);
+    const evalRes = evaluateSeason(exp, teamRecord, psSummary);
+    const secBefore = next[t.id]?.jobSecurity ?? 60;
+    coach.jobSecurity = clamp(secBefore + evalRes.securityDelta, 0, 100);
+    const fired = coach.jobSecurity <= 8;
+    if (coachOfYear(evalRes, psSummary)) coach.coyAwards = (coach.coyAwards || 0) + 1;
+    coach.repPenalty = (coach.repPenalty || 0) + reputationErosion(evalRes, fired);
+    if (fired) {
+      fires.push({
+        teamId: t.id, teamName: t.name, prestige: t.prestige, coachName: coach.name,
+        wins: teamRecord.w, losses: teamRecord.l, psSummary, expLabel: exp.label,
+      });
+      next[t.id] = { ...EMPTY_COACH, name: fullName(), hireYear: year + 1, jobSecurity: 55 };
+    } else {
+      next[t.id] = coach;
+    }
+  }
+  fires.sort((a, b) => b.prestige - a.prestige);
+  return { coachesById: next, fires };
+}
+
+/* =========================================================================
    BRACKETOLOGY / RIVALRIES / ROSTER NEEDS
    ========================================================================= */
 function projectedSeed(rank) {
@@ -4005,6 +4061,7 @@ function DynastyApp({ initial, onExit }) {
           currentTeamId={state.teamId}
           nextYear={state.year + 1}
           reputation={reputation}
+          coachesById={state.coachesById}
           firedFlow
           onPick={changeJob}
           onRestart={onExit}
@@ -4742,6 +4799,13 @@ function DynastyApp({ initial, onExit }) {
       state.prestigeById || baselinePrestigeById(), state.year, powerById, state.teamId,
       clamp(0.55 * uWinPct + 0.45 * uRankQ, 0, 1)
     );
+    // Every rival program's coach lives or dies by the season that just
+    // ended too — same bar the user answers to, judged against the prestige
+    // they carried into this season.
+    const { coachesById: nextCoachesById, fires: coachingFires } = advanceCoachingCarousel(
+      state.coachesById || baselineCoachesById(state.teamId, state.year),
+      ranked, state.postseason, state.prestigeById || baselinePrestigeById(), state.year, state.teamId
+    );
     const os = state.offseason;
     // Early departures resolve from the offseason declarations (after any
     // persuasion). Players talked into staying are kept off the leaving list.
@@ -4824,11 +4888,13 @@ function DynastyApp({ initial, onExit }) {
       nilBudgetAfter: nextNilById[state.teamId],
       coyAwarded: wonCoy,
       regSeasonConfChamp: wonRegSeasonConf,
+      coachingChanges: coachingFires.slice(0, 6),
     };
 
     const newDepthChart = defaultDepthChart(newRoster);
     setState({
       ...state,
+      coachesById: nextCoachesById,
       year: newYear,
       seasonSeed: (Math.random() * 0xffffffff) >>> 0,
       prestigeById: nextPrestige,
@@ -4886,6 +4952,15 @@ function DynastyApp({ initial, onExit }) {
       state.prestigeById || baselinePrestigeById(), state.year, powerById, state.teamId,
       clamp(0.55 * uWinPct + 0.45 * uRankQ, 0, 1)
     );
+    // Every OTHER rival program's coach advances too. The program you're
+    // leaving gets a fresh hire (you're vacating it); the program you're
+    // joining drops out of this table since you're its coach now.
+    const { coachesById: carouselCoachesById } = advanceCoachingCarousel(
+      state.coachesById || baselineCoachesById(state.teamId, state.year),
+      ranked, state.postseason, state.prestigeById || baselinePrestigeById(), state.year, state.teamId
+    );
+    const nextCoachesById = { ...carouselCoachesById, [state.teamId]: { ...EMPTY_COACH, name: fullName(), hireYear: state.year + 1, jobSecurity: 55 } };
+    delete nextCoachesById[newTeam.id];
     const newYear = state.year + 1;
     const roster = buildInitialRoster(newTeam, newYear);
     coach.jobSecurity = 55; // new job, fresh honeymoon with the administration
@@ -4921,6 +4996,7 @@ function DynastyApp({ initial, onExit }) {
       year: newYear,
       seasonSeed: (Math.random() * 0xffffffff) >>> 0,
       prestigeById: nextPrestige,
+      coachesById: nextCoachesById,
       nilBudgetById: nextNilById,
       nilObjectives: pickObjectivesFor(nextPrestige[newTeam.id] ?? newTeam.prestige),
       roster,
@@ -5145,7 +5221,7 @@ function DynastyApp({ initial, onExit }) {
       </div>
 
       {viewTeamId && (
-        <TeamRosterModal teamId={viewTeamId} year={state.year} strengths={state.strengths} rank={rankById[viewTeamId]} poached={state.poachedPlayers || []} history={state.history} onClose={() => setViewTeamId(null)} />
+        <TeamRosterModal teamId={viewTeamId} year={state.year} strengths={state.strengths} rank={rankById[viewTeamId]} poached={state.poachedPlayers || []} history={state.history} coach={state.coachesById?.[viewTeamId]} onClose={() => setViewTeamId(null)} />
       )}
       {jobPickerOpen && (
         // Voluntary "Coaching Offers" browse only — a firing is handled by
@@ -5154,6 +5230,7 @@ function DynastyApp({ initial, onExit }) {
           currentTeamId={state.teamId}
           nextYear={state.year + 1}
           reputation={reputation}
+          coachesById={state.coachesById}
           onPick={changeJob}
           onClose={() => setJobPickerOpen(false)}
         />
@@ -7070,7 +7147,7 @@ function LiveGame({ ctxInit, onFinish, onClose }) {
 }
 
 /* ---------- Opponent Roster Viewer ---------- */
-function TeamRosterModal({ teamId, year, strengths, rank, poached = [], history: dynastyHistory = [], onClose }) {
+function TeamRosterModal({ teamId, year, strengths, rank, poached = [], history: dynastyHistory = [], coach, onClose }) {
   const team = TEAM_MAP[teamId];
   const [view, setView] = useState("roster");
   // Any real player the user has signed away from THIS team no longer appears
@@ -7128,6 +7205,12 @@ function TeamRosterModal({ teamId, year, strengths, rank, poached = [], history:
           </span>
         )}
       </div>
+      {coach && (
+        <div style={{ fontSize: 11.5, color: C.dim, marginBottom: 14, display: "flex", alignItems: "center", gap: 6 }}>
+          <Users size={12} /> Head Coach: <span style={{ color: C.cream, fontWeight: 600 }}>{coach.name}</span>
+          <span style={{ color: C.dimmer }}>· {coach.seasons} season{coach.seasons === 1 ? "" : "s"} · {reputationTier(reputationOf(coach))} · {hotSeatTier(coach.jobSecurity ?? 60).label}</span>
+        </div>
+      )}
 
       <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
         {tabBtn("roster", "Roster")}
@@ -7229,7 +7312,7 @@ function TeamRosterModal({ teamId, year, strengths, rank, poached = [], history:
 // and be left nominally coaching a job they no longer have), and surfaces a
 // second, clearly separated path — retire this career and start an entirely
 // new dynasty — behind its own confirm step, since it deletes the save.
-function JobChangeModal({ currentTeamId, nextYear, reputation = 0, firedFlow = false, onPick, onRestart, onClose }) {
+function JobChangeModal({ currentTeamId, nextYear, reputation = 0, coachesById, firedFlow = false, onPick, onRestart, onClose }) {
   const [q, setQ] = useState("");
   const [confirmingRestart, setConfirmingRestart] = useState(false);
   const filtered = TEAMS
@@ -7317,6 +7400,9 @@ function JobChangeModal({ currentTeamId, nextYear, reputation = 0, firedFlow = f
                       <div key={i} style={{ width: 12, height: 4, background: i < t.prestige ? (locked ? C.dimmer : C.wood) : C.line }} />
                     ))}
                   </div>
+                  {coachesById?.[t.id] && (
+                    <div style={{ fontSize: 10.5, color: C.dimmer }}>Coach: {coachesById[t.id].name} ({coachesById[t.id].seasons}yr)</div>
+                  )}
                   {locked && <div style={{ fontSize: 10.5, color: C.red }}>Needs {req} reputation</div>}
                 </button>
               );
@@ -7593,6 +7679,17 @@ function SeasonRecapModal({ recap, onClose }) {
             {recap.graduated.map((d, i) => (
               <div key={i} style={{ fontSize: 12.5, marginBottom: 2 }}>
                 {d.name} <span style={{ color: C.dim }}>{d.pos} · OVR {d.overall}</span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {recap.coachingChanges && recap.coachingChanges.length > 0 && (
+          <div>
+            <div style={{ fontSize: 11, color: C.dim, letterSpacing: "0.08em", marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}><Users size={13} /> COACHING CAROUSEL</div>
+            {recap.coachingChanges.map((c, i) => (
+              <div key={i} style={{ fontSize: 12.5, marginBottom: 2 }}>
+                {c.teamName} <span style={{ color: C.dim }}>parts ways with {c.coachName} — {c.wins}-{c.losses}, {c.psSummary || "missed the tournament"}, fell short of "{c.expLabel}"</span>
               </div>
             ))}
           </div>
@@ -8483,6 +8580,7 @@ export default function CBBDynasty() {
       postseason: null,
       offseason: null,
       coach: { ...EMPTY_COACH },
+      coachesById: baselineCoachesById(team.id, year),
       awardsHistory: [],
       draftHistory: [],
       expectation: seasonExpectation(team.prestige),
