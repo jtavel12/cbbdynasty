@@ -1187,11 +1187,15 @@ function makePlayer({ pos, classYear, prestige, starsAtSigning, real, walkOn }) 
 const ROSTER_SIZE = 16;        // every team carries a full 16-man roster
 const SCHOLARSHIP_LIMIT = 13;  // at most 13 of them are on scholarship
 // A "Risk It" penalty (see RISK_IT_OPTIONS) that goes wrong can halve a
-// program's scholarship count, so recruiting/roster-building are actually
-// constrained rather than just showing a smaller number.
+// program's scholarship count for 2 seasons, so recruiting/roster-building
+// are actually constrained for a real stretch, not just showing a smaller
+// number forever.
 const SCHOLARSHIP_PENALTY_LIMIT = Math.ceil(SCHOLARSHIP_LIMIT / 2);
+function isScholarshipPenaltyActive(state) {
+  return state?.scholarshipPenaltyUntilYear != null && state.year <= state.scholarshipPenaltyUntilYear;
+}
 function effectiveScholarshipLimit(state) {
-  return state?.scholarshipPenalty ? SCHOLARSHIP_PENALTY_LIMIT : SCHOLARSHIP_LIMIT;
+  return isScholarshipPenaltyActive(state) ? SCHOLARSHIP_PENALTY_LIMIT : SCHOLARSHIP_LIMIT;
 }
 
 // Decide who holds a scholarship: generated walk-ons never do; among the real
@@ -1613,8 +1617,10 @@ const RISK_IT_OPTIONS = [
   { key: "UNCLE", label: "Give uncle $25,000",          gain: 50, riskPct: 0.30 },
   { key: "FORGE", label: "Forge ACT score",             gain: 50, riskPct: 0.40 },
 ];
-// Years a triggered postseason ban lasts (this season plus 4 more = 5 total).
-const RISK_IT_BAN_SEASONS = 4;
+// Extra seasons a triggered penalty (postseason ban or scholarship cut)
+// lasts beyond the one it's triggered in — 1 more season, so each penalty
+// covers 2 seasons total.
+const RISK_IT_PENALTY_EXTRA_SEASONS = 1;
 
 // Visit pricing scales with how far a recruit's hometown is from campus. Within
 // 100 miles it's the base; every additional 300 miles adds 25% of the base
@@ -4453,7 +4459,7 @@ function DynastyApp({ initial, onExit }) {
     const used = returning + committed;
     const limit = effectiveScholarshipLimit(state);
     return { returning, committed, used, limit, open: Math.max(0, limit - used) };
-  }, [state.roster, state.incomingCommits, state.offseason, state.scholarshipPenalty]);
+  }, [state.roster, state.incomingCommits, state.offseason, state.scholarshipPenaltyUntilYear, state.year]);
 
   // Whether the coach was fired and hasn't resolved it yet — read straight off
   // PERSISTED state (state.coachFired), not local component state. A fired
@@ -5088,8 +5094,8 @@ function DynastyApp({ initial, onExit }) {
   // risk %, and both possible penalties were all shown before they picked).
   // Deducts the flat 40-point cost, applies the chosen option's interest
   // gain, then rolls that option's risk percentage — a hit flips a coin
-  // between a real 5-season postseason ban and a real scholarship cut,
-  // either of which persists in dynasty state from here on, not just a
+  // between a real 2-season postseason ban and a real 2-season scholarship
+  // cut, either of which persists in dynasty state from here on, not just a
   // flash message.
   function finishRiskIt(optionKey) {
     if (!riskIt) return;
@@ -5106,8 +5112,8 @@ function DynastyApp({ initial, onExit }) {
       if (!r0 || r0.committedTo) return s;
       const next = { ...r0, interest: clamp(r0.interest + opt.gain, 0, 100) };
       let patch = {};
-      if (penalty === "BAN") patch = { postseasonBanUntilYear: s.year + RISK_IT_BAN_SEASONS };
-      if (penalty === "SCHOLARSHIPS") patch = { scholarshipPenalty: true };
+      if (penalty === "BAN") patch = { postseasonBanUntilYear: s.year + RISK_IT_PENALTY_EXTRA_SEASONS };
+      if (penalty === "SCHOLARSHIPS") patch = { scholarshipPenaltyUntilYear: s.year + RISK_IT_PENALTY_EXTRA_SEASONS };
       if (isTransfer) {
         return {
           ...s, ...patch,
@@ -5125,8 +5131,8 @@ function DynastyApp({ initial, onExit }) {
       };
     });
     setRiskIt(null);
-    if (penalty === "BAN") flash(`${recruit.name}: +${opt.gain} interest — but it blew back. ${team.name} is banned from the postseason for the next 5 seasons.`);
-    else if (penalty === "SCHOLARSHIPS") flash(`${recruit.name}: +${opt.gain} interest — but it blew back. ${team.name}'s scholarship count is cut in half going forward.`);
+    if (penalty === "BAN") flash(`${recruit.name}: +${opt.gain} interest — but it blew back. ${team.name} is banned from the postseason for the next 2 seasons.`);
+    else if (penalty === "SCHOLARSHIPS") flash(`${recruit.name}: +${opt.gain} interest — but it blew back. ${team.name}'s scholarship count is cut in half for the next 2 seasons.`);
     else flash(`${recruit.name}: +${opt.gain} interest. Got away with it.`);
   }
 
@@ -5900,6 +5906,15 @@ function DashboardTab({ state, team, record, nextGame, stage, onSim, onPlay, onS
           <div style={{ fontSize: 11, color: C.red, letterSpacing: "0.08em", marginBottom: 4 }}>POSTSEASON BAN</div>
           <div style={{ fontSize: 13, color: C.cream }}>
             Ineligible for conference tournament or NCAA Tournament play through the {seasonLabel(state.postseasonBanUntilYear)} season — the fallout from a recruiting risk that didn&apos;t pay off.
+          </div>
+        </Panel>
+      )}
+
+      {isScholarshipPenaltyActive(state) && (
+        <Panel style={{ padding: "14px 18px", borderLeft: `3px solid ${C.red}` }}>
+          <div style={{ fontSize: 11, color: C.red, letterSpacing: "0.08em", marginBottom: 4 }}>SCHOLARSHIP CUT</div>
+          <div style={{ fontSize: 13, color: C.cream }}>
+            Scholarships capped at {SCHOLARSHIP_PENALTY_LIMIT} (down from {SCHOLARSHIP_LIMIT}) through the {seasonLabel(state.scholarshipPenaltyUntilYear)} season — the fallout from a recruiting risk that didn&apos;t pay off.
           </div>
         </Panel>
       )}
@@ -7749,8 +7764,8 @@ function RiskItModal({ recruit, onClose, onConfirm }) {
       </div>
       <div style={{ fontSize: 11.5, color: C.dim, marginBottom: 16, border: `1px solid ${C.line}`, padding: "10px 12px" }}>
         <div style={{ marginBottom: 4 }}>If a penalty triggers, it's a coin flip (50/50) between:</div>
-        <div>— A postseason ban for the next 5 seasons (no conference tournament or NCAA Tournament)</div>
-        <div>— A 50% cut to your available scholarships, going forward</div>
+        <div>— A postseason ban for the next 2 seasons (no conference tournament or NCAA Tournament)</div>
+        <div>— A 50% cut to your available scholarships for the next 2 seasons</div>
       </div>
       <div style={{ display: "flex", gap: 10 }}>
         <button onClick={onClose} className="cbb-btn" style={{ ...btnStyle(C.panelAlt, C.cream), flex: 1, justifyContent: "center", border: `1px solid ${C.line}` }}>
@@ -9531,7 +9546,7 @@ export default function CBBDynasty() {
       expectation: seasonExpectation(team.prestige),
       rivalryLedger: {},
       prestigeTrendById: {},
-      scholarshipPenalty: false,
+      scholarshipPenaltyUntilYear: null,
       postseasonBanUntilYear: null,
     };
     setPickingTeamFor(null);
