@@ -2270,6 +2270,23 @@ function rankingScore(wins, losses, power, realRank, isUser = false, gamesPlayed
 }
 
 // Returns { ranked: [{team,wins,losses,power,score}], rankById } sorted best-first.
+// Real programs hang a separate banner for the regular-season conference
+// title from the tournament title — the two aren't the same thing, and only
+// the tournament one was ever tracked. Credit is given for at least sharing
+// the best conference winning percentage, same as a real co-championship.
+function wonRegularSeasonConf(ranked, conf, teamId) {
+  const members = ranked.filter((r) => r.team.conf === conf);
+  const user = members.find((r) => r.team.id === teamId);
+  if (!user) return false;
+  const userGames = user.confWins + user.confLosses;
+  if (userGames === 0) return false;
+  const userPct = user.confWins / userGames;
+  return members.every((r) => {
+    const g = r.confWins + r.confLosses;
+    return (g > 0 ? r.confWins / g : 0) <= userPct;
+  });
+}
+
 function computeRankings(powerById, recordById, userTeamId, gamesPlayed = 0) {
   const ranked = TEAMS.map((t) => {
     const r = recordById[t.id];
@@ -2679,7 +2696,12 @@ function progressRosterForNewYear(roster, incoming, team, newYear) {
       // actually grow depends on your simulated season and development
       // spending, never on what that real person did in reality afterward.
       // Attributes already carry any past progression, so growth compounds.
-      const growth = Math.round((p.attrs.potential - p.overall) * rand(0.05, 0.22));
+      // Games actually played this season scale that growth — a buried bench
+      // player still gets practice reps (a floor, never zero), but someone
+      // who played the full season develops noticeably faster than someone
+      // who barely saw the floor.
+      const playFactor = clamp(0.35 + 0.65 * ((p.season.gp || 0) / TOTAL_SEASON_WEEKS), 0.35, 1);
+      const growth = Math.round((p.attrs.potential - p.overall) * rand(0.05, 0.22) * playFactor);
       const bump = clamp(growth, -2, 9);
       const attrs = { potential: p.attrs.potential };
       for (const k of ATTR_KEYS) attrs[k] = clamp((p.attrs[k] ?? 40) + Math.round(bump * rand(0.6, 1.2)), 40, 99);
@@ -2971,7 +2993,7 @@ function draftBoard(early, seniors) {
 /* =========================================================================
    COACH CAREER + REPUTATION
    ========================================================================= */
-const EMPTY_COACH = { wins: 0, losses: 0, seasons: 0, tourneyApps: 0, confTourneyTitles: 0, finalFours: 0, natTitles: 0, coyAwards: 0, jobSecurity: 60, repPenalty: 0 };
+const EMPTY_COACH = { wins: 0, losses: 0, seasons: 0, tourneyApps: 0, confTourneyTitles: 0, confRegSeasonTitles: 0, finalFours: 0, natTitles: 0, coyAwards: 0, jobSecurity: 60, repPenalty: 0 };
 const JOB_REP_REQ = { 5: 120, 4: 70, 3: 35, 2: 12, 1: 0 };
 
 /* =========================================================================
@@ -3087,6 +3109,10 @@ function cpuNilGrowth(quality) {
 // other team gets the lighter CPU approximation off the same season-quality
 // signal driftPrestige already computes. Mirrors driftPrestige's shape so the
 // two run side by side in advanceYear()/changeJob() without surprises.
+// `prevNilById` is always the FULL prior season's allocation — nothing ever
+// decrements it during the season itself (see doNilOffer/attemptSign), so
+// this genuinely compounds a growing collective, not whatever happened to be
+// left over after a spending spree.
 function advanceNilBudgets(prevNilById, userTeamId, userObjectives, evalCtx, year, powerById) {
   const { met, totalBoost } = evaluateNilObjectives(userObjectives, evalCtx);
   const next = {};
@@ -3113,8 +3139,8 @@ function hotSeatTier(sec) {
 function reputationOf(coach) {
   if (!coach) return 0;
   const built = coach.seasons * 3 + coach.wins * 0.15 + coach.tourneyApps * 5 +
-    coach.confTourneyTitles * 9 + coach.finalFours * 14 + coach.natTitles * 30 +
-    (coach.coyAwards || 0) * 7;
+    coach.confTourneyTitles * 9 + (coach.confRegSeasonTitles || 0) * 7 +
+    coach.finalFours * 14 + coach.natTitles * 30 + (coach.coyAwards || 0) * 7;
   return Math.max(0, Math.round(built - (coach.repPenalty || 0)));
 }
 
@@ -3138,13 +3164,14 @@ function reputationTier(rep) {
   return "Up-and-comer";
 }
 
-function finalizeCoachSeason(coach, record, postseason, teamId) {
+function finalizeCoachSeason(coach, record, postseason, teamId, wonRegSeasonConf = false) {
   const c = coach ? { ...coach } : { ...EMPTY_COACH };
   c.wins += record.w; c.losses += record.l; c.seasons += 1;
   const summ = postseasonSummary(postseason, teamId);
   const conf = TEAM_MAP[teamId]?.conf;
   const wonConf = !!(postseason && postseason.confChampions && conf && postseason.confChampions[conf] === teamId);
   if (wonConf) c.confTourneyTitles += 1;
+  if (wonRegSeasonConf) c.confRegSeasonTitles = (c.confRegSeasonTitles || 0) + 1;
   if (summ === "National Champions") { c.natTitles += 1; c.finalFours += 1; c.tourneyApps += 1; }
   else if (summ === "Runner-up" || summ === "Final Four") { c.finalFours += 1; c.tourneyApps += 1; }
   else if (summ === "NCAA Tournament") c.tourneyApps += 1;
@@ -3815,9 +3842,9 @@ function DynastyApp({ initial, onExit }) {
     const os = state.offseason;
     if (!os) return;
     const budget = (state.nilBudgetById || baselineNilBudgetById())[state.teamId] ?? 0;
-    const pendingElsewhere = os.transferBoard.reduce((sum, r) =>
-      sum + (r.id !== recruit.id && !r.committedTo ? (r.nilOffer || 0) : 0), 0);
-    const capped = clamp(amount, 0, Math.max(0, budget - pendingElsewhere));
+    const committedElsewhere = [...os.transferBoard, ...state.recruitingBoard].reduce((sum, r) =>
+      sum + (r.id !== recruit.id && (r.committedTo === state.teamId || !r.committedTo) ? (r.nilOffer || 0) : 0), 0);
+    const capped = clamp(amount, 0, Math.max(0, budget - committedElsewhere));
     const updated = applyNilOffer(recruit, capped);
     setState((s) => ({
       ...s,
@@ -3868,10 +3895,6 @@ function DynastyApp({ initial, onExit }) {
       setState((s) => ({
         ...s,
         poachedPlayers: poach ? [...(s.poachedPlayers || []), poach] : (s.poachedPlayers || []),
-        nilBudgetById: nilSpend > 0 ? {
-          ...(s.nilBudgetById || baselineNilBudgetById()),
-          [s.teamId]: Math.max(0, ((s.nilBudgetById || baselineNilBudgetById())[s.teamId] ?? 0) - nilSpend),
-        } : (s.nilBudgetById || baselineNilBudgetById()),
         offseason: {
           ...s.offseason,
           transferBoard: s.offseason.transferBoard.map((r) => (r.id === recruit.id ? { ...r, committedTo: s.teamId, signAttempts: attempts, signAttemptWeek: week } : r)),
@@ -4119,9 +4142,9 @@ function DynastyApp({ initial, onExit }) {
   // recruit actually signs; see attemptSign.
   function doNilOffer(recruit, amount) {
     const budget = (state.nilBudgetById || baselineNilBudgetById())[state.teamId] ?? 0;
-    const pendingElsewhere = state.recruitingBoard.reduce((sum, r) =>
-      sum + (r.id !== recruit.id && !r.committedTo ? (r.nilOffer || 0) : 0), 0);
-    const capped = clamp(amount, 0, Math.max(0, budget - pendingElsewhere));
+    const committedElsewhere = [...state.recruitingBoard, ...(state.offseason?.transferBoard || [])].reduce((sum, r) =>
+      sum + (r.id !== recruit.id && (r.committedTo === state.teamId || !r.committedTo) ? (r.nilOffer || 0) : 0), 0);
+    const capped = clamp(amount, 0, Math.max(0, budget - committedElsewhere));
     const updated = applyNilOffer(recruit, capped);
     setState((s) => ({
       ...s,
@@ -4197,10 +4220,6 @@ function DynastyApp({ initial, onExit }) {
         recruitingBoard: s.recruitingBoard.map((r) => (r.id === recruit.id ? { ...r, committedTo: s.teamId, signAttempts: attempts, signAttemptWeek: week } : r)),
         incomingCommits: [...s.incomingCommits, recruit.id],
         poachedPlayers: poach ? [...(s.poachedPlayers || []), poach] : (s.poachedPlayers || []),
-        nilBudgetById: nilSpend > 0 ? {
-          ...(s.nilBudgetById || baselineNilBudgetById()),
-          [s.teamId]: Math.max(0, ((s.nilBudgetById || baselineNilBudgetById())[s.teamId] ?? 0) - nilSpend),
-        } : (s.nilBudgetById || baselineNilBudgetById()),
       }));
       flash(`${recruit.name} has committed! (won at ${Math.round(chance * 100)}% odds)${nilSpend > 0 ? ` — ${formatNil(nilSpend)} NIL deal` : ""}`);
     } else {
@@ -4334,7 +4353,8 @@ function DynastyApp({ initial, onExit }) {
     const early = state.roster.filter((p) => leavingIds.has(p.id));
     const seniors = state.roster.filter((p) => p.class === "SR");
     const draft = draftBoard(early, seniors);
-    const coach = finalizeCoachSeason(state.coach, record, state.postseason, state.teamId);
+    const wonRegSeasonConf = wonRegularSeasonConf(ranked, team.conf, state.teamId);
+    const coach = finalizeCoachSeason(state.coach, record, state.postseason, state.teamId, wonRegSeasonConf);
     const earlyIds = leavingIds;
 
     const incomingFreshmen = state.incomingCommits
@@ -4402,6 +4422,7 @@ function DynastyApp({ initial, onExit }) {
       nilBudgetBefore: (state.nilBudgetById || baselineNilBudgetById())[state.teamId] ?? nilBudgetForTeam(team),
       nilBudgetAfter: nextNilById[state.teamId],
       coyAwarded: wonCoy,
+      regSeasonConfChamp: wonRegSeasonConf,
     };
 
     const newDepthChart = defaultDepthChart(newRoster);
@@ -4450,7 +4471,8 @@ function DynastyApp({ initial, onExit }) {
   }
 
   function changeJob(newTeam) {
-    const coach = finalizeCoachSeason(state.coach, record, state.postseason, state.teamId);
+    const wonRegSeasonConf = wonRegularSeasonConf(ranked, team.conf, state.teamId);
+    const coach = finalizeCoachSeason(state.coach, record, state.postseason, state.teamId, wonRegSeasonConf);
     const powerById = powerTableFor(state.strengths, state.year);
     const awards = computeAwards(state, rankById, ranked, powerById);
     // Fluid prestige: the season you just finished at your old school still
@@ -4640,6 +4662,7 @@ function DynastyApp({ initial, onExit }) {
           {tab === "recruiting" && (
             <RecruitingTab
               board={state.recruitingBoard}
+              otherBoard={state.offseason?.transferBoard}
               committedIds={state.incomingCommits}
               targets={state.recruitTargets || []}
               onToggleTarget={toggleTarget}
@@ -4659,6 +4682,7 @@ function DynastyApp({ initial, onExit }) {
           {tab === "transfer-portal" && state.offseason && (
             <TransferPortalTab
               offseason={state.offseason}
+              hsBoard={state.recruitingBoard}
               team={team}
               scholarshipInfo={scholarshipInfo}
               committedFreshmen={state.incomingCommits.length}
@@ -4673,6 +4697,7 @@ function DynastyApp({ initial, onExit }) {
             <OffseasonTab
               stage={stage}
               offseason={state.offseason}
+              hsBoard={state.recruitingBoard}
               team={team}
               roster={state.roster}
               nextYear={state.year + 1}
@@ -5300,10 +5325,11 @@ const NIL_FILTER_BUCKETS = [
 
 // NIL offer control for one recruit row: a dollar input the coach proposes,
 // bounded by what's actually still available (this recruit's own current
-// pledge plus whatever isn't already reserved on other recruits), guided by
-// the recruit's `nilTarget` ask (never the hidden `nilFloor`). Doesn't spend
-// the budget itself — onNilOffer only reserves it as "pending" until the
-// recruit signs.
+// pledge plus whatever isn't already committed to other recruits this
+// season), guided by the recruit's `nilTarget` ask (never the hidden
+// `nilFloor`). The stored season budget is never decremented directly —
+// `nilPending` (from the parent board) already accounts for every dollar
+// promised so far, signed or not, so next season starts fresh.
 function NilOfferRow({ recruit, nilBudget, nilPending, onNilOffer }) {
   const own = recruit.nilOffer || 0;
   const available = Math.max(0, Math.round((nilBudget || 0) - nilPending + own));
@@ -5343,7 +5369,7 @@ function NilOfferRow({ recruit, nilBudget, nilPending, onNilOffer }) {
 // Shared recruit-board list used by both in-season recruiting and the
 // off-season transfer portal. `weekIndex`/`totalWeeks` drive per-week action
 // limits (calls, home visits) and the signing-progress readout.
-function RecruitBoard({ board, committedIds, targets, onToggleTarget, points, weekIndex, totalWeeks, onAction, onSign, onNilOffer, nilBudget, needs, maxSign, emptyLabel, team }) {
+function RecruitBoard({ board, otherBoard, committedIds, targets, onToggleTarget, points, weekIndex, totalWeeks, onAction, onSign, onNilOffer, nilBudget, needs, maxSign, emptyLabel, team }) {
   const [view, setView] = useState("all"); // all | targets | committed
   const [posFilter, setPosFilter] = useState("ALL");
   const [starFilter, setStarFilter] = useState(0);
@@ -5407,9 +5433,14 @@ function RecruitBoard({ board, committedIds, targets, onToggleTarget, points, we
   );
   const shown = list.slice(0, 80);
   const canTarget = typeof onToggleTarget === "function";
-  // Total pledged-but-not-yet-signed NIL across the board, so each row's
-  // control can show/cap how much budget is actually still available.
-  const nilPending = board.reduce((sum, r) => sum + (!r.committedTo ? (r.nilOffer || 0) : 0), 0);
+  // Every dollar already committed against THIS season's budget — signed to
+  // us or still pending, across both this board and its sibling (HS board
+  // when this is the portal, portal board when this is HS recruiting) — so
+  // each row's control can show/cap how much of the season's pot is left.
+  // The budget itself is never depleted directly (see doNilOffer); this is
+  // computed fresh every render instead.
+  const nilPending = [...board, ...(otherBoard || [])].reduce((sum, r) =>
+    sum + ((r.committedTo === team.id || !r.committedTo) ? (r.nilOffer || 0) : 0), 0);
 
   const chip = (label, active, onClick) => (
     <button onClick={onClick} className="cbb-btn"
@@ -5584,10 +5615,11 @@ function RecruitBoard({ board, committedIds, targets, onToggleTarget, points, we
   );
 }
 
-function RecruitingTab({ board, committedIds, targets, onToggleTarget, points, budget, weekIndex, totalWeeks, onAction, onSign, onNilOffer, nilBudget, team, needs = [], scholarshipInfo }) {
+function RecruitingTab({ board, otherBoard, committedIds, targets, onToggleTarget, points, budget, weekIndex, totalWeeks, onAction, onSign, onNilOffer, nilBudget, team, needs = [], scholarshipInfo }) {
   const pct = Math.round(clamp((weekIndex - 1) / totalWeeks, 0, 1) * 100);
   const open = scholarshipInfo?.open ?? 0;
-  const nilPending = board.reduce((sum, r) => sum + (!r.committedTo ? (r.nilOffer || 0) : 0), 0);
+  const nilPending = [...board, ...(otherBoard || [])].reduce((sum, r) =>
+    sum + ((r.committedTo === team.id || !r.committedTo) ? (r.nilOffer || 0) : 0), 0);
   const nilAvailable = Math.max(0, (nilBudget || 0) - nilPending);
   return (
     <div>
@@ -5608,7 +5640,7 @@ function RecruitingTab({ board, committedIds, targets, onToggleTarget, points, b
         </div>
       )}
       <RecruitBoard
-        board={board} committedIds={committedIds} targets={targets} onToggleTarget={onToggleTarget}
+        board={board} otherBoard={otherBoard} committedIds={committedIds} targets={targets} onToggleTarget={onToggleTarget}
         points={points} weekIndex={weekIndex} totalWeeks={totalWeeks}
         onAction={onAction} onSign={onSign} onNilOffer={onNilOffer} nilBudget={nilBudget} needs={needs} maxSign={5} team={team}
         emptyLabel="No high-school prospects match those filters."
@@ -5737,9 +5769,10 @@ function CutsPanel({ roster, scholarshipInfo, onCut, onViewPlayer }) {
 /* ---------- Offseason ---------- */
 // Dedicated Transfer Portal tab — only mounted during the offseason. Works the
 // same portal board as the Offseason tab so either entry point stays in sync.
-function TransferPortalTab({ offseason, team, scholarshipInfo, committedFreshmen, onAction, onSign, onNilOffer, nilBudget, onAdvanceWeek }) {
+function TransferPortalTab({ offseason, hsBoard, team, scholarshipInfo, committedFreshmen, onAction, onSign, onNilOffer, nilBudget, onAdvanceWeek }) {
   const committed = offseason.committedTransfers || [];
-  const nilPending = offseason.transferBoard.reduce((sum, r) => sum + (!r.committedTo ? (r.nilOffer || 0) : 0), 0);
+  const nilPending = [...offseason.transferBoard, ...(hsBoard || [])].reduce((sum, r) =>
+    sum + ((r.committedTo === team.id || !r.committedTo) ? (r.nilOffer || 0) : 0), 0);
   const nilAvailable = Math.max(0, (nilBudget || 0) - nilPending);
   return (
     <div>
@@ -5769,6 +5802,7 @@ function TransferPortalTab({ offseason, team, scholarshipInfo, committedFreshmen
 
       <RecruitBoard
         board={offseason.transferBoard}
+        otherBoard={hsBoard}
         committedIds={committed}
         points={offseason.points}
         weekIndex={offseason.week}
@@ -5845,7 +5879,7 @@ function DraftDecisionsPanel({ declarations, onPersuade }) {
   );
 }
 
-function OffseasonTab({ stage, offseason, team, roster, nextYear, committedFreshmen, scholarshipInfo, rankById, onAction, onSign, onNilOffer, nilBudget, onPersuade, onAdvanceWeek, onEditGame, onChangeJob, onAdvanceYear, onViewTeam, onViewPlayer, onCut, onDev }) {
+function OffseasonTab({ stage, offseason, hsBoard, team, roster, nextYear, committedFreshmen, scholarshipInfo, rankById, onAction, onSign, onNilOffer, nilBudget, onPersuade, onAdvanceWeek, onEditGame, onChangeJob, onAdvanceYear, onViewTeam, onViewPlayer, onCut, onDev }) {
   if (!offseason) {
     return (
       <div>
@@ -5899,6 +5933,7 @@ function OffseasonTab({ stage, offseason, team, roster, nextYear, committedFresh
       <div style={{ fontSize: 12, color: C.wood, fontWeight: 600, letterSpacing: "0.06em", margin: "22px 0 8px" }}>TRANSFER PORTAL</div>
       <RecruitBoard
         board={offseason.transferBoard}
+        otherBoard={hsBoard}
         committedIds={committed}
         points={offseason.points}
         weekIndex={offseason.week}
@@ -6925,6 +6960,7 @@ function SeasonRecapModal({ recap, onClose }) {
           <RecapChip label="Reputation" value={`${recap.repAfter}${repDelta ? ` (+${repDelta})` : ""}`} />
           <RecapChip label="Incoming class" value={`${recap.incomingCount} signed`} />
           {recap.coyAwarded && <RecapChip label="Coach of the Year" value="Won" gold />}
+          {recap.regSeasonConfChamp && <RecapChip label="Regular Season" value="Conf. Champs" gold />}
         </div>
 
         {recap.nilObjectivesMet != null && (
@@ -7066,6 +7102,7 @@ function ProgramTab({ state, team, record, reputation, rivalIds, rankById }) {
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
           <TrophyBadge count={coach.natTitles} label="National Titles" gold />
           <TrophyBadge count={coach.finalFours} label="Final Fours" />
+          <TrophyBadge count={coach.confRegSeasonTitles || 0} label="Regular Season Titles" />
           <TrophyBadge count={coach.confTourneyTitles} label="Conf. Tournament Titles" />
           <TrophyBadge count={coach.tourneyApps} label="NCAA Appearances" />
           <TrophyBadge count={coach.coyAwards || 0} label="Coach of the Year" gold />
