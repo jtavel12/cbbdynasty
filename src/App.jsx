@@ -463,6 +463,16 @@ const TEAM_LOCATIONS = teamLocationsRaw;
    ========================================================================= */
 let torvikSeasons = {};
 let torvikPlayers = {};
+// Real recruiting-rankings data (stars/composite rating/national rank at
+// signing) — separate from torvikPlayers because it can genuinely reach one
+// signing class further than real roster/stats data ever can: a recruit's
+// commitment is public well before their season is ever played, while box
+// scores obviously can't exist until it is. Keyed by the ROSTER-year
+// convention (a class recruiting-year-labeled 2026 by the source enrolls for
+// the 2026-27 season, i.e. roster year 2027 — the offset is resolved once at
+// import time in scripts/cbbd-import-recruiting.mjs, not read here) so it
+// lines up with torvikPlayers/AVAILABLE_YEARS without any special-casing.
+let realRecruitingRankings = {};
 
 // Every season we have real player data for, ascending. Torvik keys each
 // season by its ENDING calendar year (key "2009" == the 2008–09 season),
@@ -678,6 +688,15 @@ async function loadRealData() {
     console.warn("[real data] failed to load — falling back to fully generated data:", err);
     torvikPlayers = {};
     torvikSeasons = {};
+  }
+  // Optional — the file may not exist at all yet (nothing imported into it
+  // so far), which is fine: genRecruitPool falls all the way back to fully
+  // synthetic for any year not present here, same as it always has.
+  try {
+    const recruitingRes = await fetch("/data/recruiting-rankings.json");
+    realRecruitingRankings = recruitingRes.ok ? await recruitingRes.json() : {};
+  } catch {
+    realRecruitingRankings = {};
   }
   AVAILABLE_YEARS = Object.keys(torvikPlayers)
     .map(Number)
@@ -1041,6 +1060,18 @@ function computeDurability(gp, classYear) {
 // splits each one with thresholds calibrated off that bucket's OWN real
 // percentiles in the dataset (see splitGuard/splitForward below), instead of
 // guessing at a cutoff or defaulting everything one direction.
+// The recruiting-rankings endpoint tags positions with its own short codes
+// (PG/SG/SF/PF/C, plus CG for "combo guard") — a completely different
+// convention from the roster endpoint's verbose tags above, so it gets its
+// own small mapper rather than overloading mapRealPosition.
+function mapRecruitingPosition(raw) {
+  const s = String(raw || "").toUpperCase().trim();
+  if (POSITIONS.includes(s)) return s;
+  if (s === "CG") return "SG"; // combo guard — lean shooting guard
+  if (s === "WF" || s === "WING") return "SF";
+  return null;
+}
+
 function mapRealPosition(raw) {
   if (!raw) return null;
   const s = String(raw).toLowerCase().trim();
@@ -1770,6 +1801,97 @@ function genSyntheticPool(kind) {
   return pool;
 }
 
+// A recruit built from real recruiting-rankings data (see
+// realRecruitingRankings / scripts/cbbd-import-recruiting.mjs) rather than
+// either real college production (buildRealNewcomer — they haven't played
+// yet) or a fully random roll (genSyntheticPool). Their real stars/national
+// ranking come straight from the recruiting service; adjustedValue is
+// derived from their real composite rating onto the same 0-22ish scale the
+// rest of the board already sorts on, so real and any synthetic overflow
+// interleave sensibly. Their eventual real-life commitment isn't used for
+// anything here — same as every other real recruit, you can win them away
+// from where they actually signed; that divergence is the point of a
+// dynasty.
+function buildRealHsRecruit(r) {
+  const rating = clamp(Number(r.rating) || 0, 0, 1);
+  const adjustedValue = rating * 22;
+  const stars = clamp(Math.round(Number(r.stars) || starsFromValue(adjustedValue)), 1, 5);
+  const signedPrestige = clamp(stars, 1, 5);
+  const ht = normalizeHometown(r.hometown);
+  const { nilTarget, nilFloor } = computeNilAsk({ stars, adjustedValue, isTransfer: false, prestige: signedPrestige });
+  return {
+    id: uid(),
+    name: r.name,
+    pos: mapRecruitingPosition(r.position) || deterministicPick(POSITIONS, r.name || ""),
+    state: ht.state,
+    hometown: ht.label,
+    hometownPlace: ht.place || ht.label,
+    hometownLat: ht.lat,
+    hometownLng: ht.lng,
+    international: ht.international,
+    classYear: "FR",
+    isTransfer: false,
+    stars,
+    rating: Math.round(rating * 10000) / 10000,
+    real: true,
+    adjustedValue,
+    signedPrestige,
+    nilTarget, nilFloor,
+    hsStatline: {
+      ppg: (adjustedValue + rand(2, 6)).toFixed(1),
+      rpg: ((r.position === "C" || r.position === "PF") ? adjustedValue * 0.45 + rand(1, 3) : adjustedValue * 0.23 + rand(1, 2)).toFixed(1),
+    },
+    ...freshTrailState(),
+  };
+}
+
+// Real recruiting-rankings services only ever publish the top couple hundred
+// prospects — the imported class is real but thin (396 names) compared to a
+// normal year's board (real roster years typically run 1,200-1,800+, every
+// real newcomer nationally). This pads it out to a comparable size with
+// generated fill, ranked directly below the real names — no randomness
+// independent of rank: each fake recruit's value is a smooth, strictly
+// decreasing function of its OWN target rank, anchored just under the real
+// board's lowest real value so the handoff at the real/fake boundary is
+// continuous rather than a cliff, then tapering toward a low (not zero)
+// floor by the bottom of the tail — a fast initial drop that flattens into
+// a long run of lightly-regarded prospects, the same shape a real class's
+// depth actually has.
+function fakeRankedRecruit(rank, startRank, endRank, anchorValue, floorValue) {
+  const t = clamp((rank - startRank) / (endRank - startRank), 0, 1);
+  const adjustedValue = anchorValue - (anchorValue - floorValue) * Math.pow(t, 0.4);
+  const stars = starsFromValue(adjustedValue);
+  const rating = clamp(0.55 + (adjustedValue / 26) * 0.44, 0.55, 1.0);
+  const pos = pick(POSITIONS);
+  const stCode = pick(STATES);
+  const centroid = STATE_CENTROIDS[stCode] || null;
+  const signedPrestige = clamp(Math.round(stars), 1, 5);
+  const { nilTarget, nilFloor } = computeNilAsk({ stars, adjustedValue, isTransfer: false, prestige: signedPrestige });
+  return {
+    id: uid(),
+    name: fullName(),
+    pos,
+    state: stCode,
+    hometown: stCode,
+    hometownPlace: stCode,
+    hometownLat: centroid ? centroid.lat : null,
+    hometownLng: centroid ? centroid.lng : null,
+    international: false,
+    classYear: "FR",
+    isTransfer: false,
+    stars,
+    rating: Math.round(rating * 10000) / 10000,
+    adjustedValue,
+    signedPrestige,
+    nilTarget, nilFloor,
+    hsStatline: {
+      ppg: (adjustedValue + rand(2, 6)).toFixed(1),
+      rpg: ((pos === "C" || pos === "PF") ? adjustedValue * 0.45 + rand(1, 3) : adjustedValue * 0.23 + rand(1, 2)).toFixed(1),
+    },
+    ...freshTrailState(),
+  };
+}
+
 // Assign a national rank (1 = best) across the whole board by prospect value.
 function rankBoard(board) {
   const sorted = [...board].sort((a, b) => (b.adjustedValue ?? (b.rating ?? 0) * 20) - (a.adjustedValue ?? (a.rating ?? 0) * 20));
@@ -1802,7 +1924,33 @@ function hsNilFloorForRank(nationalRank) {
 // off-season portal below).
 function genRecruitPool(year) {
   const real = realNewcomersFor(year, "fr");
-  const ranked = rankBoard(real.length > 0 ? real : genSyntheticPool("fr"));
+  // A recruit's commitment is public well before their season is ever
+  // played, so real recruiting-rankings data can reach one signing class
+  // further than real roster/stats data ever can (see
+  // realRecruitingRankings) — checked only when there's no real roster data
+  // for this year at all, so every year that already has one (2008 through
+  // whatever's actually been played) is completely untouched.
+  const realRecruiting = real.length === 0 ? (realRecruitingRankings[String(year)] || []).map(buildRealHsRecruit) : [];
+  let pool;
+  if (real.length > 0) {
+    pool = real;
+  } else if (realRecruiting.length > 0) {
+    // Real rankings only cover the top couple hundred names — pad the rest
+    // of the board with generated fill ranked directly below them (see
+    // fakeRankedRecruit) so the class isn't suspiciously thin compared to a
+    // normal year's ~1,200-1,800-deep board.
+    const startRank = realRecruiting.length;
+    const endRank = startRank + 1000;
+    const anchorValue = Math.min(...realRecruiting.map((r) => r.adjustedValue)) - 0.01;
+    const fill = [];
+    for (let rank = startRank + 1; rank <= endRank; rank++) {
+      fill.push(fakeRankedRecruit(rank, startRank, endRank, anchorValue, 1.5));
+    }
+    pool = [...realRecruiting, ...fill];
+  } else {
+    pool = genSyntheticPool("fr");
+  }
+  const ranked = rankBoard(pool);
   ranked.forEach((r) => {
     if (r.nationalRank > 900) {
       // Unranked outside the top 900 — no NIL required to sign, full stop,
