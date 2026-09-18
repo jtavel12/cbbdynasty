@@ -1276,18 +1276,67 @@ const SYNTHETIC_ROSTER_SLOT_DECAY = [
   1.00, 0.90, 0.82, 0.74, 0.67, 0.60, 0.53, 0.46,
   0.39, 0.33, 0.27, 0.22, 0.17, 0.13, 0.10, 0.07,
 ];
+
+// Real players from the team's LAST real-data season who haven't used up
+// their eligibility by `year` yet — a real 2025-26 freshman keeps playing
+// (correctly aged through SO/JR/SR, on their real-production-derived rating,
+// frozen at its 2025-26 level since there's no real box score to re-derive
+// it from afterward) for up to 3 more synthetic-era seasons instead of
+// vanishing the instant real data runs out. A real senior in that last
+// season graduated right on schedule: their index is already 3 (SR) in the
+// last real year, so it's 4 the year after — excluded by the same rule
+// every other player ages out by, no special-casing needed.
+function carriedOverRealPlayers(team, year) {
+  if (!AVAILABLE_YEARS.length) return [];
+  const lastReal = AVAILABLE_YEARS[AVAILABLE_YEARS.length - 1];
+  if (year <= lastReal || year > lastReal + 3) return [];
+  return shuffled(realPlayersFor(team, lastReal)).map((r, i) => {
+    const start = careerStartYear(r?.player, r?.startSeason);
+    if (start == null) return null;
+    const idx = year - start;
+    if (idx < 0 || idx > 3) return null; // graduated (or, impossibly here, not started)
+    const pos = resolvePosition(r) || deterministicPick(POSITIONS, r?.player || String(i));
+    return makePlayer({ pos, classYear: CLASS_ORDER[idx], prestige: team.prestige, real: r });
+  }).filter(Boolean);
+}
+
+// Unlike the walk-on gap-filler below (genAttrsWalkOn, a flat 40-45 band for
+// the handful of spots real data doesn't cover), every synthetic slot here is
+// generated through the same tier-based talent curve already used to turn a
+// signed recruit into a player (genAttrsFromTier). Prestige sets how good the
+// TOP of the roster can get (a blue blood's best player can be a near-max
+// talent; a bottom-tier program's best is a solid-but-unspectacular starter),
+// but every slot below that decays multiplicatively toward a walk-on floor
+// REGARDLESS of prestige — a real 16-man roster always thins out to deep
+// bench guys, blue bloods included, rather than every slot scaling with the
+// team's prestige uniformly (that first version graded every Duke player
+// 84+, which was the same "walk-on flood" bug in miniature, just shifted up).
+// Deterministic per team+year+seasonSeed: rebuilding the same team on the
+// same season within the same dynasty always looks the same, but two
+// different dynasties reaching the same future season see different rosters
+// (pass no seasonSeed for a plain team+year-only fallback).
 function genSyntheticRosterForTeam(team, year, seasonSeed) {
   const rng = seasonRngFor(seasonSeed ?? 0, `synthroster:${team.id}`, year);
   const prestigeTier = clamp(((team.prestigeExact ?? team.prestige) - 1) / 4, 0, 1);
   const topTier = clamp(0.35 + prestigeTier * 0.55, 0.1, 0.95);
   const classCycle = ["FR", "SO", "JR", "SR"];
-  const decays = seededShuffle(SYNTHETIC_ROSTER_SLOT_DECAY, rng);
 
-  const roster = [];
-  for (let i = 0; i < ROSTER_SIZE; i++) {
+  // Real holdovers (see carriedOverRealPlayers) keep their real roster spot
+  // on their real-production rating; only what's left gets generated.
+  let roster = carriedOverRealPlayers(team, year);
+  if (roster.length > ROSTER_SIZE) {
+    roster = [...roster].sort((a, b) => b.overall - a.overall).slice(0, ROSTER_SIZE);
+  }
+  const remaining = ROSTER_SIZE - roster.length;
+  // The holdovers already occupy the top of the talent curve (proportional
+  // to however many of them there are) — fillers draw from what's LEFT of
+  // the decay curve, so they read as bench depth around real players rather
+  // than a second tier of near-equal talent.
+  const fillerDecays = seededShuffle(SYNTHETIC_ROSTER_SLOT_DECAY.slice(roster.length), rng);
+  for (let i = 0; i < remaining; i++) {
     const pos = POSITIONS[i % POSITIONS.length];
     const classYear = classCycle[(i + Math.floor(i / POSITIONS.length)) % classCycle.length];
-    const tier = clamp(topTier * decays[i] + rand(-0.03, 0.03, rng), 0, 1);
+    const tier = clamp(topTier * fillerDecays[i] + rand(-0.03, 0.03, rng), 0, 1);
     const attrs = genAttrsFromTier(tier, pos, rng);
     const overall = computeOverall(pos, attrs);
     roster.push({
