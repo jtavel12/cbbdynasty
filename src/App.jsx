@@ -5062,15 +5062,53 @@ function DynastyApp({ initial, onExit }) {
   // and anyone already committed this cycle. When this hits zero the coach
   // must cut a player to sign more.
   const scholarshipInfo = useMemo(() => {
-    const leavingEarly = new Set(
-      (state.offseason?.draftDeclarations || []).filter((d) => !d.kept).map((d) => d.id)
-    );
-    const returning = state.roster.filter((p) => p.scholarship && p.class !== "SR" && !leavingEarly.has(p.id)).length;
+    // A player who resolves as leaving — declared for the draft and wasn't
+    // kept, OR a transfer risk resolved as staying:false — frees their
+    // scholarship the same way a graduating senior already does. This used
+    // to only account for the draft case, so a departing transfer's
+    // scholarship never actually came back.
+    const leavingEarly = new Set([
+      ...(state.offseason?.draftDeclarations || []).filter((d) => !d.kept).map((d) => d.id),
+      ...(state.offseason?.transferRisks || []).filter((r) => r.resolved && r.staying === false).map((r) => r.id),
+    ]);
+    // Every non-senior real player is in the pool assignScholarships ranks
+    // for the 13 slots — INCLUDING a real player who doesn't currently hold
+    // one (ranked just outside the top 13). Counting only p.scholarship
+    // here would undercount: cutting someone frees a slot that
+    // assignScholarships immediately hands to the next-best real player in
+    // that same pool, so a player waiting in the wings is just as much
+    // "using" a scholarship, functionally, as one who currently holds it.
+    const returning = state.roster.filter((p) => !p.generatedWalkOn && p.class !== "SR" && !leavingEarly.has(p.id)).length;
     const committed = state.incomingCommits.length + (state.offseason?.committedTransfers?.length || 0);
     const used = returning + committed;
     const limit = effectiveScholarshipLimit(state);
-    return { returning, committed, used, limit, open: Math.max(0, limit - used) };
+    // open is floored at 0 for display (a header stat never reads negative);
+    // oversignedBy is the real, uncapped deficit the forced-cut modal below
+    // needs to know exactly how many players still have to go.
+    return { returning, committed, used, limit, open: Math.max(0, limit - used), oversignedBy: Math.max(0, used - limit) };
   }, [state.roster, state.incomingCommits, state.offseason, state.scholarshipPenaltyUntilYear, state.year]);
+
+  // Oversigning (see attemptSign/attemptSignTransfer) is only actually
+  // reckoned with once the offseason starts — mid-season the roster's still
+  // being actively coached, so forcing a cut then would be disruptive.
+  // Scoped to state.offseason existing at all, which covers both how it
+  // happens: a HS class signed during the just-finished season, or transfer
+  // portal signings piling on further during the offseason itself.
+  const isOversigned = !!state.offseason && scholarshipInfo.oversignedBy > 0;
+  const oversignCuttableRoster = useMemo(() => {
+    if (!isOversigned) return [];
+    const leavingEarly = new Set([
+      ...(state.offseason?.draftDeclarations || []).filter((d) => !d.kept).map((d) => d.id),
+      ...(state.offseason?.transferRisks || []).filter((r) => r.resolved && r.staying === false).map((r) => r.id),
+    ]);
+    // Matches scholarshipInfo's returning pool exactly (not gated on the
+    // current p.scholarship flag — see the comment there) so cutting any
+    // player shown here reliably drops the count by exactly one, regardless
+    // of how assignScholarships reshuffles who holds the flag afterward.
+    return state.roster
+      .filter((p) => !p.generatedWalkOn && p.class !== "SR" && !leavingEarly.has(p.id))
+      .sort((a, b) => a.overall - b.overall);
+  }, [isOversigned, state.roster, state.offseason]);
 
   // Whether the coach was fired and hasn't resolved it yet — read straight off
   // PERSISTED state (state.coachFired), not local component state. A fired
@@ -5430,7 +5468,10 @@ function DynastyApp({ initial, onExit }) {
   function attemptSignTransfer(recruit) {
     const os = state.offseason;
     if (!os) return;
-    if (scholarshipInfo.open <= 0) { flash("No scholarships available — cut a player to open a spot."); return; }
+    // Oversigning is allowed — a real program can sign past its scholarship
+    // count and sort it out with cuts. The forced OversignedModal (see
+    // isOversigned below) is what actually makes that reckoning happen,
+    // rather than blocking the sign here.
     const week = os.week;
     const status = signAttemptStatus(recruit, week);
     if (!status.ok) {
@@ -5831,7 +5872,10 @@ function DynastyApp({ initial, onExit }) {
   }
 
   function attemptSign(recruit) {
-    if (scholarshipInfo.open <= 0) { flash("No scholarships available — cut a player in the offseason to open a spot."); return; }
+    // Oversigning is allowed — see the matching comment in
+    // attemptSignTransfer. A real program can sign past its scholarship
+    // count during the season; the forced OversignedModal at the start of
+    // the offseason is what actually makes them reckon with it.
     const week = state.recruitingWeekIndex;
     const status = signAttemptStatus(recruit, week);
     if (!status.ok) {
@@ -6600,6 +6644,15 @@ function DynastyApp({ initial, onExit }) {
           notoriety={state.riskItAttempts || 0}
           onClose={() => setRiskIt(null)}
           onConfirm={finishRiskIt}
+        />
+      )}
+      {isOversigned && (
+        <OversignedModal
+          roster={oversignCuttableRoster}
+          oversignedBy={scholarshipInfo.oversignedBy}
+          limit={scholarshipInfo.limit}
+          onCut={cutPlayer}
+          onViewPlayer={setPlayerViewId}
         />
       )}
     </div>
@@ -7691,6 +7744,58 @@ function ProgressionPanel({ roster, devPoints, devSpent, onDev, onViewPlayer }) 
           );
         })}
       </Panel>
+    </div>
+  );
+}
+
+// A mandatory, non-dismissable overlay — no X, no click-outside, no Escape —
+// for the one moment oversigning (see attemptSign/attemptSignTransfer, which
+// now allow it freely) actually has to be reckoned with: a real program that
+// signs past its scholarship count has to make roster cuts to fit, and this
+// is where that happens. Disappears on its own the instant enough cuts bring
+// the team back within its limit — see isOversigned in DynastyApp.
+function OversignedModal({ roster, oversignedBy, limit, onCut, onViewPlayer }) {
+  return (
+    <div
+      className="cbb-scroll"
+      style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.75)", display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "48px 20px", zIndex: 60, overflowY: "auto" }}
+    >
+      <div style={{ width: "100%", maxWidth: 760, background: C.panel, border: `1px solid ${C.line}`, borderTop: `3px solid ${C.red}` }}>
+        <div style={{ padding: "16px 20px", borderBottom: `1px solid ${C.line}`, position: "sticky", top: 0, background: C.panel }}>
+          <div className="cbb-num" style={{ fontSize: 19, fontWeight: 700, color: C.red }}>You're oversigned</div>
+          <div style={{ fontSize: 12.5, color: C.dim, marginTop: 4 }}>
+            Your incoming class put you past your {limit}-scholarship limit. Cut{" "}
+            <strong style={{ color: C.cream }}>{oversignedBy}</strong> more player{oversignedBy === 1 ? "" : "s"} to bring your roster back in line before the offseason continues.
+          </div>
+        </div>
+        <div style={{ padding: 20 }}>
+          <Panel style={{ overflow: "hidden" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13.5 }}>
+              <thead>
+                <tr style={{ borderBottom: `1px solid ${C.line}`, color: C.dim, fontSize: 11, textAlign: "left" }}>
+                  <th style={th}>Player</th><th style={th}>Pos</th><th style={th}>Class</th><th style={th}>OVR</th><th style={th}></th>
+                </tr>
+              </thead>
+              <tbody>
+                {roster.map((p) => (
+                  <tr key={p.id} className="cbb-row" style={{ borderBottom: `1px solid ${C.line}` }}>
+                    <td style={{ ...td, cursor: "pointer", fontWeight: 600 }} onClick={() => onViewPlayer(p.id)}>{p.realName ? "• " : ""}{p.name}</td>
+                    <td style={td}>{p.pos}</td>
+                    <td style={td}>{p.class}</td>
+                    <td style={{ ...td, fontWeight: 700 }} className="cbb-num">{p.overall}</td>
+                    <td style={td}>
+                      <button className="cbb-btn" onClick={() => onCut(p.id)}
+                        style={{ fontSize: 11.5, background: "transparent", border: `1px solid ${C.red}`, color: C.red, padding: "3px 12px", cursor: "pointer" }}>
+                        Cut
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </Panel>
+        </div>
+      </div>
     </div>
   );
 }
