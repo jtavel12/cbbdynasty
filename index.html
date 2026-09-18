@@ -4,15 +4,6 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>CBB Dynasty</title>
-    <style>
-      /* Without this, html/body have no height ceiling, so on iOS WebKit
-         specifically the WHOLE page becomes scrollable in addition to the
-         app's own internal scroll panels (.cbb-main-content etc.) — that's
-         what let scrolling a long list also drag the sidebar rail out of
-         view. Locking html/body/#root to exactly the viewport height makes
-         only the intended inner panels scroll, everywhere the app runs. */
-      html, body, #root { height: 100%; overflow: hidden; }
-    </style>
     <meta name="description" content="Be the Coach: build your roster with real players, sign real recruits from their classes, and coach it forward one season at a time — from an opening tip-off to a program only you could have built." />
     <link rel="icon" type="image/png" href="/images/favicon.png" />
 

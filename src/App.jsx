@@ -4729,6 +4729,30 @@ function DynastyApp({ initial, onExit }) {
     return () => clearTimeout(saveTimer.current);
   }, [state]);
 
+  // This is the one screen with its OWN internal scroll region
+  // (.cbb-main-content, so the left rail stays put while content scrolls) —
+  // every other screen (TeamSelect, the save picker, onboarding) wants the
+  // page itself to grow and scroll naturally, so this lock is scoped to
+  // exactly this component's lifetime rather than applied globally, which
+  // is what broke scrolling everywhere else the first time around. Locking
+  // ONLY body doesn't actually stop the page from scrolling — once body's
+  // overflow isn't the default `visible`, the spec stops propagating that
+  // up to the viewport and <html> becomes the real scrolling element
+  // instead, still with its own default (scrollable) overflow — so both
+  // need locking, not just body.
+  useEffect(() => {
+    const html = document.documentElement;
+    const prevBody = document.body.style.overflow;
+    const prevHtml = html.style.overflow;
+    document.body.style.overflow = "hidden";
+    html.style.overflow = "hidden";
+    // Whatever scroll position a previous screen (the save picker,
+    // TeamSelect) left the page at would otherwise carry straight into
+    // this one, since it's a component swap, not a real navigation.
+    window.scrollTo(0, 0);
+    return () => { document.body.style.overflow = prevBody; html.style.overflow = prevHtml; };
+  }, []);
+
   // Keep the live team objects in sync with this dynasty's fluid prestige so
   // every consumer (power, recruiting, standings, stars) reads current values.
   // Runs during render (idempotent) so the first paint already reflects it,
@@ -6093,7 +6117,7 @@ function DynastyApp({ initial, onExit }) {
             : "offseason";
 
   return (
-    <div className="cbb-root" style={{ display: "flex", minHeight: "100vh", background: C.bg, color: C.cream }}>
+    <div className="cbb-root" style={{ display: "flex", height: "100vh", background: C.bg, color: C.cream }}>
       <GlobalStyle />
       {/* LEFT RAIL */}
       <div className="cbb-rail" style={{ background: C.bgRail, borderRight: `1px solid ${C.line}`, display: "flex", flexDirection: "column" }}>
@@ -6137,7 +6161,7 @@ function DynastyApp({ initial, onExit }) {
       </div>
 
       {/* MAIN */}
-      <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
+      <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0, minHeight: 0 }}>
         {/* SCOREBOARD HEADER */}
         <div className="cbb-scoreboard-header" style={{ background: C.bgRail, borderBottom: `2px solid ${C.wood}`, padding: "14px 28px", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
           <div style={{ display: "flex", alignItems: "baseline", gap: 22 }}>
@@ -6153,7 +6177,7 @@ function DynastyApp({ initial, onExit }) {
           <Toast message={toast} />
         </div>
 
-        <div key={tab} className="cbb-scroll cbb-tab-fade cbb-main-content" style={{ flex: 1, overflowY: "auto", padding: 28 }}>
+        <div key={tab} className="cbb-scroll cbb-tab-fade cbb-main-content" style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: 28 }}>
           {tab === "dashboard" && (
             <DashboardTab state={state} team={team} record={record} nextGame={nextGame}
               stage={stage}
