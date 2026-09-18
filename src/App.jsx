@@ -468,6 +468,16 @@ let torvikPlayers = {};
 let AVAILABLE_YEARS = [];
 let FIRST_YEAR = 2008;
 
+// The single source of truth for "do we have real data for this season at
+// all" — every real-vs-synthetic fallback in the app (rosters, recruiting,
+// the leaderboard) is gated off THIS, never a hardcoded year. That means the
+// cutoff moves itself the moment a fresh `torvik-players.json` pull adds a
+// season that's actually been played — no code change needed when next
+// year's real data shows up.
+function hasRealDataFor(year) {
+  return AVAILABLE_YEARS.includes(year);
+}
+
 // Season display label. Internal `year` is the season's ENDING year, so
 // year 2009 renders as "2008–09". Keeps the UI consistent with how college
 // basketball seasons are actually named.
@@ -781,12 +791,17 @@ function haversineMiles(a, b) {
   return 2 * R * Math.asin(Math.sqrt(h));
 }
 
-function rand(min, max) { return Math.random() * (max - min) + min; }
-function randInt(min, max) { return Math.floor(rand(min, max + 1)); }
-function pick(arr) { return arr[randInt(0, arr.length - 1)]; }
+// Every helper below takes an OPTIONAL trailing `rng` (a 0..1 generator, e.g.
+// from seasonRngFor) — omit it and these behave exactly as before (plain
+// Math.random). Passed explicitly, the same call becomes reproducible, which
+// is what lets a synthetic (no-real-data) roster look identical every time
+// it's rebuilt instead of reshuffling on every render.
+function rand(min, max, rng) { return (rng ? rng() : Math.random()) * (max - min) + min; }
+function randInt(min, max, rng) { return Math.floor(rand(min, max + 1, rng)); }
+function pick(arr, rng) { return arr[randInt(0, arr.length - 1, rng)]; }
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 function uid() { return Math.random().toString(36).slice(2, 10); }
-function fullName() { return `${pick(FIRST_NAMES)} ${pick(LAST_NAMES)}`; }
+function fullName(rng) { return `${pick(FIRST_NAMES, rng)} ${pick(LAST_NAMES, rng)}`; }
 
 // A deterministic stand-in for pick() wherever the choice needs to be stable
 // for a given real identity (e.g. a real player's position) rather than
@@ -895,14 +910,15 @@ function prestigeTalentShift(tier, careerBonus) {
   return raw * (1 - relief * 0.8); // outliers claw back up to 80% of the penalty
 }
 
-function genAttrsFromTier(tier, pos = "SF") {
+function genAttrsFromTier(tier, pos = "SF", rng) {
   // tier ~ 0..1, higher = more talented incoming baseline. Mapped onto the
   // 40-99 scale: a bottom-tier program's baseline lands near 40, a blue-blood's
   // near 86. Attributes are biased by position so a generated PG handles/shoots
-  // and a generated C rebounds/protects the rim.
+  // and a generated C rebounds/protects the rim. `rng` is optional (see rand()
+  // above) — pass a seeded one when the same call must reproduce identically.
   const base = 40 + tier * 46;
   const g = POS_GUARDNESS[pos] ?? 0.5, big = 1 - g;
-  const a = (bias = 0) => clamp(Math.round(rand(base - 9, base + 9) + bias), 40, 99);
+  const a = (bias = 0) => clamp(Math.round(rand(base - 9, base + 9, rng) + bias), 40, 99);
   return {
     scoring: a(),
     threePoint: a(g * 6 - 3),
@@ -914,7 +930,7 @@ function genAttrsFromTier(tier, pos = "SF") {
     perimeterDefense: a(g * 4 - 2),
     postDefense: a(big * 8 - 4),
     athleticism: a(),
-    potential: clamp(Math.round(rand(base, base + 24)), 40, 99),
+    potential: clamp(Math.round(rand(base, base + 24, rng)), 40, 99),
   };
 }
 
@@ -1224,7 +1240,69 @@ function assignScholarships(roster, limit = SCHOLARSHIP_LIMIT) {
   return roster.map((p) => ({ ...p, scholarship: !p.generatedWalkOn && scho.has(p.id) }));
 }
 
-function buildInitialRoster(team, year) {
+// A full 16-man roster for a season we have NO real data for at all (see
+// hasRealDataFor) — e.g. any season past the real-data import's coverage.
+// Unlike the walk-on gap-filler below (genAttrsWalkOn, a flat 40-45 band for
+// the handful of spots real data doesn't cover), every one of these 16 is
+// generated through the same tier-based talent curve already used to turn a
+// signed recruit into a player (genAttrsFromTier). Prestige sets how good the
+// TOP of the roster can get (a blue blood's best player can be a near-max
+// talent; a bottom-tier program's best is a solid-but-unspectacular starter),
+// but every slot below that decays multiplicatively toward a walk-on floor
+// REGARDLESS of prestige — a real 16-man roster always thins out to deep
+// bench guys, blue bloods included, rather than every slot scaling with the
+// team's prestige uniformly (that first version graded every Duke player
+// 84+, which was the same "walk-on flood" bug in miniature, just shifted up).
+// Deterministic per team+year+seasonSeed: rebuilding the same team on the
+// same season within the same dynasty always looks the same, but two
+// different dynasties reaching the same future season see different rosters
+// (pass no seasonSeed for a plain team+year-only fallback).
+const SYNTHETIC_ROSTER_SLOT_DECAY = [
+  1.00, 0.90, 0.82, 0.74, 0.67, 0.60, 0.53, 0.46,
+  0.39, 0.33, 0.27, 0.22, 0.17, 0.13, 0.10, 0.07,
+];
+function genSyntheticRosterForTeam(team, year, seasonSeed) {
+  const rng = seasonRngFor(seasonSeed ?? 0, `synthroster:${team.id}`, year);
+  const prestigeTier = clamp(((team.prestigeExact ?? team.prestige) - 1) / 4, 0, 1);
+  const topTier = clamp(0.35 + prestigeTier * 0.55, 0.1, 0.95);
+  const classCycle = ["FR", "SO", "JR", "SR"];
+  const decays = seededShuffle(SYNTHETIC_ROSTER_SLOT_DECAY, rng);
+
+  const roster = [];
+  for (let i = 0; i < ROSTER_SIZE; i++) {
+    const pos = POSITIONS[i % POSITIONS.length];
+    const classYear = classCycle[(i + Math.floor(i / POSITIONS.length)) % classCycle.length];
+    const tier = clamp(topTier * decays[i] + rand(-0.03, 0.03, rng), 0, 1);
+    const attrs = genAttrsFromTier(tier, pos, rng);
+    const overall = computeOverall(pos, attrs);
+    roster.push({
+      id: uid(),
+      name: fullName(rng),
+      realName: false,
+      realKey: null,
+      originalTier: tier,
+      realStats: false,
+      generatedWalkOn: false,
+      scholarship: true,
+      boosts: {},
+      pos,
+      class: classYear,
+      height: `${randInt(6, 6)}'${randInt(9, 11)}"`,
+      attrs,
+      overall,
+      durability: computeDurability(0, classYear),
+      starsAtSigning: starsFromValue(tier * 22),
+      nil: Math.round(clamp((overall - 50) / 40, 0, 1) * 60000 + 3000),
+      season: { ...EMPTY_SEASON_STATS },
+      career: { ...EMPTY_CAREER_STATS },
+    });
+  }
+  return assignScholarships(roster);
+}
+
+function buildInitialRoster(team, year, seasonSeed) {
+  if (!hasRealDataFor(year)) return genSyntheticRosterForTeam(team, year, seasonSeed);
+
   const classesForSlot = ["SR", "JR", "SO", "FR"];
   // Use the player's TRUE career start (earliest season anywhere in the data),
   // not the data's per-team startSeason — otherwise every transfer reads FR.
@@ -2054,13 +2132,59 @@ function cpuPlayerSeasonLine(basePpg, baseRpg, baseApg, seasonSeed, teamId, play
   return { gp: k, ppg: pts / k, rpg: reb / k, apg: ast / k };
 }
 
+// Derives a plausible per-game baseline (ppg/rpg/apg) for a synthetic
+// (no-real-data) player from their generated attrs \u2014 the exact inverse of
+// the coefficients genAttrsFromRealStats uses to go the other direction \u2014
+// so the leaderboard has SOMETHING to build a CPU season line from once
+// there's no real box score behind these teams at all (see hasRealDataFor).
+function syntheticPlayerBaseline(attrs) {
+  return {
+    ppg: clamp((attrs.scoring - 42) / 2.3, 0.5, 30),
+    rpg: clamp((attrs.rebounding - 40) / 4.6, 0.3, 14),
+    apg: clamp((attrs.passing - 40) / 6.0, 0.2, 10),
+  };
+}
+
 function buildLeaderboard(year, userTeamId, userRoster, seasonSeed, gamesPlayed) {
+  const out = [];
+
+  if (!hasRealDataFor(year)) {
+    // No real box scores exist for this season at all \u2014 build every other
+    // team's board presence off its own synthetic roster instead of real
+    // rows (which would just be empty), same rotation-sized cut (top 8 by
+    // overall) a real team's realGp>=5 filter effectively applies above.
+    for (const team of TEAMS) {
+      if (team.id === userTeamId) continue;
+      const roster = [...genSyntheticRosterForTeam(team, year, seasonSeed)].sort((a, b) => b.overall - a.overall).slice(0, 8);
+      for (const p of roster) {
+        const baseline = syntheticPlayerBaseline(p.attrs);
+        const line = cpuPlayerSeasonLine(baseline.ppg, baseline.rpg, baseline.apg, seasonSeed, team.id, p.name, year, gamesPlayed);
+        if (!line) continue;
+        out.push({
+          id: `${p.name}|${team.id}`, name: p.name, teamId: team.id, teamName: team.name,
+          pos: p.pos, gp: line.gp, ppg: line.ppg, rpg: line.rpg, apg: line.apg,
+          isUser: false,
+        });
+      }
+    }
+    for (const p of userRoster || []) {
+      const gp = p.season?.gp || 0;
+      if (gp < 1) continue;
+      out.push({
+        id: `user|${p.id}`, name: p.name, teamId: userTeamId,
+        teamName: TEAM_MAP[userTeamId]?.name || "", pos: p.pos, gp,
+        ppg: perGame(p.season.pts, gp), rpg: perGame(p.season.reb, gp), apg: perGame(p.season.ast, gp),
+        isUser: true,
+      });
+    }
+    return out;
+  }
+
   const rows = torvikPlayers[String(year)] || [];
   // O(1) torvik-team-name -> our team lookup (mirrors findOurTeamByRealName).
   const teamByKey = new Map();
   for (const t of TEAMS) teamByKey.set(normalizeTeamKey(TORVIK_TEAM_ALIASES[t.name] || t.name), t);
 
-  const out = [];
   const seen = new Set();
   for (const r of rows) {
     const team = teamByKey.get(normalizeTeamKey(r.team));
@@ -3153,8 +3277,8 @@ function simulateGame(roster, depthChart, oppPower, momentum = 0, baseline = nul
 // score they actually put up. Purely a display artifact for that one game:
 // CPU teams don't track individual box stats across a season the way the
 // user's roster does, only their team win/loss record.
-function genOpponentBox(oppTeam, year, oppScore) {
-  const roster = buildInitialRoster(oppTeam, year);
+function genOpponentBox(oppTeam, year, oppScore, seasonSeed) {
+  const roster = buildInitialRoster(oppTeam, year, seasonSeed);
   const depthChart = defaultDepthChart(roster);
   const minutesMap = defaultMinutesFor(depthChart);
   const box = genTeamBox(roster, depthChart, minutesMap, oppScore);
@@ -4750,7 +4874,7 @@ function DynastyApp({ initial, onExit }) {
       roster = inj.roster;
     }
     const box = boxArray(result.boxByPlayer, state.roster);
-    const oppBox = genOpponentBox(opp, state.year, result.oppScore);
+    const oppBox = genOpponentBox(opp, state.year, result.oppScore, state.seasonSeed);
     const thisGameId = nextGame.id;
 
     const schedule = state.schedule.map((g) => g.id === nextGame.id
@@ -6198,7 +6322,7 @@ function DynastyApp({ initial, onExit }) {
       {/* Rendered after LiveGame so a scouting-report lookup mid-Coach-Mode
           stacks visually on top of it, not underneath. */}
       {viewTeamId && (
-        <TeamRosterModal teamId={viewTeamId} year={state.year} strengths={state.strengths} rank={rankById[viewTeamId]} poached={state.poachedPlayers || []} history={state.history} coach={state.coachesById?.[viewTeamId]} onClose={() => setViewTeamId(null)} />
+        <TeamRosterModal teamId={viewTeamId} year={state.year} strengths={state.strengths} rank={rankById[viewTeamId]} poached={state.poachedPlayers || []} history={state.history} coach={state.coachesById?.[viewTeamId]} seasonSeed={state.seasonSeed} onClose={() => setViewTeamId(null)} />
       )}
       {visit && (
         <VisitExperience
@@ -8581,7 +8705,7 @@ function LiveGame({ ctxInit, onFinish, onClose, onScoutOpponent }) {
 }
 
 /* ---------- Opponent Roster Viewer ---------- */
-function TeamRosterModal({ teamId, year, strengths, rank, poached = [], history: dynastyHistory = [], coach, onClose }) {
+function TeamRosterModal({ teamId, year, strengths, rank, poached = [], history: dynastyHistory = [], coach, seasonSeed, onClose }) {
   const team = TEAM_MAP[teamId];
   const [view, setView] = useState("roster");
   // Any real player the user has signed away from THIS team no longer appears
@@ -8591,9 +8715,9 @@ function TeamRosterModal({ teamId, year, strengths, rank, poached = [], history:
     [poached, teamId]
   );
   const roster = useMemo(() => {
-    const r = buildInitialRoster(team, year).filter((p) => !(p.realKey && poachedHere.has(p.realKey)));
+    const r = buildInitialRoster(team, year, seasonSeed).filter((p) => !(p.realKey && poachedHere.has(p.realKey)));
     return [...r].sort((a, b) => b.overall - a.overall);
-  }, [teamId, year, poachedHere]);
+  }, [teamId, year, poachedHere, seasonSeed]);
   const schedule = useMemo(() => genSchedule(team, year), [teamId, year]);
   const teamPower = useMemo(() => teamPowerRating(team, strengths, year, { noise: false }), [teamId, year, strengths]);
   const realCount = roster.filter((p) => p.realName).length;
