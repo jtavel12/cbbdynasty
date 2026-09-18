@@ -1,4 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
+import { Capacitor } from "@capacitor/core";
+import { Browser } from "@capacitor/browser";
 import teamLocationsRaw from "./data/team-locations.json";
 import teamRecordsRaw from "./data/team-records.json";
 import nilBudgetsRaw from "./data/nil_budgets.json";
@@ -800,6 +802,19 @@ function rand(min, max, rng) { return (rng ? rng() : Math.random()) * (max - min
 function randInt(min, max, rng) { return Math.floor(rand(min, max + 1, rng)); }
 function pick(arr, rng) { return arr[randInt(0, arr.length - 1, rng)]; }
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+
+// Wrapped in the native iOS/Android shell (see capacitor.config.json), an
+// external link's normal <a target="_blank"> behavior would try to open
+// inside the app's own WebView instead of Safari/the X app — this routes it
+// through Capacitor's system browser instead. On plain web (Capacitor.
+// isNativePlatform() false) it's a no-op and the default anchor behavior
+// runs as normal.
+function openExternalLink(url, e) {
+  if (Capacitor.isNativePlatform()) {
+    e?.preventDefault();
+    Browser.open({ url });
+  }
+}
 function uid() { return Math.random().toString(36).slice(2, 10); }
 function fullName(rng) { return `${pick(FIRST_NAMES, rng)} ${pick(LAST_NAMES, rng)}`; }
 
@@ -4607,6 +4622,7 @@ function TeamSelect({ onPick }) {
             href="https://x.com/CBBDynastyApp"
             target="_blank"
             rel="noopener noreferrer"
+            onClick={(e) => openExternalLink("https://x.com/CBBDynastyApp", e)}
             className="cbb-hero-in"
             style={{ display: "inline-block", marginTop: 10, color: C.wood, fontSize: 13, fontWeight: 600, textDecoration: "none", animationDelay: ".2s" }}
           >
