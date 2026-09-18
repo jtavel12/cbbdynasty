@@ -2058,9 +2058,11 @@ function seedInterest(board, team) {
 // Per spec: offer once (5), phone calls (5, up to twice a week), official
 // visit (25, once per recruit), home visit (20, twice a season but not in the
 // same week). Interest gained scales with the effort — a visit lands far more
-// than a call.
+// than a call. A phone call is deliberately flat and small: a fixed [1, 1]
+// range always resolves to a guaranteed +1, so it reads as a light, reliable
+// touch rather than another swingy roll like the higher-effort actions.
 const RECRUIT_ACTIONS = {
-  CALL:    { key: "CALL",    label: "Phone Call",        cost: 5,  gain: [4, 8],   perWeek: 2 },
+  CALL:    { key: "CALL",    label: "Phone Call",        cost: 5,  gain: [1, 1],   perWeek: 2 },
   OFFER:   { key: "OFFER",   label: "Scholarship Offer", cost: 5,  gain: [6, 10],  oneTime: true },
   VISIT:   { key: "VISIT",   label: "Official Visit",    cost: 12, gain: [16, 26], maxUses: 1 },
   HOME:    { key: "HOME",    label: "Home Visit",        cost: 9,  gain: [11, 18], maxSeason: 2 },
@@ -3301,6 +3303,49 @@ function defaultMinutesFor(depthChart) {
     (depthChart[pos] || []).forEach((id, i) => { out[id] = DEFAULT_MIN_SPLITS[i] ?? 0; });
   });
   return out;
+}
+
+// Keeps one position group topped up to the 40-minute regulation cap and
+// ordered by who's actually playing the most — run after anything that can
+// leave a group short (benching someone, sliding a new player in, or the
+// coach hand-editing one player's number): any remaining minutes are spread
+// across the rest of the group weighted by their current share (so the
+// backup who already plays the most soaks up most of a newly-opened role,
+// same as a real bench would), then the whole group is re-sorted by minutes
+// descending so the heaviest-minutes player leads the rotation (the "★"
+// starter slot) without the coach walking it back into order by hand.
+// `excludeId`, if given, is left exactly at its current figure — used when
+// that figure was just deliberately set by the coach (a fresh sub, or a
+// manual minutes edit) and shouldn't be overwritten by the top-up.
+function autoFillPositionMinutes(order, minutesMap, excludeId = null) {
+  const mins = {};
+  order.forEach((id) => { mins[id] = minutesMap[id] ?? 0; });
+  const total = order.reduce((s, id) => s + mins[id], 0);
+  let remaining = 40 - total;
+  if (remaining > 0) {
+    let pool = order.filter((id) => id !== excludeId && mins[id] < 40);
+    let guard = 0;
+    while (remaining > 0 && pool.length && guard++ < 20) {
+      const weightTotal = pool.reduce((s, id) => s + Math.max(mins[id], 1), 0);
+      let distributed = 0;
+      pool.forEach((id) => {
+        const share = Math.floor((remaining * Math.max(mins[id], 1)) / weightTotal);
+        const add = Math.min(share, 40 - mins[id]);
+        mins[id] += add;
+        distributed += add;
+      });
+      remaining -= distributed;
+      pool = pool.filter((id) => mins[id] < 40);
+      if (distributed === 0 && pool.length) {
+        const id = pool[0];
+        const add = Math.min(remaining, 40 - mins[id]);
+        mins[id] += add;
+        remaining -= add;
+      }
+    }
+  }
+  const newOrder = [...order].sort((a, b) => mins[b] - mins[a]);
+  return { order: newOrder, minutes: mins };
 }
 
 // Minutes above 34 progressively cost a player effectiveness late in games —
@@ -5921,39 +5966,66 @@ function DynastyApp({ initial, onExit }) {
 
   // Slot a player into any position group (removing them from wherever they
   // were), so a point guard can be listed at the two, the three, and so on.
-  // Their minutes reset to 0 in the new group — a stale value carried over
-  // from their old position could silently blow past that group's 40-minute
-  // cap, so the coach has to consciously give them run at the new spot.
+  // Their own minutes reset to 0 in the new group — the coach has to
+  // consciously give them run at the new spot — but both the group they left
+  // and the one they joined are auto-topped-up to 40 and re-sorted by
+  // minutes descending, so neither side of the move sits under the cap or
+  // needs manually walking the new arrival's teammates back above them.
   function assignPosition(playerId, toPos) {
     setState((s) => {
+      let fromPos = null;
       const dc = {};
-      POSITIONS.forEach((p) => { dc[p] = s.depthChart[p].filter((id) => id !== playerId); });
+      POSITIONS.forEach((p) => {
+        if (s.depthChart[p].includes(playerId)) fromPos = p;
+        dc[p] = s.depthChart[p].filter((id) => id !== playerId);
+      });
       dc[toPos] = [...dc[toPos], playerId];
-      const minutes = { ...(s.minutes || defaultMinutesFor(s.depthChart)), [playerId]: 0 };
+      let minutes = { ...(s.minutes || defaultMinutesFor(s.depthChart)), [playerId]: 0 };
+      if (fromPos && fromPos !== toPos && dc[fromPos].length) {
+        const rebal = autoFillPositionMinutes(dc[fromPos], minutes);
+        dc[fromPos] = rebal.order;
+        minutes = { ...minutes, ...rebal.minutes };
+      }
+      const rebalDest = autoFillPositionMinutes(dc[toPos], minutes, playerId);
+      dc[toPos] = rebalDest.order;
+      minutes = { ...minutes, ...rebalDest.minutes };
       return { ...s, depthChart: dc, minutes };
     });
   }
 
   function removeFromDepth(playerId) {
     setState((s) => {
+      let fromPos = null;
       const dc = {};
-      POSITIONS.forEach((p) => { dc[p] = s.depthChart[p].filter((id) => id !== playerId); });
-      const minutes = { ...(s.minutes || defaultMinutesFor(s.depthChart)) };
+      POSITIONS.forEach((p) => {
+        if (s.depthChart[p].includes(playerId)) fromPos = p;
+        dc[p] = s.depthChart[p].filter((id) => id !== playerId);
+      });
+      let minutes = { ...(s.minutes || defaultMinutesFor(s.depthChart)) };
       delete minutes[playerId];
+      if (fromPos && dc[fromPos].length) {
+        const rebal = autoFillPositionMinutes(dc[fromPos], minutes);
+        dc[fromPos] = rebal.order;
+        minutes = { ...minutes, ...rebal.minutes };
+      }
       return { ...s, depthChart: dc, minutes };
     });
   }
 
   // Direct per-player minutes assignment from the Depth Chart tab. Clamped to
   // whatever's left of that position group's 40-minute regulation cap once
-  // every other player currently slotted there is accounted for.
+  // every other player currently slotted there is accounted for, then the
+  // rest of the group is auto-topped-up to close any gap the edit just
+  // opened and re-sorted by minutes descending — the just-edited player's
+  // own figure is left exactly as set.
   function setPlayerMinutes(playerId, pos, value) {
     setState((s) => {
       const group = s.depthChart[pos] || [];
       const current = s.minutes || defaultMinutesFor(s.depthChart);
       const others = group.filter((id) => id !== playerId).reduce((sum, id) => sum + (current[id] ?? 0), 0);
       const capped = clamp(Math.round(Number(value) || 0), 0, Math.max(0, 40 - others));
-      return { ...s, minutes: { ...current, [playerId]: capped } };
+      const rebal = autoFillPositionMinutes(group, { ...current, [playerId]: capped }, playerId);
+      return { ...s, depthChart: { ...s.depthChart, [pos]: rebal.order }, minutes: { ...current, ...rebal.minutes } };
     });
   }
 
@@ -7384,6 +7456,7 @@ function RecruitBoard({ board, otherBoard, committedIds, targets, onToggleTarget
   const [posFilter, setPosFilter] = useState("ALL");
   const [starFilter, setStarFilter] = useState(0);
   const [stateFilter, setStateFilter] = useState("ALL");
+  const [classFilter, setClassFilter] = useState("ALL");
   const [nilFilter, setNilFilter] = useState("ALL");
   const [sortBy, setSortBy] = useState("interest"); // interest | stars | rank
   const [query, setQuery] = useState("");
@@ -7417,6 +7490,14 @@ function RecruitBoard({ board, otherBoard, committedIds, targets, onToggleTarget
     return intl ? [...domestic, "INTL"] : domestic;
   }, [board]);
 
+  // Distinct class years present on the board, in FR/SO/JR/SR order \u2014 mostly
+  // relevant on the transfer portal (HS recruits are always FR).
+  const classOptions = useMemo(() => {
+    const set = new Set();
+    board.forEach((r) => { if (r.classYear) set.add(r.classYear); });
+    return CLASS_ORDER.filter((c) => set.has(c));
+  }, [board]);
+
   let list = board.filter((r) => {
     const mine = committedIds.includes(r.id);
     if (r.committedTo && !mine) return false; // signed elsewhere — off the board
@@ -7425,6 +7506,7 @@ function RecruitBoard({ board, otherBoard, committedIds, targets, onToggleTarget
     if (posFilter !== "ALL" && r.pos !== posFilter) return false;
     if (starFilter && (r.stars || 0) < starFilter) return false;
     if (stateFilter !== "ALL" && r.state !== stateFilter) return false;
+    if (classFilter !== "ALL" && r.classYear !== classFilter) return false;
     if (nilFilter !== "ALL") {
       const bucket = NIL_FILTER_BUCKETS.find((b) => b.value === nilFilter);
       if (bucket && ((r.nilTarget || 0) < bucket.min || (r.nilTarget || 0) > bucket.max)) return false;
@@ -7486,6 +7568,13 @@ function RecruitBoard({ board, otherBoard, committedIds, targets, onToggleTarget
           <option value="ALL">All states</option>
           {stateOptions.map((s) => <option key={s} value={s}>{s === "INTL" ? "International" : s}</option>)}
         </select>
+        {classOptions.length > 1 && (
+          <select value={classFilter} onChange={(e) => setClassFilter(e.target.value)}
+            style={{ background: C.panel, border: `1px solid ${C.line}`, color: C.cream, padding: "6px 10px", fontSize: 13 }}>
+            <option value="ALL">All classes</option>
+            {classOptions.map((c) => <option key={c} value={c}>{c}</option>)}
+          </select>
+        )}
         <select value={nilFilter} onChange={(e) => setNilFilter(e.target.value)}
           style={{ background: C.panel, border: `1px solid ${C.line}`, color: C.cream, padding: "6px 10px", fontSize: 13 }}>
           <option value="ALL">Any desired NIL</option>
@@ -8010,6 +8099,27 @@ function DraftDecisionsPanel({ declarations, onPersuade, trajectory = 0.5, coach
 // Decisions page — walk-ons excluded, they never carry a real figure to
 // manage. Applies immediately (bounded server-side by setPlayerNil's own
 // available-budget check), no separate confirm step.
+// One player's editable NIL figure. Kept as local draft state — like
+// MinutesInput elsewhere in this file — rather than a plain controlled input
+// wired straight to the committed value: once a player's clamped max is
+// reached (budget fully committed elsewhere), every keystroke resolves to
+// the SAME clamped number, and a controlled <input> whose value prop never
+// actually changes between renders stops reflecting what's being typed at
+// all — the field visually "freezes" and reads as broken. Local draft state
+// always shows exactly what the coach typed; the real, clamped figure is
+// only reconciled back in on blur.
+function NilCell({ player, max, onSetNil }) {
+  const [draft, setDraft] = useState(String(player.nil || 0));
+  useEffect(() => { setDraft(String(player.nil || 0)); }, [player.id, player.nil]);
+  return (
+    <input type="number" min={0} max={max} step={5000} value={draft}
+      disabled={player.class === "SR"}
+      onChange={(e) => { setDraft(e.target.value); onSetNil(player.id, e.target.value); }}
+      onBlur={() => setDraft(String(player.nil || 0))}
+      style={{ width: 110, background: C.panel, border: `1px solid ${C.line}`, color: C.cream, fontSize: 12, padding: "3px 6px", opacity: player.class === "SR" ? 0.5 : 1 }} />
+  );
+}
+
 function RosterNilPanel({ roster, nilBudget, offseason, onSetNil, onViewPlayer }) {
   const editable = roster.filter((p) => !p.generatedWalkOn).sort((a, b) => b.overall - a.overall);
   return (
@@ -8032,10 +8142,7 @@ function RosterNilPanel({ roster, nilBudget, offseason, onSetNil, onViewPlayer }
               <td style={td}>{p.class}</td>
               <td style={{ ...td, fontWeight: 700 }} className="cbb-num">{p.overall}</td>
               <td style={td}>
-                <input type="number" min={0} max={Math.max(p.nil || 0, nilBudget - committedRosterNil(roster, offseason, p.id))} step={5000} value={p.nil || 0}
-                  disabled={p.class === "SR"}
-                  onChange={(e) => onSetNil(p.id, e.target.value)}
-                  style={{ width: 110, background: C.panel, border: `1px solid ${C.line}`, color: C.cream, fontSize: 12, padding: "3px 6px", opacity: p.class === "SR" ? 0.5 : 1 }} />
+                <NilCell player={p} max={Math.max(p.nil || 0, nilBudget - committedRosterNil(roster, offseason, p.id))} onSetNil={onSetNil} />
               </td>
             </tr>
           ))}
@@ -8162,6 +8269,7 @@ function OffseasonTab({ stage, offseason, hsBoard, team, roster, nextYear, commi
 
       <div style={{ display: "flex", gap: 18, flexWrap: "wrap", marginBottom: 14, fontSize: 13, color: C.dim }}>
         <div>Open scholarships: <strong style={{ color: (scholarshipInfo?.open ?? 0) > 0 ? C.gold : C.red }}>{scholarshipInfo?.open ?? 0}</strong> / {scholarshipInfo?.limit ?? SCHOLARSHIP_LIMIT}</div>
+        <div>NIL committed: <strong style={{ color: C.gold }}>{formatNil(committedRosterNil(roster, offseason, null))}</strong> / {formatNil(nilBudget)}</div>
         <div>Portal points this week: <strong style={{ color: C.gold }}>{offseason.points}</strong></div>
         <div>Transfers committed: <strong style={{ color: C.cream }}>{committed.length}</strong></div>
         <div>HS signees this cycle: <strong style={{ color: C.cream }}>{committedFreshmen}</strong></div>
@@ -8323,6 +8431,44 @@ function liveTendencies(roster, onFloor) {
   return { inside: inside / n, perimeter: perim / n };
 }
 
+// A pregame scouting read on the matchup, computed once from both teams'
+// starting fives (never the live on-floor group, which shifts with subs):
+// which offensive focus best exploits this specific opponent, which
+// defensive scheme best takes away their strength, and whether the talent
+// gap favors playing fast (more possessions, good if you're the better team)
+// or slow (fewer possessions, protecting an edge — or hiding a deficit).
+// Shown before tip-off and repeated at every timeout as a reminder; matching
+// it in the live game plan grants a real, bounded bonus in livePossession —
+// scouting a team is meant to actually pay off, not just read as flavor text.
+function scoutOpponentStyle(myRoster, myOnFloor, oppRoster, oppOnFloor, myPower, oppPower) {
+  const mine = liveTendencies(myRoster, myOnFloor);
+  const theirs = liveTendencies(oppRoster, oppOnFloor);
+  const insideEdge = mine.inside - theirs.inside;
+  const perimEdge = mine.perimeter - theirs.perimeter;
+  let offFocus = "balanced";
+  if (Math.abs(insideEdge - perimEdge) > 3) offFocus = insideEdge > perimEdge ? "inside" : "perimeter";
+
+  let defScheme = "balanced";
+  if (theirs.perimeter - theirs.inside > 4) defScheme = "pack";
+  else if (myPower < oppPower - 3) defScheme = "press";
+
+  const gap = myPower - oppPower;
+  const tempo = gap > 3 ? "fast" : gap < -3 ? "slow" : "balanced";
+
+  return {
+    offFocus, defScheme, tempo,
+    offReason: offFocus === "inside" ? "Their frontcourt can't match yours on the block."
+      : offFocus === "perimeter" ? "They're exposed on the perimeter — get your shooters going."
+      : "No real mismatch inside or out — mix it up.",
+    defReason: defScheme === "pack" ? "They live behind the arc — pack it in and run them off the three."
+      : defScheme === "press" ? "You're outmatched on paper — press and force the issue."
+      : "No obvious scheme edge — play it straight.",
+    tempoReason: tempo === "fast" ? "You've got the better team — push the pace for more possessions."
+      : tempo === "slow" ? "They're the stronger team — shorten the game and protect what you can."
+      : "Evenly matched — tempo won't swing this one much.",
+  };
+}
+
 // Pick the scorer on a made bucket for a side whose rotation is a static
 // pregame plan (the CPU opponent — narration only, no live per-player
 // tracking) — weighted by minutes and scoring rating.
@@ -8359,18 +8505,24 @@ function pickOnFloorScorer(roster, onFloor) {
   return weighted[0].name;
 }
 
-// One possession. Returns { pts, three, made }.
-function livePossession({ offMe, myPower, oppPower, gp, tend, boost, fatigue }) {
+// One possession. Returns { pts, three, made }. `recommended`, when given,
+// is this game's scouting read (see scoutOpponentStyle) — following it on
+// either side of the ball grants an extra, bounded edge on top of whatever
+// the raw tendency match-up already gives, so scouting the opponent is a
+// real strategic lever, not just a readout.
+function livePossession({ offMe, myPower, oppPower, gp, tend, boost, fatigue, recommended }) {
   let net, threeBias;
   if (offMe) {
     net = myPower - oppPower + boost;
     if (gp.offFocus === "inside") net += tend.inside > tend.perimeter ? 2 : -1.5;
     if (gp.offFocus === "perimeter") net += tend.perimeter > tend.inside ? 2 : -1.5;
+    if (recommended && gp.offFocus === recommended.offFocus) net += 2.5;
     threeBias = gp.offFocus === "perimeter" ? 0.42 : gp.offFocus === "inside" ? 0.18 : 0.33;
   } else {
     net = oppPower - myPower + fatigue;
     if (gp.defScheme === "press") net -= 2.4;
     if (gp.defScheme === "pack") net -= 1.0;
+    if (recommended && gp.defScheme === recommended.defScheme) net -= 2;
     threeBias = gp.defScheme === "pack" ? 0.22 : 0.33;
   }
   const scoreProb = clamp(0.47 + net * 0.0028, 0.28, 0.7);
@@ -8410,7 +8562,7 @@ function stepLive(g, ctx) {
   const e = g.event;
   const offMe = e % 2 === 0;
   const boost = offMe && g.boostPoss > 0 ? 3 : 0;
-  const res = livePossession({ offMe, myPower: ctx.myPower, oppPower: ctx.oppPower, gp: g.gp, tend: ctx.tend, boost, fatigue: g.fatigue });
+  const res = livePossession({ offMe, myPower: ctx.myPower, oppPower: ctx.oppPower, gp: g.gp, tend: ctx.tend, boost, fatigue: g.fatigue, recommended: ctx.recommended });
   let { my, opp } = g;
   let text;
   if (offMe) {
@@ -8500,13 +8652,18 @@ function fmtClock(g, T) {
   return { half: 2, otPeriod: period, periodLabel: `OT${period > 1 ? period : ""}`, label: `${mm}:${ss.toString().padStart(2, "0")}` };
 }
 
-function PlanButton({ active, onClick, children }) {
+// `scouted`, when true, marks this option as the coach's scouting-report
+// recommendation for the current opponent (see scoutOpponentStyle) — a small
+// gold star, present whether or not the option is currently selected, so the
+// recommendation stays visible as a standing reminder, not just at tip-off.
+function PlanButton({ active, scouted, onClick, children }) {
   return (
     <button onClick={onClick} className="cbb-btn" style={{
       flex: 1, padding: "7px 6px", fontSize: 11.5, fontWeight: 600, cursor: "pointer",
       background: active ? C.wood : C.panelAlt, color: active ? "#fff" : C.dim,
-      border: `1px solid ${active ? C.wood : C.line}`,
-    }}>{children}</button>
+      border: `1px solid ${scouted && !active ? C.gold : active ? C.wood : C.line}`,
+      display: "flex", alignItems: "center", justifyContent: "center", gap: 4,
+    }}>{children}{scouted && <Star size={10} fill={active ? "#fff" : C.gold} color={active ? "#fff" : C.gold} />}</button>
   );
 }
 
@@ -8872,10 +9029,6 @@ function LiveGame({ ctxInit, onFinish, onClose, onScoutOpponent }) {
   }));
   const totalPoss = TEMPO_POSS[tempo];
   const tend = useMemo(() => liveTendencies(ctxInit.roster, g.onFloor), [ctxInit.roster, g.onFloor]);
-  const myPower = useMemo(
-    () => liveGamePower(ctxInit.roster, g.onFloor, g.boxMinutes, ctxInit.powerBaseline) + ctxInit.momentum,
-    [ctxInit.roster, g.onFloor, g.boxMinutes, ctxInit.powerBaseline, ctxInit.momentum]
-  );
   // A lightweight opponent roster so their made shots can be credited to an
   // actual named player in the play-by-play, same as the user's side — built
   // once per game, purely for narration (not persisted to any CPU tracking).
@@ -8885,10 +9038,24 @@ function LiveGame({ ctxInit, onFinish, onClose, onScoutOpponent }) {
     const oppMinutes = defaultMinutesFor(oppDc);
     return { oppRoster, oppDc, oppMinutes };
   }, [ctxInit.opp, ctxInit.year]);
+  // This game's scouting report — fixed at tip-off from both teams' starting
+  // fives, never recomputed as subs or fatigue shift the live on-floor
+  // picture. See scoutOpponentStyle for what it weighs.
+  const recommended = useMemo(() => {
+    const myStart = initialOnFloor(ctxInit.dc, ctxInit.roster);
+    const tipMyPower = liveGamePower(ctxInit.roster, myStart, {}, ctxInit.powerBaseline) + ctxInit.momentum;
+    const oppStart = initialOnFloor(oppTeamState.oppDc, oppTeamState.oppRoster);
+    return scoutOpponentStyle(ctxInit.roster, myStart, oppTeamState.oppRoster, oppStart, tipMyPower, ctxInit.oppPower);
+  }, [ctxInit, oppTeamState]);
+  const myPower = useMemo(
+    () => liveGamePower(ctxInit.roster, g.onFloor, g.boxMinutes, ctxInit.powerBaseline) + ctxInit.momentum
+      + (started && tempo === recommended.tempo ? 1.5 : 0),
+    [ctxInit.roster, g.onFloor, g.boxMinutes, ctxInit.powerBaseline, ctxInit.momentum, started, tempo, recommended]
+  );
   const ctx = useMemo(() => ({
     roster: ctxInit.roster, dc: ctxInit.dc, oppName: ctxInit.opp.name,
-    oppPower: ctxInit.oppPower, myPower, tend, gamesRemaining: ctxInit.gamesRemaining ?? 1, ...oppTeamState,
-  }), [ctxInit.roster, ctxInit.dc, ctxInit.opp.name, ctxInit.oppPower, myPower, tend, ctxInit.gamesRemaining, oppTeamState]);
+    oppPower: ctxInit.oppPower, myPower, tend, gamesRemaining: ctxInit.gamesRemaining ?? 1, recommended, ...oppTeamState,
+  }), [ctxInit.roster, ctxInit.dc, ctxInit.opp.name, ctxInit.oppPower, myPower, tend, ctxInit.gamesRemaining, recommended, oppTeamState]);
   const gctx = useMemo(() => ({ ...ctx, T: totalPoss }), [ctx, totalPoss]);
 
   // Put `inId` on the floor at `pos` in `outId`'s place, starting the very
@@ -8920,8 +9087,17 @@ function LiveGame({ ctxInit, onFinish, onClose, onScoutOpponent }) {
     const chunk = Math.max(4, Math.round(totalPoss / 5));
     runN(chunk * 2);
   }
+  // Every timeout doubles as a scouting reminder — the same read from
+  // tip-off (see `recommended`, above), repeated so it stays in front of the
+  // coach throughout the game rather than only at the start.
   function callTimeout() {
-    setG((s) => (s.timeouts <= 0 ? s : { ...s, timeouts: s.timeouts - 1, boostPoss: 4, oppRun: 0, fatigue: clamp(s.fatigue - 1, 0, 4), log: [{ id: `to${s.event}`, my: s.my, opp: s.opp, text: "Timeout — you settle the group down", half: s.event > totalPoss ? 2 : 1, timeout: true }, ...s.log] }));
+    setG((s) => {
+      if (s.timeouts <= 0) return s;
+      const half = s.event > totalPoss ? 2 : 1;
+      const timeoutEntry = { id: `to${s.event}`, my: s.my, opp: s.opp, text: "Timeout — you settle the group down", half, timeout: true };
+      const scoutEntry = { id: `scout${s.event}`, my: s.my, opp: s.opp, text: `Scouting report: ${recommended.offReason} ${recommended.defReason}`, half, timeout: true, scouting: true };
+      return { ...s, timeouts: s.timeouts - 1, boostPoss: 4, oppRun: 0, fatigue: clamp(s.fatigue - 1, 0, 4), log: [timeoutEntry, scoutEntry, ...s.log] };
+    });
   }
   function setPlan(key, val) { setG((s) => ({ ...s, gp: { ...s.gp, [key]: val } })); }
 
@@ -8956,11 +9132,22 @@ function LiveGame({ ctxInit, onFinish, onClose, onScoutOpponent }) {
 
       {!started ? (
         <div>
+          <div style={{ border: `1px solid ${C.gold}`, background: C.panel, padding: "10px 14px", marginBottom: 14 }}>
+            <div style={{ fontSize: 11, color: C.gold, letterSpacing: "0.08em", fontWeight: 700, marginBottom: 6, display: "flex", alignItems: "center", gap: 5 }}>
+              <Star size={12} fill={C.gold} /> SCOUTING REPORT — {ctx.oppName}
+            </div>
+            <div style={{ fontSize: 11.5, color: C.dim, lineHeight: 1.5 }}>
+              <strong style={{ color: C.cream }}>Tempo:</strong> {recommended.tempo} — {recommended.tempoReason}<br />
+              <strong style={{ color: C.cream }}>Offense:</strong> {recommended.offFocus} — {recommended.offReason}<br />
+              <strong style={{ color: C.cream }}>Defense:</strong> {recommended.defScheme} — {recommended.defReason}
+            </div>
+            <div style={{ fontSize: 10.5, color: C.dimmer, marginTop: 6 }}>Matching the game plan gives a real bonus on the floor — this stays visible (starred) as a reminder all game, including at every timeout.</div>
+          </div>
           <div style={{ fontSize: 12.5, color: C.dim, marginBottom: 8 }}>Set your tempo before tip-off. Fast play creates more possessions (and more variance — good if you're the underdog); a slow pace shortens the game and protects a talent edge.</div>
           <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
-            <PlanButton active={tempo === "slow"} onClick={() => setTempo("slow")}>Slow (58)</PlanButton>
-            <PlanButton active={tempo === "balanced"} onClick={() => setTempo("balanced")}>Balanced (65)</PlanButton>
-            <PlanButton active={tempo === "fast"} onClick={() => setTempo("fast")}>Fast (73)</PlanButton>
+            <PlanButton active={tempo === "slow"} scouted={recommended.tempo === "slow"} onClick={() => setTempo("slow")}>Slow (58)</PlanButton>
+            <PlanButton active={tempo === "balanced"} scouted={recommended.tempo === "balanced"} onClick={() => setTempo("balanced")}>Balanced (65)</PlanButton>
+            <PlanButton active={tempo === "fast"} scouted={recommended.tempo === "fast"} onClick={() => setTempo("fast")}>Fast (73)</PlanButton>
           </div>
           {onScoutOpponent && (
             <button onClick={onScoutOpponent} className="cbb-btn" style={{ ...btnStyle(C.panelAlt, C.cream), width: "100%", justifyContent: "center", fontSize: 13, marginBottom: 8, border: `1px solid ${C.line}` }}>
@@ -8976,22 +9163,22 @@ function LiveGame({ ctxInit, onFinish, onClose, onScoutOpponent }) {
             <div>
               <div style={{ fontSize: 10.5, color: C.dim, letterSpacing: "0.06em", marginBottom: 5, display: "flex", alignItems: "center", gap: 5 }}><Gauge size={12} /> OFFENSE</div>
               <div style={{ display: "flex", gap: 6 }}>
-                <PlanButton active={g.gp.offFocus === "inside"} onClick={() => setPlan("offFocus", "inside")}>Inside</PlanButton>
-                <PlanButton active={g.gp.offFocus === "balanced"} onClick={() => setPlan("offFocus", "balanced")}>Balanced</PlanButton>
-                <PlanButton active={g.gp.offFocus === "perimeter"} onClick={() => setPlan("offFocus", "perimeter")}>Perimeter</PlanButton>
+                <PlanButton active={g.gp.offFocus === "inside"} scouted={recommended.offFocus === "inside"} onClick={() => setPlan("offFocus", "inside")}>Inside</PlanButton>
+                <PlanButton active={g.gp.offFocus === "balanced"} scouted={recommended.offFocus === "balanced"} onClick={() => setPlan("offFocus", "balanced")}>Balanced</PlanButton>
+                <PlanButton active={g.gp.offFocus === "perimeter"} scouted={recommended.offFocus === "perimeter"} onClick={() => setPlan("offFocus", "perimeter")}>Perimeter</PlanButton>
               </div>
             </div>
             <div>
               <div style={{ fontSize: 10.5, color: C.dim, letterSpacing: "0.06em", marginBottom: 5, display: "flex", alignItems: "center", gap: 5 }}><ShieldCheck size={12} /> DEFENSE</div>
               <div style={{ display: "flex", gap: 6 }}>
-                <PlanButton active={g.gp.defScheme === "press"} onClick={() => setPlan("defScheme", "press")}>Press</PlanButton>
-                <PlanButton active={g.gp.defScheme === "balanced"} onClick={() => setPlan("defScheme", "balanced")}>Balanced</PlanButton>
-                <PlanButton active={g.gp.defScheme === "pack"} onClick={() => setPlan("defScheme", "pack")}>Pack</PlanButton>
+                <PlanButton active={g.gp.defScheme === "press"} scouted={recommended.defScheme === "press"} onClick={() => setPlan("defScheme", "press")}>Press</PlanButton>
+                <PlanButton active={g.gp.defScheme === "balanced"} scouted={recommended.defScheme === "balanced"} onClick={() => setPlan("defScheme", "balanced")}>Balanced</PlanButton>
+                <PlanButton active={g.gp.defScheme === "pack"} scouted={recommended.defScheme === "pack"} onClick={() => setPlan("defScheme", "pack")}>Pack</PlanButton>
               </div>
             </div>
           </div>
 
-          <div style={{ fontSize: 11, color: C.dimmer, marginBottom: 12 }}>
+          <div style={{ fontSize: 11, color: C.dimmer, marginBottom: 4 }}>
             {g.gp.offFocus === "inside" && (ctx.tend.inside > ctx.tend.perimeter ? "Feeding the post — plays to your frontcourt." : "Your bigs aren't built for this — forcing it inside is costing you.")}
             {g.gp.offFocus === "perimeter" && (ctx.tend.perimeter > ctx.tend.inside ? "Letting it fly — plays to your shooters." : "You're jacking threes you can't make.")}
             {g.gp.offFocus === "balanced" && "Taking what the defense gives you."}
@@ -8999,6 +9186,10 @@ function LiveGame({ ctxInit, onFinish, onClose, onScoutOpponent }) {
             {g.gp.defScheme === "press" && "Full-court press: rattles the opponent but wears your legs down."}
             {g.gp.defScheme === "pack" && "Pack-line: runs shooters off the arc, softer on the glass."}
             {g.gp.defScheme === "balanced" && "Straight man-to-man."}
+          </div>
+          <div style={{ fontSize: 10.5, color: C.gold, marginBottom: 12, display: "flex", alignItems: "center", gap: 4 }}>
+            <Star size={9} fill={C.gold} /> Scouted vs. {ctx.oppName}: {recommended.offFocus} offense, {recommended.defScheme} defense
+            {(g.gp.offFocus === recommended.offFocus && g.gp.defScheme === recommended.defScheme) ? " — matched." : "."}
           </div>
 
           {oppOnRun && (
@@ -9069,8 +9260,8 @@ function LiveGame({ ctxInit, onFinish, onClose, onScoutOpponent }) {
           <div className="cbb-scroll" style={{ maxHeight: 200, overflowY: "auto", border: `1px solid ${C.line}` }}>
             {g.log.length === 0 && <div style={{ padding: 12, fontSize: 12, color: C.dimmer }}>Tip-off. Run a possession to get started.</div>}
             {g.log.map((l) => (
-              <div key={l.id} style={{ display: "flex", justifyContent: "space-between", gap: 10, padding: "5px 10px", borderBottom: `1px solid ${C.line}`, fontSize: 12, background: l.timeout ? C.panelAlt : l.injury ? "rgba(200,60,60,0.1)" : "transparent" }}>
-                <span style={{ color: l.timeout ? C.gold : l.injury ? C.red : l.offMe ? C.cream : C.dim }}>{l.text}</span>
+              <div key={l.id} style={{ display: "flex", justifyContent: "space-between", gap: 10, padding: "5px 10px", borderBottom: `1px solid ${C.line}`, fontSize: l.scouting ? 11 : 12, background: l.timeout ? C.panelAlt : l.injury ? "rgba(200,60,60,0.1)" : "transparent" }}>
+                <span style={{ color: l.scouting ? C.dim : l.timeout ? C.gold : l.injury ? C.red : l.offMe ? C.cream : C.dim, fontStyle: l.scouting ? "italic" : "normal" }}>{l.text}</span>
                 <span className="cbb-num" style={{ color: C.dimmer, flexShrink: 0 }}>{l.my}-{l.opp}</span>
               </div>
             ))}
