@@ -8525,7 +8525,16 @@ function livePossession({ offMe, myPower, oppPower, gp, tend, boost, fatigue, re
     if (recommended && gp.defScheme === recommended.defScheme) net -= 2;
     threeBias = gp.defScheme === "pack" ? 0.22 : 0.33;
   }
-  const scoreProb = clamp(0.47 + net * 0.0028, 0.28, 0.7);
+  // Calibrated to track gameWinProb's per-game curve (the auto-sim's talent
+  // gap -> win% mapping) once compounded over a full game of possessions —
+  // the old 0.0028 coefficient was far too flat: a 13-point power gap (a
+  // clear underdog by this game's own scale) came out to a ~20% win rate
+  // here vs. gameWinProb's calibrated ~2%, which is how a mediocre real
+  // roster (e.g. a 70-overall team) could run the table and win back-to-back
+  // titles in Coach Mode when the same team would be a massive auto-sim
+  // underdog. 0.005 matches gameWinProb closely across the realistic power
+  // range (see scripts/calibrate-possession-model.mjs).
+  const scoreProb = clamp(0.47 + net * 0.005, 0.28, 0.7);
   if (Math.random() < scoreProb) {
     const three = Math.random() < threeBias;
     return { pts: three ? 3 : 2, three, made: true };
