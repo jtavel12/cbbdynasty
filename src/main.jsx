@@ -1,7 +1,17 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
+import { Capacitor } from "@capacitor/core";
 import { Analytics } from "@vercel/analytics/react";
 import App from "./App.jsx";
+
+// Tags <html> only when running inside the native iOS/Android shell (never
+// on the plain web build) — lets any CSS rule opt into a native-only tweak
+// with `html.cap-native .some-class { ... }` without touching the shared
+// web styling at all. Same signal JS code can key off directly via
+// Capacitor.isNativePlatform() (see openExternalLink in App.jsx).
+if (Capacitor.isNativePlatform()) {
+  document.documentElement.classList.add("cap-native");
+}
 
 // Catches render/lifecycle errors anywhere below it so a crash shows a real
 // message instead of a blank white tab — the save itself lives in
