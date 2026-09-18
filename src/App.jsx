@@ -605,6 +605,16 @@ const TORVIK_SEASONS_ALIASES = {
   // the accented alias used for CBBD player data ("San José State") would
   // never match Torvik's plain-ASCII "San Jose St." — override directly.
   "San Jose State": "San Jose St.",
+  // Found importing 2013 Barttorvik-sourced player data (see
+  // scripts/import-cbbdata-csv.mjs) — these three had no entry in either
+  // alias table at all until now, a real (if minor) pre-existing gap that
+  // also affects team-strength matching for every other real year.
+  "NC State": "North Carolina St.",
+  "Louisiana": "Louisiana Lafayette",
+  "Charleston": "College of Charleston",
+  // Overrides the TORVIK_TEAM_ALIASES "SE Louisiana" alias, which is wrong
+  // for Torvik specifically — it spells this one out in full.
+  "Southeastern Louisiana": "Southeastern Louisiana",
 };
 
 const _unmatchedTorvikSeasonsLogged = new Set();
@@ -640,12 +650,26 @@ function realSeasonFor(team, year) {
 function realPlayersFor(team, year) {
   const rows = torvikPlayers[String(year)];
   if (!rows || !rows.length) return [];
-  const alias = TORVIK_TEAM_ALIASES[team.name];
-  const target = normalizeTeamKey(alias || team.name);
-  const matched = rows.filter((r) => normalizeTeamKey(r.team) === target);
+  // Same two-source-plus-abbreviation candidate list realSeasonFor already
+  // uses below for torvik-seasons.json — needed here too now that
+  // torvikPlayers itself can hold Barttorvik-sourced years (see
+  // scripts/import-cbbdata-csv.mjs), which spell things the TORVIK_SEASONS_
+  // ALIASES way ("Wichita St.", "Miami FL") rather than the CBBD way
+  // ("Wichita State", "Miami (FL)") TORVIK_TEAM_ALIASES alone was written
+  // for. Trying TORVIK_SEASONS_ALIASES first mirrors realSeasonFor's own
+  // priority (it "wins when it conflicts") since it's the more specifically
+  // Barttorvik-flavored table of the two.
+  const aliased = TORVIK_SEASONS_ALIASES[team.name] || TORVIK_TEAM_ALIASES[team.name] || team.name;
+  const candidates = [aliased, aliased.replace(/\bState\b/g, "St.")];
+  let matched = [];
+  for (const c of candidates) {
+    const target = normalizeTeamKey(c);
+    matched = rows.filter((r) => normalizeTeamKey(r.team) === target);
+    if (matched.length) break;
+  }
   if (!matched.length && !_unmatchedLogged.has(team.name)) {
     _unmatchedLogged.add(team.name);
-    console.warn(`[real data] no exact roster match for "${team.name}" (tried "${alias || team.name}") in ${year}.`);
+    console.warn(`[real data] no exact roster match for "${team.name}" (tried "${aliased}") in ${year}.`);
   }
   return matched.filter(isPlausibleRosterRow);
 }
