@@ -8396,7 +8396,7 @@ const VISIT_SCRIPTS = {
     label: "Official Visit",
     Icon: Users,
     intro: "You've got them on campus for the weekend. Every stop is a chance to sell the program.",
-    perMoment: [5, 9],
+    perMoment: [2.5, 4.5], // half the interest per stop of what a visit used to earn — recruiting's harder now
     momentPools: [
       [
         { prompt: "First impression — how do you show off the program?", options: [
@@ -8470,7 +8470,7 @@ const VISIT_SCRIPTS = {
     label: "Home Visit",
     Icon: Landmark,
     intro: "You're in his living room with the family. This one is personal.",
-    perMoment: [4, 6],
+    perMoment: [2, 3], // half the interest per stop of what a home visit used to earn
     momentPools: [
       [
         { prompt: "You sit down with the family. How do you open?", options: [
@@ -8551,6 +8551,13 @@ function VisitExperience({ recruit, actionKey, team, onClose, onFinish }) {
   // duration of this one visit — so replaying visits across a long dynasty
   // doesn't always show the exact same three beats in the exact same order.
   const moments = useMemo(() => script.momentPools.map((pool) => pick(pool)), [script]);
+  // Every visit has exactly one stop that just doesn't go your way — but
+  // WHICH stop is picked fresh per visit, and it backfires no matter which
+  // option you pick there. Tying it to chance rather than to a specific
+  // "wrong" choice is deliberate: a fixed gotcha is something a player
+  // learns and routes around after the first time, which defeats the
+  // point — this way there's no tell and no way to play around it.
+  const unluckyStep = useMemo(() => randInt(0, moments.length - 1), [moments]);
   const [step, setStep] = useState(0);          // which moment we're on
   const [picked, setPicked] = useState(null);   // outcome of the current moment, pre-continue
   const [log, setLog] = useState([]);           // [{ prompt, choice, gain, blurb }]
@@ -8561,6 +8568,10 @@ function VisitExperience({ recruit, actionKey, team, onClose, onFinish }) {
   const moment = !done ? moments[step] : null;
 
   function choose(opt) {
+    if (step === unluckyStep) {
+      setPicked({ choice: opt.label, gain: -2, blurb: "Something about this one just doesn't land — hard to say why." });
+      return;
+    }
     const base = rand(script.perMoment[0], script.perMoment[1]);
     const expected = (script.perMoment[0] + script.perMoment[1]) / 2;
     const gain = rollVisitGain(opt.tone, base);
@@ -8589,7 +8600,7 @@ function VisitExperience({ recruit, actionKey, team, onClose, onFinish }) {
         <div style={{ textAlign: "right" }}>
           <div style={{ fontSize: 10, color: C.dim, letterSpacing: "0.06em" }}>INTEREST</div>
           <div className="cbb-num" style={{ fontSize: 20, fontWeight: 700, color: C.gold }}>
-            {recruit.interest}{total > 0 ? <span style={{ fontSize: 13, color: C.green }}> +{total}</span> : null}
+            {recruit.interest}{total !== 0 ? <span style={{ fontSize: 13, color: total > 0 ? C.green : C.red }}> {total > 0 ? "+" : ""}{total}</span> : null}
           </div>
         </div>
       </div>
@@ -8619,7 +8630,7 @@ function VisitExperience({ recruit, actionKey, team, onClose, onFinish }) {
                 <div style={{ fontSize: 12.5, color: C.dim, marginBottom: 6 }}>&ldquo;{picked.choice}&rdquo;</div>
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
                   <span style={{ fontSize: 13, color: C.cream }}>{picked.blurb}</span>
-                  <span className="cbb-num" style={{ fontSize: 16, fontWeight: 700, color: C.green }}>+{picked.gain}</span>
+                  <span className="cbb-num" style={{ fontSize: 16, fontWeight: 700, color: picked.gain >= 0 ? C.green : C.red }}>{picked.gain >= 0 ? "+" : ""}{picked.gain}</span>
                 </div>
               </div>
               <button onClick={next} className="cbb-btn" style={{ ...btnStyle(C.wood), width: "100%", justifyContent: "center", fontSize: 14 }}>
