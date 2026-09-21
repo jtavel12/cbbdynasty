@@ -8332,10 +8332,13 @@ function DraftDecisionsPanel({ declarations, onPersuade, trajectory = 0.5, coach
                 ))}
                 <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 4, flexWrap: "wrap" }}>
                   <span style={{ fontSize: 11.5, color: C.dim }}>NIL counter-offer</span>
-                  <input type="number" min={0} max={nilAvailable} step={10000} value={pledge || ""}
+                  <NilAmountInput
+                    value={pledge || null}
+                    max={nilAvailable}
+                    width={100}
                     placeholder="0"
-                    onChange={(e) => setPledgeChoice((p) => ({ ...p, [d.id]: clamp(Math.round(Number(e.target.value) || 0), 0, nilAvailable) }))}
-                    style={{ width: 100, background: C.panel, border: `1px solid ${C.line}`, color: C.cream, fontSize: 12, padding: "3px 6px" }} />
+                    onCommit={(amount) => setPledgeChoice((p) => ({ ...p, [d.id]: amount }))}
+                  />
                   <span style={{ fontSize: 11, color: C.dimmer }}>Ask: ~{formatNil(stayNilAsk(d))}</span>
                   {preview != null && (
                     <span style={{ fontSize: 11.5, color: C.dimmer }}>Est. {Math.round(preview * 100)}% to return</span>
@@ -8356,28 +8359,35 @@ function DraftDecisionsPanel({ declarations, onPersuade, trajectory = 0.5, coach
   );
 }
 
-// Every returning player's NIL figure, editable straight from the Player
-// Decisions page — walk-ons excluded, they never carry a real figure to
-// manage. Applies immediately (bounded server-side by setPlayerNil's own
-// available-budget check), no separate confirm step.
-// One player's editable NIL figure. Kept as local draft state — like
-// MinutesInput elsewhere in this file — rather than a plain controlled input
-// wired straight to the committed value: once a player's clamped max is
-// reached (budget fully committed elsewhere), every keystroke resolves to
-// the SAME clamped number, and a controlled <input> whose value prop never
-// actually changes between renders stops reflecting what's being typed at
-// all — the field visually "freezes" and reads as broken. Local draft state
-// always shows exactly what the coach typed; the real, clamped figure is
-// only reconciled back in on blur.
-function NilCell({ player, max, onSetNil }) {
-  const [draft, setDraft] = useState(String(player.nil || 0));
-  useEffect(() => { setDraft(String(player.nil || 0)); }, [player.id, player.nil]);
+// A dollar-amount input for NIL figures — comma-formatted as you type (a
+// bare type="number" input can't show thousands separators at all), and
+// committing on every keystroke rather than only on blur, so anything
+// reading the live value elsewhere (a retention-chance preview, a persuade
+// preview) updates immediately as the coach types. Local draft state, not a
+// plain controlled input wired straight to the clamped value: once a figure
+// is already sitting at its clamped ceiling (budget fully committed
+// elsewhere), every keystroke would otherwise resolve to the SAME clamped
+// number, and a controlled <input> whose value prop never actually changes
+// between renders stops reflecting what's being typed at all — the field
+// visually "freezes," which reads as both "no commas" and "typing a smaller
+// number does nothing" (the two ended up being the same underlying bug).
+// The real, clamped figure is only reconciled back in on blur.
+function NilAmountInput({ value, min = 0, max, onCommit, disabled, width = 110, placeholder }) {
+  const [draft, setDraft] = useState(value == null ? "" : String(value));
+  useEffect(() => { setDraft(value == null ? "" : String(value)); }, [value]);
+  const digitsOf = (s) => s.replace(/[^0-9]/g, "");
   return (
-    <input type="number" min={0} max={max} step={5000} value={draft}
-      disabled={player.class === "SR"}
-      onChange={(e) => { setDraft(e.target.value); onSetNil(player.id, e.target.value); }}
-      onBlur={() => setDraft(String(player.nil || 0))}
-      style={{ width: 110, background: C.panel, border: `1px solid ${C.line}`, color: C.cream, fontSize: 12, padding: "3px 6px", opacity: player.class === "SR" ? 0.5 : 1 }} />
+    <input
+      type="text" inputMode="numeric" disabled={disabled} placeholder={placeholder}
+      value={draft === "" ? "" : Number(digitsOf(draft) || 0).toLocaleString("en-US")}
+      onChange={(e) => {
+        const digits = digitsOf(e.target.value);
+        setDraft(digits);
+        onCommit(clamp(Math.round(Number(digits) || 0), min, max));
+      }}
+      onBlur={() => setDraft(value == null ? "" : String(value))}
+      style={{ width, background: C.panel, border: `1px solid ${C.line}`, color: C.cream, fontSize: 12, padding: "3px 6px", opacity: disabled ? 0.5 : 1 }}
+    />
   );
 }
 
@@ -8403,7 +8413,12 @@ function RosterNilPanel({ roster, nilBudget, offseason, onSetNil, onViewPlayer }
               <td style={td}>{p.class}</td>
               <td style={{ ...td, fontWeight: 700 }} className="cbb-num">{p.overall}</td>
               <td style={td}>
-                <NilCell player={p} max={Math.max(p.nil || 0, nilBudget - committedRosterNil(roster, offseason, p.id))} onSetNil={onSetNil} />
+                <NilAmountInput
+                  value={p.nil || 0}
+                  max={Math.max(p.nil || 0, nilBudget - committedRosterNil(roster, offseason, p.id))}
+                  disabled={p.class === "SR"}
+                  onCommit={(amount) => onSetNil(p.id, amount)}
+                />
               </td>
             </tr>
           ))}
@@ -8463,9 +8478,12 @@ function TransferRiskPanel({ transferRisks, roster, nilBudget, offseason, onReso
             {!r.resolved && (
               <div style={{ marginTop: 10, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                 <span style={{ fontSize: 11.5, color: C.dim }}>Counter-offer NIL</span>
-                <input type="number" min={player.nil || 0} max={maxOffer} step={5000} value={counter}
-                  onChange={(e) => setCounterChoice((c) => ({ ...c, [r.id]: clamp(Math.round(Number(e.target.value) || 0), player.nil || 0, maxOffer) }))}
-                  style={{ width: 110, background: C.panel, border: `1px solid ${C.line}`, color: C.cream, fontSize: 12, padding: "3px 6px" }} />
+                <NilAmountInput
+                  value={counter}
+                  min={player.nil || 0}
+                  max={maxOffer}
+                  onCommit={(amount) => setCounterChoice((c) => ({ ...c, [r.id]: amount }))}
+                />
                 <span style={{ fontSize: 11.5, color: C.dimmer }}>Est. {Math.round(previewChance * 100)}% to stay</span>
                 <button className="cbb-btn" onClick={() => onResolve(r.id, counter, false)} style={{ ...btnStyle(C.wood), fontSize: 12, padding: "6px 12px" }}>
                   Attempt to Retain
