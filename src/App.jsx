@@ -1283,9 +1283,21 @@ function makePlayer({ pos, classYear, prestige, starsAtSigning, real, walkOn }) 
     durability: computeDurability(gp, classYear),
     starsAtSigning: starsAtSigning ?? null,
     // Never recruited through the board (an inherited starting roster, or a
-    // walk-on fill-in), so there's no signed NIL offer to carry forward — a
-    // modest baseline off overall for a real body, nothing for a walk-on.
-    nil: !real || walkOn ? 0 : Math.round(clamp((overall - 50) / 40, 0, 1) * 60000 + 3000),
+    // walk-on fill-in), so there's no signed NIL offer to carry forward — but
+    // a real player should still start the dynasty already earning something
+    // close to what they'd fetch if they were a recruit signing today, off
+    // the exact same production+pedigree formula buildRealNewcomer uses for
+    // an incoming recruit (fed by this team's real prestige and this
+    // player's real per-game numbers). A generated walk-on/filler body
+    // (no real production data at all) still gets nothing, same as before.
+    nil: (!real || walkOn) ? 0 : (() => {
+      const rawValue = perGame(real.ppg, gp) + perGame(real.rpg, gp) * 0.7 + perGame(real.apg, gp) * 0.9;
+      const pedigreeValue = 2 + recruitingPedigreeCurve(tier) * 16;
+      const productionValue = rawValue * sampleReliability(gp) + careerOutlierBonus(real.player);
+      const adjustedValue = pedigreeValue * 0.75 + productionValue * 0.25;
+      const stars = starsFromValue(adjustedValue);
+      return computeNilAsk({ stars, adjustedValue, isTransfer: false, prestige }).nilTarget;
+    })(),
     season: { ...EMPTY_SEASON_STATS },
     career: { ...EMPTY_CAREER_STATS },
   };
@@ -1641,6 +1653,28 @@ function committedRosterNil(roster, offseason, excludeId) {
   (offseason?.draftDeclarations || []).forEach((d) => { if (d.attempted && !d.kept) goneIds.add(d.id); });
   (offseason?.transferRisks || []).forEach((r) => { if (r.resolved && r.staying === false) goneIds.add(r.id); });
   return roster.reduce((sum, p) => (p.id === excludeId || goneIds.has(p.id) ? sum : sum + (p.nil || 0)), 0);
+}
+
+// The team's ONE shared NIL pool works exactly like open scholarships: a
+// single capacity number (nilBudgetById, which only ever moves via
+// advanceNilBudgets' season-end performance growth — nothing manually
+// spends it down or refunds it) minus everything currently spoken for
+// against it. "Spoken for" is the current roster (committedRosterNil —
+// already excludes anyone confirmed gone by next season) PLUS every
+// NIL pledge still sitting on the recruiting or transfer board, signed or
+// not — a pledge stops counting here the moment it lands on a player's own
+// `.nil` and becomes part of the roster side instead, so nothing is ever
+// double-counted. `excludeId` leaves one player's or recruit's own current
+// figure out of the sum, so editing their number isn't capped by itself.
+function nilCommittedTotal(roster, offseason, recruitingBoard, teamId, excludeId) {
+  const rosterCommitted = committedRosterNil(roster, offseason, excludeId);
+  const boards = [...(recruitingBoard || []), ...(offseason?.transferBoard || [])];
+  const pending = boards.reduce((sum, r) =>
+    sum + (r.id !== excludeId && (r.committedTo === teamId || !r.committedTo) ? (r.nilOffer || 0) : 0), 0);
+  return rosterCommitted + pending;
+}
+function nilAvailableAmount(nilBudget, roster, offseason, recruitingBoard, teamId, excludeId) {
+  return Math.max(0, (nilBudget || 0) - nilCommittedTotal(roster, offseason, recruitingBoard, teamId, excludeId));
 }
 
 // Fresh, per-cycle recruiting-trail bookkeeping shared by every recruit object.
@@ -4433,10 +4467,16 @@ function taperedNilGrowth(prev, rawGrowthPct) {
 // other team gets the lighter CPU approximation off the same season-quality
 // signal driftPrestige already computes. Mirrors driftPrestige's shape so the
 // two run side by side in advanceYear()/changeJob() without surprises.
-// `prevNilById` is always the FULL prior season's allocation — nothing ever
-// decrements it during the season itself (see doNilOffer/attemptSign), so
-// this genuinely compounds a growing collective, not whatever happened to be
-// left over after a spending spree.
+// `nilBudgetById[teamId]` is pure CAPACITY, exactly like SCHOLARSHIP_LIMIT —
+// this is the only place any team's number ever changes. No NIL spend
+// anywhere (a recruit pledge, a roster edit, a persuasion pledge) touches it
+// directly; every one of those just moves a dollar onto some player's own
+// `.nil`, and nilAvailableAmount/committedRosterNil derive "how much is
+// left" fresh from the roster + pending boards every time, the same way
+// open scholarships are derived from the roster rather than tracked as
+// their own mutable counter. So this always compounds off the team's real
+// total capacity, never off whatever happened to be left after a spending
+// spree.
 function advanceNilBudgets(prevNilById, userTeamId, userObjectives, evalCtx, year, powerById) {
   const { met, totalBoost } = evaluateNilObjectives(userObjectives, evalCtx);
   const next = {};
@@ -5578,9 +5618,8 @@ function DynastyApp({ initial, onExit }) {
     const os = state.offseason;
     if (!os) return;
     const budget = (state.nilBudgetById || baselineNilBudgetById())[state.teamId] ?? 0;
-    const committedElsewhere = [...os.transferBoard, ...state.recruitingBoard].reduce((sum, r) =>
-      sum + (r.id !== recruit.id && (r.committedTo === state.teamId || !r.committedTo) ? (r.nilOffer || 0) : 0), 0);
-    const capped = clamp(amount, 0, Math.max(0, budget - committedElsewhere));
+    const available = nilAvailableAmount(budget, state.roster, os, state.recruitingBoard, state.teamId, recruit.id);
+    const capped = clamp(amount, 0, available);
     const updated = applyNilOffer(recruit, capped);
     setState((s) => ({
       ...s,
@@ -5600,30 +5639,28 @@ function DynastyApp({ initial, onExit }) {
     if (!decl || decl.attempted) return;
     const player = state.roster.find((p) => p.id === playerId);
     if (!player) return;
-    // budget already reflects every prior successful persuasion pledge (each
-    // one permanently deducted below when it lands) — only pending recruiting
-    // offers, which haven't actually been spent yet, need to be reserved here.
+    // Same shared pool every other NIL spend draws from — the roster
+    // (excluding this player's own current figure) plus every pending
+    // recruiting/transfer pledge.
     const budget = (state.nilBudgetById || baselineNilBudgetById())[state.teamId] ?? 0;
-    const committedElsewhere = [...os.transferBoard, ...state.recruitingBoard].reduce((sum, r) =>
-      sum + ((r.committedTo === state.teamId || !r.committedTo) ? (r.nilOffer || 0) : 0), 0);
-    const pledge = clamp(Math.round(Number(nilPledge) || 0), 0, Math.max(0, budget - committedElsewhere));
+    const pledge = clamp(Math.round(Number(nilPledge) || 0), 0,
+      nilAvailableAmount(budget, state.roster, os, state.recruitingBoard, state.teamId, playerId));
     const trajectory = teamTrajectoryScore(record, postseasonSummary(state.postseason, state.teamId));
     const coachRepScore = clamp(reputation / 150, 0, 1);
     const chance = persuadeChance(player, { trajectory, coachRepScore, nilPledge: pledge, pitchIndex });
     const kept = Math.random() < chance;
     setState((s) => {
-      const nextNilById = (kept && pledge > 0)
-        ? { ...(s.nilBudgetById || baselineNilBudgetById()), [s.teamId]: Math.max(0, ((s.nilBudgetById || baselineNilBudgetById())[s.teamId] ?? budget) - pledge) }
-        : s.nilBudgetById;
       // A successful pitch backed by real money is a real new NIL commitment
-      // — it sticks on the player's own record, not just the team ledger.
+      // — it lands on the player's own .nil exactly like a signed recruit's
+      // pledge does, so it's automatically part of the shared pool's
+      // committed side from here on (no separate team-level ledger to keep
+      // in sync).
       const roster = (kept && pledge > 0)
         ? s.roster.map((p) => p.id === playerId ? { ...p, nil: (p.nil || 0) + pledge } : p)
         : s.roster;
       return {
         ...s,
         roster,
-        ...(nextNilById ? { nilBudgetById: nextNilById } : {}),
         offseason: {
           ...s.offseason,
           draftDeclarations: s.offseason.draftDeclarations.map((d) =>
@@ -5645,7 +5682,7 @@ function DynastyApp({ initial, onExit }) {
       const player = s.roster.find((p) => p.id === playerId);
       if (!player) return s;
       const budget = (s.nilBudgetById || baselineNilBudgetById())[s.teamId] ?? 0;
-      const available = Math.max(0, budget - committedRosterNil(s.roster, s.offseason, playerId));
+      const available = nilAvailableAmount(budget, s.roster, s.offseason, s.recruitingBoard, s.teamId, playerId);
       const nil = clamp(Math.round(Number(amount) || 0), 0, available);
       return { ...s, roster: s.roster.map((p) => p.id === playerId ? { ...p, nil } : p) };
     });
@@ -5664,7 +5701,7 @@ function DynastyApp({ initial, onExit }) {
     const player = state.roster.find((p) => p.id === playerId);
     if (!risk || !player) return;
     const budget = (state.nilBudgetById || baselineNilBudgetById())[state.teamId] ?? 0;
-    const available = Math.max(0, budget - committedRosterNil(state.roster, os, playerId));
+    const available = nilAvailableAmount(budget, state.roster, os, state.recruitingBoard, state.teamId, playerId);
     const maxOffer = Math.max(player.nil || 0, available);
     const offeredNil = walk ? (player.nil || 0) : clamp(Math.round(Number(counterNil) || 0), player.nil || 0, maxOffer);
     const minutesSatisfied = risk.reason === "nil";
@@ -5989,9 +6026,8 @@ function DynastyApp({ initial, onExit }) {
   // recruit actually signs; see attemptSign.
   function doNilOffer(recruit, amount) {
     const budget = (state.nilBudgetById || baselineNilBudgetById())[state.teamId] ?? 0;
-    const committedElsewhere = [...state.recruitingBoard, ...(state.offseason?.transferBoard || [])].reduce((sum, r) =>
-      sum + (r.id !== recruit.id && (r.committedTo === state.teamId || !r.committedTo) ? (r.nilOffer || 0) : 0), 0);
-    const capped = clamp(amount, 0, Math.max(0, budget - committedElsewhere));
+    const available = nilAvailableAmount(budget, state.roster, state.offseason, state.recruitingBoard, state.teamId, recruit.id);
+    const capped = clamp(amount, 0, available);
     const updated = applyNilOffer(recruit, capped);
     setState((s) => ({
       ...s,
@@ -6369,11 +6405,10 @@ function DynastyApp({ initial, onExit }) {
         careerRecord: finalizeCareerRecord(p, state.year),
       }));
     // NIL committed to anyone who's actually gone — drafted, transferred, or
-    // graduated — returns to the program's budget, freed up for whoever's
-    // still here or whoever's next.
-    const returnedNil = [...early, ...seniors, ...unhappyDepartures.map((d) => state.roster.find((p) => p.id === d.id))]
-      .filter(Boolean)
-      .reduce((sum, p) => sum + (p.nil || 0), 0);
+    // graduated — needs no explicit "return" step: they simply aren't in
+    // newRoster next season, so nilAvailableAmount/committedRosterNil stop
+    // counting their dollars against the budget automatically, the same way
+    // a departed player frees up a scholarship slot with no separate ledger.
 
     const incomingFreshmen = state.incomingCommits
       .map((id) => state.recruitingBoard.find((r) => r.id === id))
@@ -6442,13 +6477,9 @@ function DynastyApp({ initial, onExit }) {
       record, psSummary, rankById, teamId: state.teamId, confChampionId, beatRanked, beatRival,
       prevWins: prevHistoryEntry ? prevHistoryEntry.wins : null,
     };
-    const { nextNilById: nilByIdBeforeReturns, met: nilMet, totalBoost: nilBoost } = advanceNilBudgets(
+    const { nextNilById, met: nilMet, totalBoost: nilBoost } = advanceNilBudgets(
       state.nilBudgetById || baselineNilBudgetById(), state.teamId, state.nilObjectives, nilCtx, state.year, powerById
     );
-    // Whatever NIL was committed to a player who's actually gone (drafted,
-    // graduated, or lost to the portal) comes back to the budget on top of
-    // the normal season-over-season growth, not in place of it.
-    const nextNilById = { ...nilByIdBeforeReturns, [state.teamId]: (nilByIdBeforeReturns[state.teamId] || 0) + returnedNil };
     const nextNilObjectives = pickObjectivesFor(nextPrestige[state.teamId] ?? team.prestige);
 
     // Prestige movement since last season, for trend indicators.
@@ -8071,9 +8102,7 @@ function RecruitingTab({ board, otherBoard, committedIds, targets, onToggleTarge
   const pct = Math.round(clamp((weekIndex - 1) / totalWeeks, 0, 1) * 100);
   const open = scholarshipInfo?.open ?? 0;
   const committedNil = committedRosterNil(roster || [], offseason, null);
-  const nilPending = [...board, ...(otherBoard || [])].reduce((sum, r) =>
-    sum + ((r.committedTo === team.id || !r.committedTo) ? (r.nilOffer || 0) : 0), 0);
-  const nilAvailable = Math.max(0, (nilBudget || 0) - committedNil - nilPending);
+  const nilAvailable = nilAvailableAmount(nilBudget, roster || [], offseason, board, team.id, null);
   const netNilBudget = Math.max(0, (nilBudget || 0) - committedNil);
   const classRank = useMemo(() => computeClassRank(board, committedIds, team.id), [board, committedIds, team.id]);
   return (
@@ -8315,9 +8344,7 @@ function CutsPanel({ roster, scholarshipInfo, onCut, onViewPlayer }) {
 function TransferPortalTab({ offseason, hsBoard, team, roster, scholarshipInfo, committedFreshmen, onAction, onSign, onNilOffer, nilBudget, onAdvanceWeek }) {
   const committed = offseason.committedTransfers || [];
   const committedNil = committedRosterNil(roster || [], offseason, null);
-  const nilPending = [...offseason.transferBoard, ...(hsBoard || [])].reduce((sum, r) =>
-    sum + ((r.committedTo === team.id || !r.committedTo) ? (r.nilOffer || 0) : 0), 0);
-  const nilAvailable = Math.max(0, (nilBudget || 0) - committedNil - nilPending);
+  const nilAvailable = nilAvailableAmount(nilBudget, roster || [], offseason, hsBoard, team.id, null);
   const netNilBudget = Math.max(0, (nilBudget || 0) - committedNil);
   return (
     <div>
@@ -8379,9 +8406,11 @@ function DraftDecisionsPanel({ declarations, onPersuade, trajectory = 0.5, coach
     );
   }
   const pending = declarations.filter((d) => !d.attempted).length;
-  // nilBudget already reflects every successful persuasion pledge (each one
-  // permanently deducted the moment it lands) — only still-pending recruiting
-  // offers need to be reserved out of it here.
+  // `nilBudget` here already comes in net of everyone currently on the
+  // roster (including any player already persuaded back this offseason —
+  // a successful pledge lands on their own .nil like any other NIL
+  // commitment, so it's picked up automatically) — only still-pending
+  // recruiting offers need to be reserved out of it here.
   const nilAvailable = Math.max(0, nilBudget - recruitingNilPending);
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
@@ -8484,7 +8513,7 @@ function NilAmountInput({ value, min = 0, max, onCommit, disabled, width = 110, 
   );
 }
 
-function RosterNilPanel({ roster, nilBudget, offseason, onSetNil, onViewPlayer }) {
+function RosterNilPanel({ roster, nilBudget, offseason, recruitingBoard, teamId, onSetNil, onViewPlayer }) {
   const editable = roster.filter((p) => !p.generatedWalkOn).sort((a, b) => b.overall - a.overall);
   return (
     <Panel style={{ overflow: "hidden" }}>
@@ -8508,7 +8537,7 @@ function RosterNilPanel({ roster, nilBudget, offseason, onSetNil, onViewPlayer }
               <td style={td}>
                 <NilAmountInput
                   value={p.nil || 0}
-                  max={Math.max(p.nil || 0, nilBudget - committedRosterNil(roster, offseason, p.id))}
+                  max={Math.max(p.nil || 0, nilAvailableAmount(nilBudget, roster, offseason, recruitingBoard, teamId, p.id))}
                   disabled={p.class === "SR"}
                   onCommit={(amount) => onSetNil(p.id, amount)}
                 />
@@ -8527,7 +8556,7 @@ function RosterNilPanel({ roster, nilBudget, offseason, onSetNil, onViewPlayer }
 // reason shown, never just a bare "at risk" flag. A counter-offer's payoff
 // is shown up front (Est. X% to stay) before the coach commits to it, same
 // transparency standard as every other real-money decision in the game.
-function TransferRiskPanel({ transferRisks, roster, nilBudget, offseason, onResolve }) {
+function TransferRiskPanel({ transferRisks, roster, nilBudget, offseason, recruitingBoard, teamId, onResolve }) {
   const [counterChoice, setCounterChoice] = useState({});
   if (!transferRisks || transferRisks.length === 0) {
     return (
@@ -8541,7 +8570,7 @@ function TransferRiskPanel({ transferRisks, roster, nilBudget, offseason, onReso
       {transferRisks.map((r) => {
         const player = roster.find((p) => p.id === r.id);
         if (!player) return null;
-        const available = Math.max(0, nilBudget - committedRosterNil(roster, offseason, r.id));
+        const available = nilAvailableAmount(nilBudget, roster, offseason, recruitingBoard, teamId, r.id);
         const maxOffer = Math.max(player.nil || 0, available);
         const counter = clamp(counterChoice[r.id] ?? (player.nil || 0), player.nil || 0, maxOffer);
         const previewChance = retentionChance(r.nilDemand, counter, r.reason === "nil");
@@ -8655,7 +8684,7 @@ function OffseasonTab({ stage, offseason, hsBoard, team, roster, nextYear, commi
         Every real player&apos;s NIL, one row per name — edit it directly. Below that: anyone who declared for the draft needs a pitch, and anyone flagged as a transfer risk needs an offer or a decision to let them go. Nothing else opens up until these are all resolved.
       </div>
       <div style={{ marginBottom: 18 }}>
-        <RosterNilPanel roster={roster} nilBudget={nilBudget} offseason={offseason} onSetNil={onSetPlayerNil} onViewPlayer={onViewPlayer} />
+        <RosterNilPanel roster={roster} nilBudget={nilBudget} offseason={offseason} recruitingBoard={hsBoard} teamId={team.id} onSetNil={onSetPlayerNil} onViewPlayer={onViewPlayer} />
       </div>
 
       <div style={{ fontSize: 11.5, color: C.wood, fontWeight: 600, letterSpacing: "0.06em", marginBottom: 8 }}>NBA DRAFT DECLARATIONS</div>
@@ -8676,6 +8705,8 @@ function OffseasonTab({ stage, offseason, hsBoard, team, roster, nextYear, commi
         roster={roster}
         nilBudget={nilBudget}
         offseason={offseason}
+        recruitingBoard={hsBoard}
+        teamId={team.id}
         onResolve={onResolveTransferRisk}
       />
 
