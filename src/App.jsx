@@ -6197,19 +6197,39 @@ function DynastyApp({ initial, onExit }) {
     });
   }
 
-  // Direct per-player minutes assignment from the Depth Chart tab. Clamped to
-  // whatever's left of that position group's 40-minute regulation cap once
-  // every other player currently slotted there is accounted for, then the
-  // rest of the group is auto-topped-up to close any gap the edit just
-  // opened and re-sorted by minutes descending — the just-edited player's
-  // own figure is left exactly as set.
-  function setPlayerMinutes(playerId, pos, value) {
+  // Whole-group minutes commit from the Depth Chart tab: the coach edits
+  // every player's minutes in a position group freely (typed or nudged) in
+  // local draft state, then hits Confirm once — this applies every figure in
+  // one shot rather than re-clamping and re-shuffling the group after each
+  // keystroke. `draftMap` is {playerId: rawValue} for every player currently
+  // in the group; each value is clamped to 0-40 individually, and the whole
+  // commit is rejected (state left untouched) if the group's total would
+  // exceed the 40-minute regulation cap — the UI disables Confirm in that
+  // case so this is just a safety net. The group is re-sorted by the new
+  // minutes descending so the heaviest-minutes player leads the rotation.
+  function commitPositionMinutes(pos, draftMap) {
+    setState((s) => {
+      const group = s.depthChart[pos] || [];
+      const clamped = {};
+      group.forEach((id) => { clamped[id] = clamp(Math.round(Number(draftMap[id]) || 0), 0, 40); });
+      const total = group.reduce((sum, id) => sum + clamped[id], 0);
+      if (total > 40) return s;
+      const newOrder = [...group].sort((a, b) => clamped[b] - clamped[a]);
+      const current = s.minutes || defaultMinutesFor(s.depthChart);
+      return { ...s, depthChart: { ...s.depthChart, [pos]: newOrder }, minutes: { ...current, ...clamped } };
+    });
+  }
+
+  // One-click helper standing in for the old always-on auto-rebalance: fills
+  // a position group up to the 40-minute cap from its CURRENT committed
+  // minutes (any unsaved draft in the panel is discarded, same as Reset),
+  // weighted toward whoever already plays the most, and re-sorts by the
+  // result — a fast starting point the coach can then hand-tune.
+  function autoFillPosition(pos) {
     setState((s) => {
       const group = s.depthChart[pos] || [];
       const current = s.minutes || defaultMinutesFor(s.depthChart);
-      const others = group.filter((id) => id !== playerId).reduce((sum, id) => sum + (current[id] ?? 0), 0);
-      const capped = clamp(Math.round(Number(value) || 0), 0, Math.max(0, 40 - others));
-      const rebal = autoFillPositionMinutes(group, { ...current, [playerId]: capped }, playerId);
+      const rebal = autoFillPositionMinutes(group, current);
       return { ...s, depthChart: { ...s.depthChart, [pos]: rebal.order }, minutes: { ...current, ...rebal.minutes } };
     });
   }
@@ -6738,7 +6758,7 @@ function DynastyApp({ initial, onExit }) {
               onViewPlayer={setPlayerViewId} />
           )}
           {tab === "roster" && <RosterTab roster={state.roster} onViewPlayer={setPlayerViewId} onChangePosition={changePlayerPosition} />}
-          {tab === "depth" && <DepthChartTab roster={state.roster} depthChart={state.depthChart} minutes={state.minutes} onMove={moveInDepthChart} onAssign={assignPosition} onRemove={removeFromDepth} onSetMinutes={setPlayerMinutes} />}
+          {tab === "depth" && <DepthChartTab roster={state.roster} depthChart={state.depthChart} minutes={state.minutes} onMove={moveInDepthChart} onAssign={assignPosition} onRemove={removeFromDepth} onCommitMinutes={commitPositionMinutes} onAutoFillPosition={autoFillPosition} />}
           {tab === "recruiting" && (
             <RecruitingTab
               board={state.recruitingBoard}
@@ -6754,6 +6774,8 @@ function DynastyApp({ initial, onExit }) {
               onSign={attemptSign}
               onNilOffer={doNilOffer}
               nilBudget={nilBudget}
+              roster={state.roster}
+              offseason={state.offseason}
               team={team}
               needs={needs}
               scholarshipInfo={scholarshipInfo}
@@ -6764,6 +6786,7 @@ function DynastyApp({ initial, onExit }) {
               offseason={state.offseason}
               hsBoard={state.recruitingBoard}
               team={team}
+              roster={state.roster}
               scholarshipInfo={scholarshipInfo}
               committedFreshmen={state.incomingCommits.length}
               onAction={doTransferAction}
@@ -7522,103 +7545,165 @@ const td = { padding: "10px 14px" };
 // left in the position group's 40 including this player's own current
 // minutes, so the field can clamp and redisplay the real committed value
 // immediately on blur — never silently reverting to a stale typed number.
-function MinutesInput({ id, pos, value, max, onSetMinutes }) {
-  const [draft, setDraft] = useState(String(value));
-  useEffect(() => { setDraft(String(value)); }, [value]);
-  const commit = () => {
-    const capped = clamp(Math.round(Number(draft) || 0), 0, max);
-    setDraft(String(capped));
-    onSetMinutes(id, pos, capped);
-  };
+// A single MIN field: type a number directly, or nudge it with the +/-
+// buttons — either way this only ever touches the parent panel's local
+// draft, never the saved minutes, so nothing else on screen shifts while
+// you're mid-edit. Digits are still clamped to a single player's 0-40 range
+// as you type; the position group's 40-minute total is checked separately,
+// by the panel, when Confirm is pressed.
+function MinutesField({ value, onChange }) {
+  const bump = (delta) => onChange(String(clamp((Number(value) || 0) + delta, 0, 40)));
+  const btnStyle = { width: 20, height: 22, padding: 0, background: C.panel, border: `1px solid ${C.line}`, color: C.dim, fontSize: 13, lineHeight: 1, cursor: "pointer" };
   return (
-    <input
-      type="number" min={0} max={max} step={1}
-      value={draft}
-      onChange={(e) => setDraft(e.target.value)}
-      onBlur={commit}
-      onKeyDown={(e) => { if (e.key === "Enter") { commit(); e.currentTarget.blur(); } }}
-      style={{ width: 44, background: C.panel, border: `1px solid ${C.line}`, color: C.cream, fontSize: 12, padding: "3px 4px", textAlign: "center" }}
-    />
+    <div style={{ display: "flex", alignItems: "center", gap: 2 }}>
+      <button type="button" onClick={() => bump(-1)} className="cbb-btn" style={btnStyle} aria-label="Decrease minutes">−</button>
+      <input
+        type="text" inputMode="numeric"
+        value={value}
+        onChange={(e) => {
+          const digits = e.target.value.replace(/[^0-9]/g, "").slice(0, 2);
+          onChange(digits === "" ? "" : String(clamp(Number(digits), 0, 40)));
+        }}
+        style={{ width: 30, background: C.panel, border: `1px solid ${C.line}`, color: C.cream, fontSize: 12, padding: "3px 2px", textAlign: "center" }}
+      />
+      <button type="button" onClick={() => bump(1)} className="cbb-btn" style={btnStyle} aria-label="Increase minutes">+</button>
+    </div>
   );
 }
 
-function DepthChartTab({ roster, depthChart, minutes, onMove, onAssign, onRemove, onSetMinutes }) {
-  const assignedIds = new Set(POSITIONS.flatMap((p) => depthChart[p]));
-  const bench = roster.filter((p) => !assignedIds.has(p.id));
-  const minsOf = (pos) => depthChartMinutes(depthChart[pos], minutes);
+// One position group's full minutes editor. Every player's figure lives in
+// local draft state — typing or nudging one player never touches, reorders,
+// or re-caps anyone else's row — and nothing is saved to the dynasty until
+// the coach hits Confirm. The running total updates live and turns red the
+// moment the group would go over the 40-minute regulation cap, which is the
+// only thing that blocks Confirm; anything at or under 40 is a legal plan,
+// including leaving bench minutes unassigned. Confirming clamps every value,
+// commits them all in one update, and re-sorts the group by the result so
+// the heaviest-minutes player leads the rotation (the "★" slot).
+function PositionMinutesPanel({ pos, roster, depthChart, minutes, onMove, onAssign, onRemove, onCommitMinutes, onAutoFillPosition }) {
+  const order = depthChart[pos] || [];
+  const committedMins = depthChartMinutes(order, minutes);
   // The minutes each healthy player would actually get tonight, with anyone
-  // hurt in that group's planned run redistributed to the rest — so the
+  // hurt in this group's planned run redistributed to the rest — so the
   // coach can see the rotation adjust around an absence before it happens.
-  const liveMinsOf = (pos) => {
+  const live = useMemo(() => {
     const map = {};
     positionMinutes(pos, depthChart, roster, minutes).forEach(({ id, minutes: m }) => { map[id] = m; });
     return map;
-  };
+  }, [pos, depthChart, roster, minutes]);
+
+  const syncKey = order.join(",") + "|" + committedMins.join(",");
+  const [draft, setDraft] = useState(() => Object.fromEntries(order.map((id, i) => [id, String(committedMins[i] ?? 0)])));
+  const lastSyncKey = useRef(syncKey);
+  useEffect(() => {
+    if (lastSyncKey.current !== syncKey) {
+      setDraft(Object.fromEntries(order.map((id, i) => [id, String(committedMins[i] ?? 0)])));
+      lastSyncKey.current = syncKey;
+    }
+  }, [syncKey, order, committedMins]);
+
+  const draftTotal = order.reduce((sum, id) => sum + (Number(draft[id]) || 0), 0);
+  const isDirty = order.some((id, i) => (Number(draft[id]) || 0) !== (committedMins[i] ?? 0));
+  const over = draftTotal > 40;
+  const setOne = (id, val) => setDraft((d) => ({ ...d, [id]: val }));
+  const reset = () => setDraft(Object.fromEntries(order.map((id, i) => [id, String(committedMins[i] ?? 0)])));
+  const confirm = () => { if (!over) onCommitMinutes(pos, draft); };
+
+  return (
+    <Panel style={{ padding: 14 }}>
+      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 10 }}>
+        <div className="cbb-num" style={{ fontWeight: 700, fontSize: 15, color: C.wood }}>{pos}</div>
+        <div style={{ fontSize: 11, fontWeight: 600, color: over ? C.red : draftTotal === 40 ? C.green : C.gold }}>{draftTotal} / 40 min</div>
+      </div>
+      {order.length === 0 && <div style={{ fontSize: 12, color: C.dimmer, paddingBottom: 6 }}>No one slotted here.</div>}
+      {order.map((id, i) => {
+        const p = roster.find((pl) => pl.id === id);
+        if (!p) return null;
+        const outOfPos = p.pos !== pos;
+        const eff = computeOverall(pos, p.attrs);
+        const draftVal = Number(draft[id]) || 0;
+        const fatigued = draftVal > 34;
+        const last = i === order.length - 1;
+        return (
+          <div key={id} style={{ padding: "7px 0", borderBottom: last ? "none" : `1px solid ${C.line}` }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 13, fontWeight: i === 0 ? 700 : 500, color: isHurt(p) ? C.dimmer : C.cream }}>
+                  {i === 0 ? "★ " : ""}{p.name}
+                  {isHurt(p) && <span title={p.injuryType || undefined} style={{ fontSize: 9, color: C.red, marginLeft: 5 }}>{injuryBadge(p)}</span>}
+                  {!isHurt(p) && fatigued && <span style={{ fontSize: 9, color: C.orange || "#d38b2e", marginLeft: 5 }}>FATIGUE</span>}
+                </div>
+                <div style={{ fontSize: 11, color: outOfPos ? C.red : C.dim }}>
+                  {p.class} · OVR {eff}{outOfPos ? ` · natural ${p.pos} ${p.overall}` : ""} · DUR {p.durability ?? "—"}
+                  {!isHurt(p) && injuryRiskFor(draftVal, p.durability) >= 0.014 && (
+                    <span title="Heavy workload on a fragile player — elevated injury risk at these minutes" style={{ color: C.wood, marginLeft: 5 }}>⚠ high injury risk</span>
+                  )}
+                </div>
+              </div>
+              <div style={{ display: "flex", flexDirection: "column" }}>
+                <button onClick={() => onMove(pos, i, -1)} disabled={i === 0} className="cbb-btn" style={{ background: "none", border: "none", color: i === 0 ? C.dimmer : C.dim, cursor: i === 0 ? "default" : "pointer" }}><ChevronUp size={14} /></button>
+                <button onClick={() => onMove(pos, i, 1)} disabled={last} className="cbb-btn" style={{ background: "none", border: "none", color: last ? C.dimmer : C.dim, cursor: last ? "default" : "pointer" }}><ChevronDown size={14} /></button>
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: 6, marginTop: 4, alignItems: "center", flexWrap: "wrap" }}>
+              <span style={{ fontSize: 10.5, color: C.dimmer }}>MIN</span>
+              <MinutesField value={draft[id] ?? ""} onChange={(v) => setOne(id, v)} />
+              {!isHurt(p) && live[id] != null && live[id] !== (committedMins[i] ?? 0) && (
+                <span style={{ fontSize: 10, color: C.green }}>&rarr; {live[id]} tonight</span>
+              )}
+              <select value={pos} onChange={(e) => onAssign(id, e.target.value)}
+                style={{ background: C.panel, border: `1px solid ${C.line}`, color: C.cream, fontSize: 11, padding: "2px 4px" }}>
+                {POSITIONS.map((pp) => <option key={pp} value={pp}>{pp === pos ? `At ${pp}` : `Move to ${pp}`}</option>)}
+              </select>
+              <button onClick={() => onRemove(id)} className="cbb-btn" style={{ background: "none", border: `1px solid ${C.line}`, color: C.dim, fontSize: 11, padding: "2px 8px", cursor: "pointer" }}>Bench</button>
+            </div>
+          </div>
+        );
+      })}
+      {order.length > 0 && (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 10, paddingTop: 10, borderTop: `1px solid ${C.line}`, flexWrap: "wrap" }}>
+          <button onClick={confirm} disabled={!isDirty || over} className="cbb-btn"
+            style={{ fontSize: 12, padding: "6px 12px", border: `1px solid ${over ? C.red : C.gold}`, background: isDirty && !over ? C.panelAlt : "transparent", color: isDirty && !over ? C.cream : C.dimmer, cursor: isDirty && !over ? "pointer" : "not-allowed", fontWeight: 600 }}>
+            Confirm Minutes
+          </button>
+          {over
+            ? <span style={{ fontSize: 10.5, color: C.red }}>Over by {draftTotal - 40} — trim someone&apos;s minutes to confirm</span>
+            : isDirty && <span style={{ fontSize: 10.5, color: C.gold }}>Unsaved changes</span>}
+          {isDirty && (
+            <button onClick={reset} className="cbb-btn" style={{ fontSize: 11, padding: "6px 10px", background: "none", border: `1px solid ${C.line}`, color: C.dim, cursor: "pointer" }}>Reset</button>
+          )}
+          <button onClick={() => onAutoFillPosition(pos)} className="cbb-btn" style={{ fontSize: 11, padding: "6px 10px", background: "none", border: `1px solid ${C.line}`, color: C.dim, cursor: "pointer", marginLeft: "auto" }}>
+            Auto-Fill to 40
+          </button>
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+function DepthChartTab({ roster, depthChart, minutes, onMove, onAssign, onRemove, onCommitMinutes, onAutoFillPosition }) {
+  const assignedIds = new Set(POSITIONS.flatMap((p) => depthChart[p]));
+  const bench = roster.filter((p) => !assignedIds.has(p.id));
   return (
     <div>
       <div style={{ fontSize: 11.5, color: C.dimmer, marginBottom: 12, maxWidth: 760 }}>
-        Slot any player at any position — a point guard can back up at the two, three, even the four or five. Playing someone out of position lowers their effective rating (shown in red), since their skills don&apos;t fit that role. Set each player&apos;s minutes directly; each position group has 40 to give out across regulation. Past 34 minutes a player starts losing effectiveness late in games from fatigue (shown in orange) — and heavier minutes on a less durable player raise their injury risk.
+        Slot any player at any position — a point guard can back up at the two, three, even the four or five. Playing someone out of position lowers their effective rating (shown in red), since their skills don&apos;t fit that role. Type a number or nudge it with +/−, then hit <strong>Confirm Minutes</strong> to lock in a position group — each has 40 to give out across regulation, and the button disables itself if you go over. Past 34 minutes a player starts losing effectiveness late in games from fatigue (shown in orange) — and heavier minutes on a less durable player raise their injury risk.
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(250px, 1fr))", gap: 14 }}>
-        {POSITIONS.map((pos) => {
-          const mins = minsOf(pos);
-          const total = mins.reduce((a, b) => a + b, 0);
-          const balanced = total === 40;
-          const live = liveMinsOf(pos);
-          return (
-          <Panel key={pos} style={{ padding: 14 }}>
-            <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 10 }}>
-              <div className="cbb-num" style={{ fontWeight: 700, fontSize: 15, color: C.wood }}>{pos}</div>
-              <div style={{ fontSize: 11, fontWeight: 600, color: balanced ? C.dim : C.gold }}>{total} / 40 min</div>
-            </div>
-            {depthChart[pos].length === 0 && <div style={{ fontSize: 12, color: C.dimmer, paddingBottom: 6 }}>No one slotted here.</div>}
-            {depthChart[pos].map((id, i) => {
-              const p = roster.find((pl) => pl.id === id);
-              if (!p) return null;
-              const outOfPos = p.pos !== pos;
-              const eff = computeOverall(pos, p.attrs);
-              const m = mins[i] ?? 0;
-              const fatigued = m > 34;
-              const last = i === depthChart[pos].length - 1;
-              return (
-                <div key={id} style={{ padding: "7px 0", borderBottom: last ? "none" : `1px solid ${C.line}` }}>
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                    <div style={{ minWidth: 0 }}>
-                      <div style={{ fontSize: 13, fontWeight: i === 0 ? 700 : 500, color: isHurt(p) ? C.dimmer : C.cream }}>
-                        {i === 0 ? "★ " : ""}{p.name}
-                        {isHurt(p) && <span title={p.injuryType || undefined} style={{ fontSize: 9, color: C.red, marginLeft: 5 }}>{injuryBadge(p)}</span>}
-                        {!isHurt(p) && fatigued && <span style={{ fontSize: 9, color: C.orange || "#d38b2e", marginLeft: 5 }}>FATIGUE</span>}
-                      </div>
-                      <div style={{ fontSize: 11, color: outOfPos ? C.red : C.dim }}>
-                        {p.class} · OVR {eff}{outOfPos ? ` · natural ${p.pos} ${p.overall}` : ""} · DUR {p.durability ?? "—"}
-                        {!isHurt(p) && injuryRiskFor(m, p.durability) >= 0.014 && (
-                          <span title="Heavy workload on a fragile player — elevated injury risk at these minutes" style={{ color: C.wood, marginLeft: 5 }}>⚠ high injury risk</span>
-                        )}
-                      </div>
-                    </div>
-                    <div style={{ display: "flex", flexDirection: "column" }}>
-                      <button onClick={() => onMove(pos, i, -1)} disabled={i === 0} className="cbb-btn" style={{ background: "none", border: "none", color: i === 0 ? C.dimmer : C.dim, cursor: i === 0 ? "default" : "pointer" }}><ChevronUp size={14} /></button>
-                      <button onClick={() => onMove(pos, i, 1)} disabled={last} className="cbb-btn" style={{ background: "none", border: "none", color: last ? C.dimmer : C.dim, cursor: last ? "default" : "pointer" }}><ChevronDown size={14} /></button>
-                    </div>
-                  </div>
-                  <div style={{ display: "flex", gap: 6, marginTop: 4, alignItems: "center" }}>
-                    <span style={{ fontSize: 10.5, color: C.dimmer }}>MIN</span>
-                    <MinutesInput id={id} pos={pos} value={m} max={clamp(40 - (total - m), 0, 40)} onSetMinutes={onSetMinutes} />
-                    {!isHurt(p) && live[id] != null && live[id] !== m && (
-                      <span style={{ fontSize: 10, color: C.green }}>&rarr; {live[id]} tonight</span>
-                    )}
-                    <select value={pos} onChange={(e) => onAssign(id, e.target.value)}
-                      style={{ background: C.panel, border: `1px solid ${C.line}`, color: C.cream, fontSize: 11, padding: "2px 4px" }}>
-                      {POSITIONS.map((pp) => <option key={pp} value={pp}>{pp === pos ? `At ${pp}` : `Move to ${pp}`}</option>)}
-                    </select>
-                    <button onClick={() => onRemove(id)} className="cbb-btn" style={{ background: "none", border: `1px solid ${C.line}`, color: C.dim, fontSize: 11, padding: "2px 8px", cursor: "pointer" }}>Bench</button>
-                  </div>
-                </div>
-              );
-            })}
-          </Panel>
-          );
-        })}
+        {POSITIONS.map((pos) => (
+          <PositionMinutesPanel
+            key={pos}
+            pos={pos}
+            roster={roster}
+            depthChart={depthChart}
+            minutes={minutes}
+            onMove={onMove}
+            onAssign={onAssign}
+            onRemove={onRemove}
+            onCommitMinutes={onCommitMinutes}
+            onAutoFillPosition={onAutoFillPosition}
+          />
+        ))}
       </div>
 
       {bench.length > 0 && (
@@ -7982,12 +8067,14 @@ function RecruitBoard({ board, otherBoard, committedIds, targets, onToggleTarget
   );
 }
 
-function RecruitingTab({ board, otherBoard, committedIds, targets, onToggleTarget, points, budget, weekIndex, totalWeeks, onAction, onSign, onNilOffer, nilBudget, team, needs = [], scholarshipInfo }) {
+function RecruitingTab({ board, otherBoard, committedIds, targets, onToggleTarget, points, budget, weekIndex, totalWeeks, onAction, onSign, onNilOffer, nilBudget, roster, offseason, team, needs = [], scholarshipInfo }) {
   const pct = Math.round(clamp((weekIndex - 1) / totalWeeks, 0, 1) * 100);
   const open = scholarshipInfo?.open ?? 0;
+  const committedNil = committedRosterNil(roster || [], offseason, null);
   const nilPending = [...board, ...(otherBoard || [])].reduce((sum, r) =>
     sum + ((r.committedTo === team.id || !r.committedTo) ? (r.nilOffer || 0) : 0), 0);
-  const nilAvailable = Math.max(0, (nilBudget || 0) - nilPending);
+  const nilAvailable = Math.max(0, (nilBudget || 0) - committedNil - nilPending);
+  const netNilBudget = Math.max(0, (nilBudget || 0) - committedNil);
   const classRank = useMemo(() => computeClassRank(board, committedIds, team.id), [board, committedIds, team.id]);
   return (
     <div>
@@ -7995,6 +8082,7 @@ function RecruitingTab({ board, otherBoard, committedIds, targets, onToggleTarge
         <div style={{ display: "flex", gap: 18, flexWrap: "wrap" }}>
           <div style={{ fontSize: 13, color: C.dim }}>
             NIL available: <strong style={{ color: C.gold }}>{formatNil(nilAvailable)}</strong> / {formatNil(nilBudget)}
+            <span style={{ color: C.dimmer }}> ({formatNil(committedNil)} on roster)</span>
           </div>
           <div style={{ fontSize: 13, color: C.dim }}>Open scholarships: <strong style={{ color: open > 0 ? C.gold : C.red }}>{open}</strong> / {scholarshipInfo?.limit ?? SCHOLARSHIP_LIMIT}</div>
           <div style={{ fontSize: 13, color: C.dim }}>Committed: <strong style={{ color: C.cream }}>{committedIds.length}</strong></div>
@@ -8015,7 +8103,7 @@ function RecruitingTab({ board, otherBoard, committedIds, targets, onToggleTarge
       <RecruitBoard
         board={board} otherBoard={otherBoard} committedIds={committedIds} targets={targets} onToggleTarget={onToggleTarget}
         points={points} weekIndex={weekIndex} totalWeeks={totalWeeks}
-        onAction={onAction} onSign={onSign} onNilOffer={onNilOffer} nilBudget={nilBudget} needs={needs} maxSign={5} team={team}
+        onAction={onAction} onSign={onSign} onNilOffer={onNilOffer} nilBudget={netNilBudget} needs={needs} maxSign={5} team={team}
         emptyLabel="No high-school prospects match those filters."
       />
       <div style={{ fontSize: 11.5, color: C.dimmer, marginTop: 14, maxWidth: 700 }}>
@@ -8224,11 +8312,13 @@ function CutsPanel({ roster, scholarshipInfo, onCut, onViewPlayer }) {
 /* ---------- Offseason ---------- */
 // Dedicated Transfer Portal tab — only mounted during the offseason. Works the
 // same portal board as the Offseason tab so either entry point stays in sync.
-function TransferPortalTab({ offseason, hsBoard, team, scholarshipInfo, committedFreshmen, onAction, onSign, onNilOffer, nilBudget, onAdvanceWeek }) {
+function TransferPortalTab({ offseason, hsBoard, team, roster, scholarshipInfo, committedFreshmen, onAction, onSign, onNilOffer, nilBudget, onAdvanceWeek }) {
   const committed = offseason.committedTransfers || [];
+  const committedNil = committedRosterNil(roster || [], offseason, null);
   const nilPending = [...offseason.transferBoard, ...(hsBoard || [])].reduce((sum, r) =>
     sum + ((r.committedTo === team.id || !r.committedTo) ? (r.nilOffer || 0) : 0), 0);
-  const nilAvailable = Math.max(0, (nilBudget || 0) - nilPending);
+  const nilAvailable = Math.max(0, (nilBudget || 0) - committedNil - nilPending);
+  const netNilBudget = Math.max(0, (nilBudget || 0) - committedNil);
   return (
     <div>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12, marginBottom: 16 }}>
@@ -8244,7 +8334,10 @@ function TransferPortalTab({ offseason, hsBoard, team, scholarshipInfo, committe
       </div>
 
       <div style={{ display: "flex", gap: 18, flexWrap: "wrap", marginBottom: 14, fontSize: 13, color: C.dim }}>
-        <div>NIL available: <strong style={{ color: C.gold }}>{formatNil(nilAvailable)}</strong> / {formatNil(nilBudget)}</div>
+        <div>
+          NIL available: <strong style={{ color: C.gold }}>{formatNil(nilAvailable)}</strong> / {formatNil(nilBudget)}
+          <span style={{ color: C.dimmer }}> ({formatNil(committedNil)} on roster)</span>
+        </div>
         <div>Open scholarships: <strong style={{ color: (scholarshipInfo?.open ?? 0) > 0 ? C.gold : C.red }}>{scholarshipInfo?.open ?? 0}</strong> / {scholarshipInfo?.limit ?? SCHOLARSHIP_LIMIT}</div>
         <div>Portal points this week: <strong style={{ color: C.gold }}>{offseason.points}</strong></div>
         <div>Transfers committed: <strong style={{ color: C.cream }}>{committed.length}</strong></div>
@@ -8265,7 +8358,7 @@ function TransferPortalTab({ offseason, hsBoard, team, scholarshipInfo, committe
         onAction={onAction}
         onSign={onSign}
         onNilOffer={onNilOffer}
-        nilBudget={nilBudget}
+        nilBudget={netNilBudget}
         team={team}
         emptyLabel="No transfers match those filters."
       />
@@ -8523,6 +8616,7 @@ function OffseasonTab({ stage, offseason, hsBoard, team, roster, nextYear, commi
   const decisionsDone = unresolvedTotal === 0;
   const recruitingNilPending = [...offseason.transferBoard, ...(hsBoard || [])].reduce((sum, r) =>
     sum + ((r.committedTo === team.id || !r.committedTo) ? (r.nilOffer || 0) : 0), 0);
+  const committedNil = committedRosterNil(roster, offseason, null);
 
   return (
     <div>
@@ -8548,7 +8642,7 @@ function OffseasonTab({ stage, offseason, hsBoard, team, roster, nextYear, commi
 
       <div style={{ display: "flex", gap: 18, flexWrap: "wrap", marginBottom: 14, fontSize: 13, color: C.dim }}>
         <div>Open scholarships: <strong style={{ color: (scholarshipInfo?.open ?? 0) > 0 ? C.gold : C.red }}>{scholarshipInfo?.open ?? 0}</strong> / {scholarshipInfo?.limit ?? SCHOLARSHIP_LIMIT}</div>
-        <div>NIL committed: <strong style={{ color: C.gold }}>{formatNil(committedRosterNil(roster, offseason, null))}</strong> / {formatNil(nilBudget)}</div>
+        <div>NIL committed: <strong style={{ color: C.gold }}>{formatNil(committedNil)}</strong> / {formatNil(nilBudget)}</div>
         <div>Portal points this week: <strong style={{ color: C.gold }}>{offseason.points}</strong></div>
         <div>Transfers committed: <strong style={{ color: C.cream }}>{committed.length}</strong></div>
         <div>HS signees this cycle: <strong style={{ color: C.cream }}>{committedFreshmen}</strong></div>
@@ -8571,7 +8665,7 @@ function OffseasonTab({ stage, offseason, hsBoard, team, roster, nextYear, commi
           onPersuade={onPersuade}
           trajectory={trajectory}
           coachRepScore={coachRepScore}
-          nilBudget={nilBudget}
+          nilBudget={Math.max(0, nilBudget - committedNil)}
           recruitingNilPending={recruitingNilPending}
         />
       </div>
