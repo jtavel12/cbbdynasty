@@ -3187,12 +3187,18 @@ const REGION_NAMES = ["East", "West", "South", "Midwest"];
 // build a single-elim bracket where the top seed meets the bottom seed first.
 // `banned` (a "Risk It" postseason-ban penalty) drops any listed team id from
 // its own conference bracket entirely — genuinely ineligible, not just absent.
-function buildConfBrackets(rankById, banned) {
+// Seeded by actual CONFERENCE standings — the same sort the Standings tab
+// itself uses (conference wins, then fewer conference losses, then overall
+// record, then prestige) — never by national rank, which folds in power/
+// strength-of-schedule and can seed a team well out of line with how they
+// actually finished their own league.
+function buildConfBrackets(ranked, banned) {
   const byConf = {};
   for (const conf of CONF_LIST) {
-    const members = TEAMS.filter((t) => t.conf === conf && !banned?.has(t.id))
-      .sort((a, b) => rankById[a.id] - rankById[b.id])
-      .map((t) => t.id);
+    const members = ranked
+      .filter((r) => r.team.conf === conf && !banned?.has(r.team.id))
+      .sort((a, b) => (b.confWins - a.confWins) || (a.confLosses - b.confLosses) || (b.wins - a.wins) || (b.team.prestige - a.team.prestige))
+      .map((r) => r.team.id);
     byConf[conf] = buildSingleElim(members);
   }
   return byConf;
@@ -5593,7 +5599,7 @@ function DynastyApp({ initial, onExit }) {
       ...s,
       postseason: {
         phase: "conf",
-        confBrackets: buildConfBrackets(rankById, new Set(bannedIds)),
+        confBrackets: buildConfBrackets(ranked, new Set(bannedIds)),
         confChampions: {},
         madness: null,
         nit: null,
@@ -6040,6 +6046,18 @@ function DynastyApp({ initial, onExit }) {
       const dc = {};
       POSITIONS.forEach((p) => { dc[p] = (s.depthChart[p] || []).filter((id) => id !== playerId); });
       let offseason = s.offseason;
+      // Cutting someone settles any pending draft/transfer decision about
+      // them outright — they're gone either way. Left unresolved, that
+      // decision would sit forever: the panel that would resolve it can't
+      // show a row for a player no longer on the roster, so it silently
+      // blocked the new season from starting with no visible way out.
+      if (offseason) {
+        const transferRisks = (offseason.transferRisks || []).map((r) =>
+          r.id === playerId && !r.resolved ? { ...r, resolved: true, staying: false, offeredNil: player.nil || 0, chance: 0 } : r);
+        const draftDeclarations = (offseason.draftDeclarations || []).map((d) =>
+          d.id === playerId && !d.attempted ? { ...d, attempted: true, kept: false, chance: 0 } : d);
+        offseason = { ...offseason, transferRisks, draftDeclarations };
+      }
       if (offseason && offseason.devSpent && offseason.devSpent[playerId]) {
         const refunded = Object.values(offseason.devSpent[playerId]).reduce((a, b) => a + b, 0);
         const devSpent = { ...offseason.devSpent };
