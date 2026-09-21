@@ -1029,8 +1029,15 @@ function genAttrsFromRealStats(real, tier, careerBonus = 0, pos = "SF") {
   // Spread talent apart by program prestige (with the outlier carve-out).
   const shift = prestigeTalentShift(tier, cb);
   if (shift !== 0) for (const k of ATTR_KEYS) core[k] = clamp(Math.round(core[k] + shift), 40, 99);
-  const peak = Math.max(core.scoring, core.rebounding, core.passing);
-  const potential = clamp(Math.round(rand(peak - 2, Math.min(99, peak + 10))), 40, 99);
+  // Potential has to sit comfortably above this player's actual computed
+  // overall (all ten attributes, position-weighted), not just the peak of
+  // scoring/rebounding/passing — the old peak-based version could land
+  // potential AT or even BELOW a real player's overall, which silently made
+  // year-end organic growth (progressRosterForNewYear reads potential minus
+  // overall) a no-op for most real players, making it look like development
+  // points were the only way a roster ever improved.
+  const actualOverall = computeOverall(pos, core);
+  const potential = clamp(actualOverall + randInt(6, 22), 40, 99);
   return { ...core, potential };
 }
 
@@ -2543,8 +2550,46 @@ function teamPowerRating(team, strengthMap, year, { noise = true } = {}) {
 // Wide enough that programs run genuinely hot or cold year to year — this is
 // what lets a mid-major occasionally dominate its conference and crash the
 // national standings instead of the order being a fixed prestige ranking.
-function genSeasonStrengths() {
-  return Object.fromEntries(TEAMS.map((t) => [t.id, rand(-11, 11)]));
+// `erasById`, when given, layers each team's active multi-season "era" (see
+// rollProgramEras) on top of the normal per-season jitter, so a program's
+// strength isn't PURELY a random walk around its prestige — a scandal or a
+// hot stretch actually persists and colors multiple seasons in a row.
+function genSeasonStrengths(erasById) {
+  return Object.fromEntries(TEAMS.map((t) => [t.id, rand(-11, 11) + (erasById?.[t.id]?.mod || 0)]));
+}
+
+// A CPU program's occasional multi-season stretch — a scandal/roster exodus
+// that depresses them, or a hot "system" run that lifts them — layered on
+// top of the normal season-to-season strength jitter so the league develops
+// actual storylines a coach can notice year over year, instead of every
+// program just mean-reverting around its prestige forever.
+const PROGRAM_ERA_TYPES = [
+  { type: "scandal", label: "is under scrutiny after off-court trouble", mod: [-14, -8], seasons: [2, 3] },
+  { type: "exodus", label: "got gutted by a wave of transfers out", mod: [-12, -7], seasons: [1, 2] },
+  { type: "surge", label: "is playing well above its usual level", mod: [7, 13], seasons: [2, 3] },
+];
+const PROGRAM_ERA_CHANCE = 0.025; // per team, per season, only when not already in one
+
+// Rolls every program's era forward one season: an active one just keeps
+// running until it expires, and any team NOT currently in one has a small
+// chance to start a new one. Returns the next `programErasById` map plus any
+// headlines for eras that just started, for the same "kept visible early in
+// the new season" news-feed treatment the coaching carousel already gets.
+function rollProgramEras(prevErasById, year) {
+  const next = {};
+  const news = [];
+  for (const t of TEAMS) {
+    const active = prevErasById?.[t.id];
+    if (active && active.untilYear >= year) { next[t.id] = active; continue; }
+    if (Math.random() < PROGRAM_ERA_CHANCE) {
+      const spec = pick(PROGRAM_ERA_TYPES);
+      const seasons = randInt(spec.seasons[0], spec.seasons[1]);
+      const mod = Math.round(rand(spec.mod[0], spec.mod[1]));
+      next[t.id] = { type: spec.type, mod, untilYear: year + seasons - 1, label: spec.label };
+      news.push(`${t.name} ${spec.label} — expect it to shape the next ${seasons} season${seasons > 1 ? "s" : ""}.`);
+    }
+  }
+  return { next, news };
 }
 
 // Win probability for a team of `power` against a specific `oppPower`. Steeper
@@ -2618,6 +2663,28 @@ function historicalQuality(teamId) {
     n += wt;
   }
   return n ? wsum / n : null;
+}
+
+// A short, honest "banners in the rafters" line for a program's real
+// history — grounded in what teamRecordsRaw actually carries (Torvik's
+// final national power rank per season, not an authoritative record of who
+// actually won the tournament that year, which isn't in the data), so this
+// deliberately reads as "how dominant was this program" rather than
+// claiming a specific title/Final Four that the data can't actually back up.
+function programHistoryBanner(teamId) {
+  const rec = teamRecordsRaw[teamId];
+  if (!rec) return null;
+  const entries = Object.entries(rec);
+  if (!entries.length) return null;
+  const top1 = entries.filter(([, e]) => e.rank === 1).length;
+  const top5 = entries.filter(([, e]) => e.rank && e.rank <= 5).length;
+  const top25 = entries.filter(([, e]) => e.rank && e.rank <= 25).length;
+  const bestRank = Math.min(...entries.map(([, e]) => e.rank ?? 999));
+  if (top1 > 0) return `Finished the season ranked No. 1 nationally ${top1}x`;
+  if (top5 > 0) return `A recent Top 5 program (${top5}x finished ranked in the top 5)`;
+  if (top25 >= 3) return `A regular Top 25 finisher (${top25} seasons)`;
+  if (bestRank <= 50) return `Best recent finish: No. ${bestRank} nationally`;
+  return null;
 }
 
 // The program's year-by-year record for display: only seasons this dynasty
@@ -3093,18 +3160,18 @@ function simMatchup(m, ctx) {
   if (m.b && !m.a) return { ...m, winner: m.b, bye: true };
   if (!m.a && !m.b) return m;
 
-  const { powerById, userTeamId, roster, depthChart, minutes, strengths, year, powerBaseline } = ctx;
+  const { powerById, userTeamId, roster, depthChart, minutes, strengths, year, powerBaseline, momentum } = ctx;
   if (userTeamId && (m.a === userTeamId || m.b === userTeamId)) {
     const oppId = m.a === userTeamId ? m.b : m.a;
     const oppPower = teamPowerRating(TEAM_MAP[oppId], strengths, year);
-    const res = simulateGame(roster, depthChart, oppPower, 0, powerBaseline, minutes);
+    const res = simulateGame(roster, depthChart, oppPower, momentum || 0, powerBaseline, minutes);
     const winner = res.win ? userTeamId : oppId;
     const uScore = res.myScore, oScore = res.oppScore;
     return {
       ...m, winner,
       scoreA: m.a === userTeamId ? uScore : oScore,
       scoreB: m.b === userTeamId ? uScore : oScore,
-      userBox: res.boxByPlayer,
+      userBox: res.boxByPlayer, userWin: res.win,
     };
   }
   const pa = powerById[m.a], pb = powerById[m.b];
@@ -3122,22 +3189,23 @@ function advanceBracketRound(bracket, ctx) {
   // in THIS round. A game the user already played live carries userBoxApplied,
   // so we skip it here — its stats were credited when they finished the game.
   let freshUserBox = null;
+  let freshUserWin = null;
   const simmed = cur.map((m) => {
     const r = simMatchup(m, ctx);
-    if (r.userBox && !r.userBoxApplied) { freshUserBox = r.userBox; r.userBoxApplied = true; }
+    if (r.userBox && !r.userBoxApplied) { freshUserBox = r.userBox; freshUserWin = r.userWin; r.userBoxApplied = true; }
     return r;
   });
   rounds[rounds.length - 1] = simmed;
   const winners = simmed.map((m) => m.winner).filter(Boolean);
   if (winners.length <= 1) {
-    return { ...bracket, rounds, champion: winners[0] || null, done: true, _freshUserBox: freshUserBox };
+    return { ...bracket, rounds, champion: winners[0] || null, done: true, _freshUserBox: freshUserBox, _freshUserWin: freshUserWin };
   }
   const next = [];
   for (let i = 0; i < winners.length; i += 2) {
     next.push({ a: winners[i], b: winners[i + 1] ?? null, winner: null, scoreA: null, scoreB: null, bye: false });
   }
   rounds.push(next);
-  return { ...bracket, rounds, champion: null, done: false, _freshUserBox: freshUserBox };
+  return { ...bracket, rounds, champion: null, done: false, _freshUserBox: freshUserBox, _freshUserWin: freshUserWin };
 }
 
 // Locate the user's next PLAYABLE postseason game — an undecided matchup with
@@ -3204,21 +3272,69 @@ function buildConfBrackets(ranked, banned) {
   return byConf;
 }
 
-// 64-team field: every conference champ earns an auto-bid, then the highest
-// remaining ranked teams fill the at-large pool. Seeds 1-16 across 4 regions
-// are assigned by national rank in an S-curve so the regions are balanced.
-// `banned` excludes a postseason-banned team from the at-large pool too, as a
-// defensive backstop (they can't have won a conf title to auto-bid in either,
-// since buildConfBrackets already dropped them from that bracket).
-function buildMadness(confChampions, rankById, banned) {
+// A play-in game between two of the field's weakest entries, auto-resolved
+// on the spot the same way any CPU-vs-CPU postseason game is (gameWinProb +
+// a fabricated final score) — First Four games never involve the user (see
+// buildMadness), so there's no live-play case to wire up here.
+function resolvePlayIn(pair, powerById) {
+  if (pair.length < 2 || !pair[0] || !pair[1]) return { winner: pair[0] ?? null, loser: null, score: null };
+  const [a, b] = pair;
+  const aWins = Math.random() < gameWinProb(powerById[a], powerById[b]);
+  const sc = fabricateScore(aWins ? powerById[a] : powerById[b], aWins ? powerById[b] : powerById[a]);
+  return { winner: aWins ? a : b, loser: aWins ? b : a, score: aWins ? `${sc.w}-${sc.l}` : `${sc.l}-${sc.w}` };
+}
+
+// 68-team field, the real modern format: every conference champ earns an
+// auto-bid, the highest remaining ranked teams fill the at-large pool, and
+// the 4 weakest auto-bids plus the 4 weakest at-larges each play a First
+// Four game for the last 4 spots in the round of 64. Seeds 1-16 across 4
+// regions are then assigned by national rank in an S-curve so the regions
+// are balanced. `banned` excludes a postseason-banned team from the
+// at-large pool too, as a defensive backstop (they can't have won a conf
+// title to auto-bid in either, since buildConfBrackets already dropped them
+// from that bracket).
+//
+// The human coach's own team is never placed in a First Four game — a
+// deliberate simplification, since these play-ins are always auto-resolved
+// and a coach shouldn't have their season end in a game they never got to
+// play. If the user's team would land in the bottom 4 of either pool, the
+// next-best team outside the field swaps in for the play-in instead; the
+// user's own spot in the field is unaffected either way.
+function buildMadness(confChampions, rankById, banned, userTeamId, powerById) {
   const championIds = new Set(Object.values(confChampions));
-  const autoBids = [...championIds];
+  const autoBids = [...championIds].sort((a, b) => rankById[a] - rankById[b]);
   const atLargePool = TEAMS
     .filter((t) => !championIds.has(t.id) && !banned?.has(t.id))
     .sort((a, b) => rankById[a.id] - rankById[b.id])
     .map((t) => t.id);
-  const need = Math.max(0, 64 - autoBids.length);
-  const field = [...autoBids, ...atLargePool.slice(0, need)].slice(0, 64);
+  const need = Math.max(0, 68 - autoBids.length);
+  const atLargeField = atLargePool.slice(0, need);
+
+  const pickPlayInFour = (field, pool) => {
+    if (field.length <= 4) return [];
+    const four = field.slice(-4);
+    if (userTeamId && four.includes(userTeamId)) {
+      const idx = four.indexOf(userTeamId);
+      const replacement = pool.find((id) => !field.includes(id) && id !== userTeamId);
+      if (replacement) four[idx] = replacement;
+    }
+    return four;
+  };
+  const weakAutoBids = pickPlayInFour(autoBids, autoBids);
+  const weakAtLarge = pickPlayInFour(atLargeField, atLargePool);
+
+  const firstFourResults = [
+    resolvePlayIn(weakAutoBids.slice(0, 2), powerById),
+    resolvePlayIn(weakAutoBids.slice(2, 4), powerById),
+    resolvePlayIn(weakAtLarge.slice(0, 2), powerById),
+    resolvePlayIn(weakAtLarge.slice(2, 4), powerById),
+  ].filter((r) => r.loser);
+  const eliminated = new Set(firstFourResults.map((r) => r.loser));
+
+  const field = [
+    ...autoBids.filter((id) => !eliminated.has(id)),
+    ...atLargeField.filter((id) => !eliminated.has(id)),
+  ];
 
   // Order the whole field by national rank, then snake seed lines into regions.
   field.sort((a, b) => rankById[a] - rankById[b]);
@@ -3232,7 +3348,7 @@ function buildMadness(confChampions, rankById, banned) {
     name: REGION_NAMES[i],
     bracket: buildSingleElim(ids),
   }));
-  return { regions, finalFour: null, champion: null, field };
+  return { regions, finalFour: null, champion: null, field, firstFourResults };
 }
 
 // NIT: a 32-team consolation field for teams that missed the Madness field
@@ -3687,8 +3803,20 @@ function progressRosterForNewYear(roster, incoming, team, newYear, seasonSeed, s
       // who played the full season develops noticeably faster than someone
       // who barely saw the floor.
       const playFactor = clamp(0.35 + 0.65 * ((p.season.gp || 0) / TOTAL_SEASON_WEEKS), 0.35, 1);
-      const growth = Math.round((p.attrs.potential - p.overall) * rand(0.05, 0.22) * playFactor);
-      const bump = clamp(growth, -2, 9);
+      // Growth blends two things: room left under the player's generated
+      // ceiling (the original signal), plus a small guaranteed baseline for
+      // every returning player — real players get stronger, more skilled,
+      // and more experienced with another year in a college program
+      // regardless of whether a somewhat-arbitrary generated "potential"
+      // number undersold them relative to their derived overall (a real gap
+      // for players seeded straight off real production). Without this
+      // baseline, a player with little or no headroom left simply never
+      // improved on its own, making manual development points look like the
+      // only way a roster ever got better.
+      const headroom = Math.max(0, p.attrs.potential - p.overall);
+      const baseline = rand(1, 3);
+      const growth = Math.round((baseline + headroom * rand(0.05, 0.22)) * playFactor);
+      const bump = clamp(growth, 0, 9);
       const attrs = { potential: p.attrs.potential };
       for (const k of ATTR_KEYS) attrs[k] = clamp((p.attrs[k] ?? 40) + Math.round(bump * rand(0.6, 1.2)), 40, 99);
       return {
@@ -3751,6 +3879,16 @@ function currentStreak(schedule) {
 
 // Confidence swing from a streak, folded into team power for the next game.
 function momentumMod(streak) { return clamp(streak, -5, 5) * 0.75; }
+
+// Same rule currentStreak reads off a whole schedule, applied one game at a
+// time — lets a postseason run carry the regular season's streak in with it
+// and keep extending it game by game, instead of the streak just vanishing
+// the moment the bracket starts.
+function extendStreak(streak, win) {
+  if (streak === 0) return win ? 1 : -1;
+  if ((win && streak > 0) || (!win && streak < 0)) return streak + (win ? 1 : -1);
+  return win ? 1 : -1;
+}
 
 function tickInjuries(roster) {
   return roster.map((p) => {
@@ -4131,6 +4269,29 @@ function draftBoard(early, seniors) {
    COACH CAREER + REPUTATION
    ========================================================================= */
 const EMPTY_COACH = { wins: 0, losses: 0, seasons: 0, tourneyApps: 0, confTourneyTitles: 0, confRegSeasonTitles: 0, finalFours: 0, natTitles: 0, coyAwards: 0, jobSecurity: 60, repPenalty: 0 };
+
+// A brand-new hire — CPU or user — can't be fired in their first couple of
+// seasons no matter how bad job security gets: a real administration that
+// just made a hire doesn't blow it up again a year later. `hireYear` tracks
+// when the CURRENT job started (reset on every hire, unlike `seasons`, which
+// is a career-long total that never resets).
+const JOB_HONEYMOON_SEASONS = 2;
+function inJobHoneymoon(hireYear, seasonJustPlayed) {
+  if (hireYear == null) return false;
+  return seasonJustPlayed - hireYear + 1 <= JOB_HONEYMOON_SEASONS;
+}
+
+// A real coach leaving mid-contract costs something — this is what makes a
+// voluntary job change a real decision instead of a free upgrade the moment
+// reputation clears the bar. Scaled to how little of the "implied contract"
+// they honored: walking after one season stings; by year 3+ there's no
+// further penalty for moving on. Applied on top of (not instead of) the
+// normal end-of-season reputation grading every departure already gets.
+function buyoutPenalty(hireYear, seasonJustLeaving) {
+  if (hireYear == null) return 0;
+  const tenure = seasonJustLeaving - hireYear + 1;
+  return clamp((3 - tenure) * 4, 0, 12);
+}
 const JOB_REP_REQ = { 5: 120, 4: 70, 3: 35, 2: 12, 1: 0 };
 
 /* =========================================================================
@@ -4227,6 +4388,8 @@ const NIL_OBJECTIVE_POOL = [
     evaluate: (ctx) => ctx.record.w >= ctx.record.l },
   { id: "beat_ranked", label: "Beat a ranked (Top 25) opponent", boostPct: 0.08, minTier: 1, maxTier: 5,
     evaluate: (ctx) => ctx.beatRanked },
+  { id: "beat_rival", label: "Beat your rival", boostPct: 0.09, minTier: 1, maxTier: 5,
+    evaluate: (ctx) => ctx.beatRival },
   { id: "improve", label: "Win more games than last season", boostPct: 0.08, minTier: 1, maxTier: 2,
     evaluate: (ctx) => ctx.prevWins == null || ctx.record.w > ctx.prevWins },
 ];
@@ -4379,7 +4542,7 @@ function advanceCoachingCarousel(coachesById, ranked, postseason, prestigeById, 
     const evalRes = evaluateSeason(exp, teamRecord, psSummary);
     const secBefore = next[t.id]?.jobSecurity ?? 60;
     coach.jobSecurity = clamp(secBefore + evalRes.securityDelta, 0, 100);
-    const fired = coach.jobSecurity <= 8;
+    const fired = coach.jobSecurity <= 8 && !inJobHoneymoon(next[t.id]?.hireYear, year);
     if (coachOfYear(evalRes, psSummary)) coach.coyAwards = (coach.coyAwards || 0) + 1;
     coach.repPenalty = (coach.repPenalty || 0) + reputationErosion(evalRes, fired);
     if (fired) {
@@ -4955,6 +5118,10 @@ function TeamSelect({ onPick }) {
                   <div key={i} style={{ width: 14, height: 4, background: i < t.prestige ? C.wood : C.line }} />
                 ))}
               </div>
+              {(() => {
+                const banner = programHistoryBanner(t.id);
+                return banner ? <div style={{ fontSize: 10.5, color: C.gold, marginTop: 2 }}>{banner}</div> : null;
+              })()}
             </button>
           ))}
         </div>
@@ -4987,6 +5154,7 @@ function DynastyApp({ initial, onExit }) {
   const [viewTeamId, setViewTeamId] = useState(null);
   const [jobPickerOpen, setJobPickerOpen] = useState(false);
   const [confirmExit, setConfirmExit] = useState(false); // "New Dynasty" sidebar button — deletes this save, so it's gated behind a confirm
+  const [confirmRetire, setConfirmRetire] = useState(false); // Program tab's "Retire" button — same underlying delete, framed as a send-off
   const [playerViewId, setPlayerViewId] = useState(null);
   const [boxViewId, setBoxViewId] = useState(null);
   const [recap, setRecap] = useState(null);
@@ -5246,9 +5414,10 @@ function DynastyApp({ initial, onExit }) {
     setBoxViewId(thisGameId);
 
     const sig = result.win && oppRank && oppRank <= 25;
+    const rivalry = rivalIds.has(nextGame.oppId);
     let msg = result.win
-      ? `Beat ${opp.name} ${result.myScore}-${result.oppScore}${sig ? ` — signature win over No. ${oppRank}!` : ""}`
-      : `Lost to ${opp.name} ${result.oppScore}-${result.myScore}`;
+      ? `Beat ${opp.name} ${result.myScore}-${result.oppScore}${rivalry ? " — rivalry win!" : sig ? ` — signature win over No. ${oppRank}!` : ""}`
+      : `Lost to ${opp.name} ${result.oppScore}-${result.myScore}${rivalry ? " — a tough one to drop to a rival." : ""}`;
     if (inj.injured) msg += ` ${inj.injured.name}: ${inj.injured.type}${inj.injured.seasonEnding ? " — OUT FOR THE SEASON." : ` (out ${inj.injured.games}).`}${inj.injured.extra > 0 ? ` ${inj.injured.extra} other player${inj.injured.extra > 1 ? "s" : ""} also banged up.` : ""}`;
     flash(msg);
   }
@@ -5606,6 +5775,11 @@ function DynastyApp({ initial, onExit }) {
         champion: null,
         seedRankById: rankById,
         bannedTeamIds: bannedIds,
+        // Carries the regular season's streak into the bracket, and keeps
+        // extending as the user wins (or loses) postseason games — a hot
+        // team riding a streak into the tournament shouldn't lose that edge
+        // just because the calendar flipped to March.
+        userStreak: currentStreak(state.schedule),
       },
     }));
     setTab("postseason");
@@ -5630,10 +5804,12 @@ function DynastyApp({ initial, onExit }) {
       strengths: state.strengths,
       year: state.year,
       powerBaseline,
+      momentum: momentumMod(ps.userStreak ?? currentStreak(state.schedule)),
     };
     let userBox = null;
+    let userWin = null;
     const captureBox = (bracket) => {
-      if (bracket && bracket._freshUserBox) userBox = bracket._freshUserBox;
+      if (bracket && bracket._freshUserBox) { userBox = bracket._freshUserBox; userWin = bracket._freshUserWin; }
     };
 
     setState((s) => {
@@ -5656,7 +5832,7 @@ function DynastyApp({ initial, onExit }) {
         if (allDone) {
           next.phase = "madness";
           const banned = new Set(next.bannedTeamIds || []);
-          next.madness = buildMadness(confChampions, next.seedRankById, banned);
+          next.madness = buildMadness(confChampions, next.seedRankById, banned, state.teamId, ctx.powerById);
           next.nit = buildNit(next.madness.field, next.seedRankById, banned);
         }
       } else if (next.phase === "madness") {
@@ -5703,6 +5879,7 @@ function DynastyApp({ initial, onExit }) {
           return { ...p, season: addBoxToStats(p.season, box) };
         });
       }
+      if (userWin != null) next.userStreak = extendStreak(next.userStreak ?? ps.userStreak ?? 0, userWin);
       return { ...s, roster, postseason: next };
     });
   }
@@ -5716,9 +5893,10 @@ function DynastyApp({ initial, onExit }) {
     const oppId = m.a === state.teamId ? m.b : m.a;
     const opp = TEAM_MAP[oppId];
     const oppPower = teamPowerRating(opp, state.strengths, state.year);
+    const mom = momentumMod(state.postseason?.userStreak ?? currentStreak(state.schedule));
     setLivePlay({
       teamId: state.teamId, opp, oppId, oppPower,
-      oppRank: rankById[oppId] || null, home: true, momentum: 0,
+      oppRank: rankById[oppId] || null, home: true, momentum: mom,
       roster: state.roster, dc: state.depthChart, powerBaseline, gamesRemaining: 1,
       isPostseason: true, loc, year: state.year,
     });
@@ -5744,6 +5922,7 @@ function DynastyApp({ initial, onExit }) {
     };
     setState((s) => {
       const ps = { ...s.postseason };
+      ps.userStreak = extendStreak(ps.userStreak ?? 0, result.win);
       if (loc.where === "conf") {
         ps.confBrackets = { ...ps.confBrackets, [loc.conf]: applyToBracket(ps.confBrackets[loc.conf]) };
       } else if (loc.where === "region") {
@@ -6194,7 +6373,8 @@ function DynastyApp({ initial, onExit }) {
       surviving, incomingRecruits, team, newYear, state.seasonSeed, effectiveScholarshipLimit(state),
       transferRisks ? transferOutIds : null
     );
-    const newStrengths = genSeasonStrengths();
+    const { next: nextProgramErasById, news: programEraNews } = rollProgramEras(state.programErasById, newYear);
+    const newStrengths = genSeasonStrengths(nextProgramErasById);
     const psSummary = postseasonSummary(state.postseason, state.teamId);
 
     // Record book: one season-line per player who actually played this
@@ -6220,7 +6400,7 @@ function DynastyApp({ initial, onExit }) {
     coach.jobSecurity = secAfter;
     const nextBanned = state.postseasonBanUntilYear != null && newYear <= state.postseasonBanUntilYear;
     const nextExp = seasonExpectation(nextPrestige[state.teamId] ?? team.prestige, nextBanned);
-    const fired = secAfter <= 8;
+    const fired = secAfter <= 8 && !inJobHoneymoon(state.coach?.hireYear, state.year);
     const wonCoy = coachOfYear(evalRes, psSummary);
     if (wonCoy) coach.coyAwards = (coach.coyAwards || 0) + 1;
     coach.repPenalty = (coach.repPenalty || 0) + reputationErosion(evalRes, fired);
@@ -6236,9 +6416,10 @@ function DynastyApp({ initial, onExit }) {
     // next season's 3 off the program's drifted prestige.
     const confChampionId = state.postseason?.confChampions?.[team.conf] ?? null;
     const beatRanked = state.schedule.some((g) => g.played && g.result?.win && g.result.oppRank && g.result.oppRank <= 25);
+    const beatRival = state.schedule.some((g) => g.played && g.result?.win && rivalIds.has(g.oppId));
     const prevHistoryEntry = [...state.history].reverse().find((h) => h.teamId === state.teamId);
     const nilCtx = {
-      record, psSummary, rankById, teamId: state.teamId, confChampionId, beatRanked,
+      record, psSummary, rankById, teamId: state.teamId, confChampionId, beatRanked, beatRival,
       prevWins: prevHistoryEntry ? prevHistoryEntry.wins : null,
     };
     const { nextNilById: nilByIdBeforeReturns, met: nilMet, totalBoost: nilBoost } = advanceNilBudgets(
@@ -6295,6 +6476,8 @@ function DynastyApp({ initial, onExit }) {
       recruitingPoints: weeklyRecruitingBudget(team),
       recruitingWeekIndex: 1,
       strengths: newStrengths,
+      programErasById: nextProgramErasById,
+      lastProgramEraNews: programEraNews.slice(0, 6),
       postseason: null,
       offseason: null,
       coach,
@@ -6358,6 +6541,10 @@ function DynastyApp({ initial, onExit }) {
     const newYear = state.year + 1;
     const roster = buildInitialRoster(newTeam, newYear);
     coach.jobSecurity = 55; // new job, fresh honeymoon with the administration
+    // A real buyout: leaving mid-contract costs reputation, scaled to how
+    // little of the implied tenure at the OLD job was honored.
+    coach.repPenalty = (coach.repPenalty || 0) + buyoutPenalty(state.coach?.hireYear, state.year);
+    coach.hireYear = newYear;
 
     // NIL: the program you're LEAVING still grades its 3 objectives and grows
     // its budget off this season, same as a normal advanceYear — it just
@@ -6374,9 +6561,10 @@ function DynastyApp({ initial, onExit }) {
     coach.repPenalty = (coach.repPenalty || 0) + reputationErosion(leavingEvalRes, false);
     const confChampionId = state.postseason?.confChampions?.[team.conf] ?? null;
     const beatRanked = state.schedule.some((g) => g.played && g.result?.win && g.result.oppRank && g.result.oppRank <= 25);
+    const beatRival = state.schedule.some((g) => g.played && g.result?.win && rivalIds.has(g.oppId));
     const prevHistoryEntry = [...state.history].reverse().find((h) => h.teamId === state.teamId);
     const nilCtx = {
-      record, psSummary, rankById, teamId: state.teamId, confChampionId, beatRanked,
+      record, psSummary, rankById, teamId: state.teamId, confChampionId, beatRanked, beatRival,
       prevWins: prevHistoryEntry ? prevHistoryEntry.wins : null,
     };
     const { nextNilById } = advanceNilBudgets(
@@ -6389,6 +6577,7 @@ function DynastyApp({ initial, onExit }) {
     const newCareerRecords = state.roster.map((p) => finalizeCareerRecord(p, state.year));
 
     const newDepthChart = defaultDepthChart(roster);
+    const { next: nextProgramErasById, news: programEraNews } = rollProgramEras(state.programErasById, newYear);
     setState({
       ...state,
       teamId: newTeam.id,
@@ -6407,7 +6596,9 @@ function DynastyApp({ initial, onExit }) {
       recruitTargets: [],
       recruitingPoints: weeklyRecruitingBudget(newTeam),
       recruitingWeekIndex: 1,
-      strengths: genSeasonStrengths(),
+      strengths: genSeasonStrengths(nextProgramErasById),
+      programErasById: nextProgramErasById,
+      lastProgramEraNews: programEraNews.slice(0, 6),
       postseason: null,
       offseason: null,
       coach,
@@ -6616,7 +6807,7 @@ function DynastyApp({ initial, onExit }) {
           {tab === "standings" && <StandingsTab team={team} ranked={ranked} rankById={rankById} userRecord={record} onViewTeam={setViewTeamId} />}
           {tab === "rankings" && <RankingsTab ranked={ranked} userTeamId={state.teamId} onViewTeam={setViewTeamId} />}
           {tab === "leaderboard" && <LeaderboardTab leaders={leaders} userTeamId={state.teamId} year={state.year} onViewTeam={setViewTeamId} />}
-          {tab === "program" && <ProgramTab state={state} team={team} record={record} reputation={reputation} rivalIds={rivalIds} rankById={rankById} />}
+          {tab === "program" && <ProgramTab state={state} team={team} record={record} reputation={reputation} rivalIds={rivalIds} rankById={rankById} onRetire={() => setConfirmRetire(true)} />}
           {tab === "postseason" && (
             <PostseasonTab
               postseason={state.postseason}
@@ -6701,6 +6892,44 @@ function DynastyApp({ initial, onExit }) {
           </div>
         </Modal>
       )}
+      {confirmRetire && (() => {
+        const coach = state.coach || EMPTY_COACH;
+        const rep = reputationOf(coach);
+        return (
+          <Modal title="Hang up the whistle?" onClose={() => setConfirmRetire(false)} maxWidth={480}>
+            <div style={{ textAlign: "center", marginBottom: 18 }}>
+              <div style={{ fontSize: 11, color: C.gold, letterSpacing: "0.1em", fontWeight: 700, marginBottom: 4 }}>A CAREER IN REVIEW</div>
+              <div className="cbb-num" style={{ fontSize: 26, fontWeight: 700 }}>Coach {coach.name}</div>
+              <div style={{ fontSize: 13, color: C.dim, marginTop: 2 }}>{reputationTier(rep)} · {coach.seasons} season{coach.seasons === 1 ? "" : "s"}</div>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 10, marginBottom: 18 }}>
+              <StatBlock label="Career Record" value={`${coach.wins}-${coach.losses}`} />
+              <StatBlock label="Reputation" value={rep} />
+              <StatBlock label="CoY Awards" value={coach.coyAwards || 0} />
+            </div>
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 20 }}>
+              <TrophyBadge count={coach.natTitles} label="National Titles" gold />
+              <TrophyBadge count={coach.finalFours} label="Final Fours" />
+              <TrophyBadge count={coach.confRegSeasonTitles || 0} label="Regular Season Titles" />
+              <TrophyBadge count={coach.confTourneyTitles} label="Conf. Tournament Titles" />
+              <TrophyBadge count={coach.tourneyApps} label="NCAA Appearances" />
+            </div>
+            <div style={{ fontSize: 12.5, color: C.dim, lineHeight: 1.6, marginBottom: 20 }}>
+              This closes the book on Coach {coach.name}'s career for good and deletes this save. There's no coming back from retirement — start a fresh coaching career any time from the save-slot picker.
+            </div>
+            <div style={{ display: "flex", gap: 10 }}>
+              <button onClick={() => setConfirmRetire(false)} className="cbb-btn"
+                style={{ ...btnStyle(C.panelAlt, C.cream), flex: 1, justifyContent: "center", border: `1px solid ${C.line}` }}>
+                Keep Coaching
+              </button>
+              <button onClick={onExit} className="cbb-btn"
+                style={{ fontSize: 13, padding: "9px 14px", flex: 1, justifyContent: "center", display: "flex", alignItems: "center", border: `1px solid ${C.gold}`, background: C.gold, color: "#221a00", cursor: "pointer" }}>
+                Retire
+              </button>
+            </div>
+          </Modal>
+        );
+      })()}
       {livePlay && (
         <LiveGame
           ctxInit={livePlay}
@@ -6836,10 +7065,11 @@ function DashboardTab({ state, team, record, nextGame, stage, onSim, onPlay, onS
       {state.nilObjectives && state.nilObjectives.length > 0 && (() => {
         const confChampionId = state.postseason?.confChampions?.[team.conf] ?? null;
         const beatRanked = state.schedule.some((g) => g.played && g.result?.win && g.result.oppRank && g.result.oppRank <= 25);
+        const beatRival = state.schedule.some((g) => g.played && g.result?.win && rivalTeamIds(state.teamId).has(g.oppId));
         const prevHistoryEntry = [...state.history].reverse().find((h) => h.teamId === state.teamId);
         const ctx = {
           record, psSummary: postseasonSummary(state.postseason, state.teamId), rankById: rankById || {},
-          teamId: state.teamId, confChampionId, beatRanked,
+          teamId: state.teamId, confChampionId, beatRanked, beatRival,
           prevWins: prevHistoryEntry ? prevHistoryEntry.wins : null,
         };
         return (
@@ -6962,6 +7192,19 @@ function DashboardTab({ state, team, record, nextGame, stage, onSim, onPlay, onS
               <div key={i} style={{ fontSize: 12.5, color: C.cream }}>
                 {c.teamName} <span style={{ color: C.dim }}>parts ways with {c.coachName} — {c.wins}-{c.losses}, {c.psSummary || "missed the tournament"}</span>
               </div>
+            ))}
+          </div>
+        </Panel>
+      )}
+
+      {state.lastProgramEraNews && state.lastProgramEraNews.length > 0 && (record.w + record.l) < 5 && (
+        <Panel style={{ padding: 20 }}>
+          <div style={{ fontSize: 11, color: C.dim, letterSpacing: "0.08em", marginBottom: 10, display: "flex", alignItems: "center", gap: 6 }}>
+            <Newspaper size={13} color={C.wood} /> PROGRAM STORYLINES
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {state.lastProgramEraNews.map((n, i) => (
+              <div key={i} style={{ fontSize: 12.5, color: C.cream }}>{n}</div>
             ))}
           </div>
         </Panel>
@@ -8432,6 +8675,17 @@ function Modal({ title, subtitle, onClose, children, maxWidth = 760 }) {
    ========================================================================= */
 const TEMPO_POSS = { slow: 58, balanced: 65, fast: 73 };
 
+// Live-game foul model (Coach Mode's possession-by-possession game only —
+// auto-simmed games stay on the existing abstracted box-line generation).
+// Tuned so a ~65-possession-per-side game lands around 16-20 combined team
+// fouls per side, split so most fouls happen on/around a shot rather than
+// away from the ball, matching how a real box score's PF column reads.
+const SHOOTING_FOUL_CHANCE = 0.11;
+const NONSHOOTING_FOUL_CHANCE = 0.07;
+const FOULED_OUT_LIMIT = 5; // NCAA disqualification — 5 personal fouls, not the NBA's 6
+const BONUS_TEAM_FOULS = 7; // 7-9 team fouls in the half: 1-and-1
+const DOUBLE_BONUS_TEAM_FOULS = 10; // 10+: two shots, no matter what
+
 // Lean toward interior vs perimeter play from the exact 5 players on the
 // floor right now — equal-weighted, since all 5 are playing every second of
 // the possession.
@@ -8508,27 +8762,63 @@ function pickScorer(roster, depthChart, minutesMap) {
 
 // Pick the scorer on a made bucket from the 5 players actually on the floor
 // for the user's side — weighted by scoring rating only, since anyone on the
-// floor is equally live for this possession.
-function pickOnFloorScorer(roster, onFloor) {
+// floor is equally live for this possession. Returns the full player object
+// (name-only callers can just read `.name`) so shooting-foul free throws can
+// be resolved against the same player's actual free-throw touch.
+function pickOnFloorScorerPlayer(roster, onFloor) {
   const weighted = [];
   POSITIONS.forEach((pos) => {
     const p = roster.find((x) => x.id === onFloor[pos]);
     if (!p) return;
-    weighted.push({ name: p.name, w: 0.4 + p.attrs.scoring / 99 });
+    weighted.push({ p, w: 0.4 + p.attrs.scoring / 99 });
   });
-  if (!weighted.length) return "The offense";
+  if (!weighted.length) return null;
   const total = weighted.reduce((s, x) => s + x.w, 0);
   let r = Math.random() * total;
-  for (const x of weighted) { r -= x.w; if (r <= 0) return x.name; }
-  return weighted[0].name;
+  for (const x of weighted) { r -= x.w; if (r <= 0) return x.p; }
+  return weighted[0].p;
 }
+function pickOnFloorScorer(roster, onFloor) {
+  const p = pickOnFloorScorerPlayer(roster, onFloor);
+  return p ? p.name : "The offense";
+}
+
+// Which of the 5 on-floor defenders picks up a foul — uniform among the five
+// on the floor (a real defense's foul distribution leans toward whoever's
+// guarding the ball or protecting the rim, but the game doesn't model
+// individual defensive matchups, so this is a deliberate simplification).
+function pickFoulingDefender(onFloor) {
+  const ids = POSITIONS.map((pos) => onFloor[pos]).filter(Boolean);
+  if (!ids.length) return null;
+  return ids[Math.floor(Math.random() * ids.length)];
+}
+
+// Free-throw shooting. `oneAndOne`, when true, models the NCAA "bonus" rule:
+// the second attempt only happens if the first one drops. A double-bonus (10+
+// team fouls in the half) or a shooting foul always shoots every attempt.
+function shootFreeThrows(ftPct, attempts, oneAndOne = false) {
+  let made = 0, taken = 0;
+  for (let i = 0; i < attempts; i++) {
+    taken++;
+    const hit = Math.random() < ftPct;
+    if (hit) made++;
+    if (oneAndOne && i === 0 && !hit) break;
+  }
+  return { made, taken };
+}
+function ftPctFor(attrs) {
+  return clamp(0.55 + ((attrs?.scoring ?? 60) / 99) * 0.25, 0.45, 0.92);
+}
+// The CPU opponent's free-throw shooting isn't modeled per-player (their
+// roster is narration-only), so it uses one flat, realistic team rate.
+const OPP_FT_PCT = 0.72;
 
 // One possession. Returns { pts, three, made }. `recommended`, when given,
 // is this game's scouting read (see scoutOpponentStyle) — following it on
 // either side of the ball grants an extra, bounded edge on top of whatever
 // the raw tendency match-up already gives, so scouting the opponent is a
 // real strategic lever, not just a readout.
-function livePossession({ offMe, myPower, oppPower, gp, tend, boost, fatigue, recommended }) {
+function livePossession({ offMe, myPower, oppPower, gp, tend, boost, fatigue, recommended, forcedAction }) {
   let net, threeBias;
   if (offMe) {
     net = myPower - oppPower + boost;
@@ -8536,6 +8826,9 @@ function livePossession({ offMe, myPower, oppPower, gp, tend, boost, fatigue, re
     if (gp.offFocus === "perimeter") net += tend.perimeter > tend.inside ? 2 : -1.5;
     if (recommended && gp.offFocus === recommended.offFocus) net += 2.5;
     threeBias = gp.offFocus === "perimeter" ? 0.42 : gp.offFocus === "inside" ? 0.18 : 0.33;
+    // Holding for the last shot deliberately gives up upside for a safer,
+    // higher-value look — protects a late lead by not gambling on a three.
+    if (forcedAction === "hold") { threeBias = 0.05; net += 2; }
   } else {
     net = oppPower - myPower + fatigue;
     if (gp.defScheme === "press") net -= 2.4;
@@ -8553,11 +8846,31 @@ function livePossession({ offMe, myPower, oppPower, gp, tend, boost, fatigue, re
   // underdog. 0.005 matches gameWinProb closely across the realistic power
   // range (see scripts/calibrate-possession-model.mjs).
   const scoreProb = clamp(0.47 + net * 0.005, 0.28, 0.7);
+
+  // A deliberate intentional foul (trailing late) skips the shot entirely —
+  // the whole point is denying the opponent a live-ball look, not gambling
+  // on a stop. Only meaningful on defense (offMe false); the coach can only
+  // call this up when it's actually their team's turn to defend.
+  if (!offMe && forcedAction === "foul") {
+    return { pts: 0, three: false, made: false, shootingFoul: false, nonShootingFoul: true, forcedFoul: true };
+  }
+
+  // A foul is rolled before the shot: a shooting foul co-occurs with the
+  // shot attempt (still resolved below, for and-1 vs. two/three shots), a
+  // non-shooting foul (away from the ball) replaces the shot entirely — no
+  // attempt happens on that possession, only free throws if the fouled
+  // team is in the bonus. Tuned so a full game lands in the realistic
+  // range of team fouls per side.
+  const foulRoll = Math.random();
+  const shootingFoul = foulRoll < SHOOTING_FOUL_CHANCE;
+  const nonShootingFoul = !shootingFoul && foulRoll < SHOOTING_FOUL_CHANCE + NONSHOOTING_FOUL_CHANCE;
+  if (nonShootingFoul) return { pts: 0, three: false, made: false, shootingFoul: false, nonShootingFoul: true };
+
   if (Math.random() < scoreProb) {
     const three = Math.random() < threeBias;
-    return { pts: three ? 3 : 2, three, made: true };
+    return { pts: three ? 3 : 2, three, made: true, shootingFoul, nonShootingFoul: false };
   }
-  return { pts: 0, three: false, made: false };
+  return { pts: 0, three: false, made: false, shootingFoul, nonShootingFoul: false };
 }
 
 // A 5-minute OT period at the same pace as regulation: regulation is T
@@ -8584,29 +8897,127 @@ function periodFor(event, T) {
 // plan — which is what makes a real substitution actually show up in the
 // final box score, and what makes "no subs" mean bench players never accrue
 // a single logged minute.
-function stepLive(g, ctx) {
+function stepLive(g, ctx, forcedAction = null) {
   if (g.finished) return g;
   const e = g.event;
   const offMe = e % 2 === 0;
-  const boost = offMe && g.boostPoss > 0 ? 3 : 0;
-  const res = livePossession({ offMe, myPower: ctx.myPower, oppPower: ctx.oppPower, gp: g.gp, tend: ctx.tend, boost, fatigue: g.fatigue, recommended: ctx.recommended });
-  let { my, opp } = g;
-  let text;
-  if (offMe) {
-    if (res.made) { my += res.pts; const who = pickOnFloorScorer(ctx.roster, g.onFloor); text = res.three ? `${who} drains a three` : `${who} scores inside`; }
-    else text = pick(["Shot rims out", "Turnover", "Contested miss", "Shot clock violation"]);
-  } else {
-    if (res.made) { opp += res.pts; const who = pickScorer(ctx.oppRoster, ctx.oppDc, ctx.oppMinutes); text = `${who} (${ctx.oppName}) ${res.three ? "hits from deep" : "answers with a bucket"}`; }
-    else text = pick([`${ctx.oppName} misses`, `Stop! ${ctx.oppName} turns it over`, `${ctx.oppName} bricks it`]);
-  }
   const event = e + 1;
   const { period, periodEnd } = periodFor(event, ctx.T);
   const inOT = period > 0;
+  const half = inOT ? 2 : (event > ctx.T ? 2 : 1);
+  // Team fouls reset at the start of the second half (NCAA rule — personal
+  // fouls never reset); OT continues the second half's count rather than
+  // resetting again, a deliberate simplification.
+  const startingSecondHalf = event === ctx.T + 1;
+  let myFoulsThisHalf = startingSecondHalf ? 0 : (g.myFoulsThisHalf || 0);
+  let oppFoulsThisHalf = startingSecondHalf ? 0 : (g.oppFoulsThisHalf || 0);
+  const playerFouls = { ...(g.playerFouls || {}) };
+
+  const boost = offMe && g.boostPoss > 0 ? 3 : 0;
+  const res = livePossession({ offMe, myPower: ctx.myPower, oppPower: ctx.oppPower, gp: g.gp, tend: ctx.tend, boost, fatigue: g.fatigue, recommended: ctx.recommended, forcedAction });
+  let { my, opp } = g;
+  let text;
+  const onFloor = { ...g.onFloor };
+  let foulOutEntry = null;
+
+  if (offMe) {
+    // My team on offense — a foul here is committed by the (unnamed) CPU
+    // defense, so only the opponent's team-foul count moves; I don't track
+    // individual opposing players (their roster is narration-only).
+    if (res.nonShootingFoul) {
+      oppFoulsThisHalf += 1;
+      if (oppFoulsThisHalf >= BONUS_TEAM_FOULS) {
+        const shooter = pickOnFloorScorerPlayer(ctx.roster, g.onFloor);
+        const doubleBonus = oppFoulsThisHalf >= DOUBLE_BONUS_TEAM_FOULS;
+        const { made, taken } = shootFreeThrows(ftPctFor(shooter?.attrs), doubleBonus ? 2 : 1, !doubleBonus);
+        my += made;
+        text = `${shooter ? shooter.name : "We"} to the line in the bonus — ${made} of ${taken}`;
+      } else {
+        text = `Foul away from the ball on ${ctx.oppName} — not in the bonus yet`;
+      }
+    } else if (res.shootingFoul) {
+      const shooter = pickOnFloorScorerPlayer(ctx.roster, g.onFloor);
+      if (res.made) {
+        my += res.pts;
+        const { made } = shootFreeThrows(ftPctFor(shooter?.attrs), 1);
+        my += made;
+        text = `${shooter ? shooter.name : "We"} ${res.three ? "drains a three" : "scores inside"}, fouled${made ? " — and the free throw's good!" : ", but misses the free throw"}`;
+      } else {
+        const attempts = res.three ? 3 : 2;
+        const { made, taken } = shootFreeThrows(ftPctFor(shooter?.attrs), attempts);
+        my += made;
+        text = `${shooter ? shooter.name : "We"} fouled on the shot — ${made} of ${taken} from the line`;
+      }
+    } else if (res.made) {
+      my += res.pts; const who = pickOnFloorScorer(ctx.roster, g.onFloor); text = res.three ? `${who} drains a three` : `${who} scores inside`;
+    } else {
+      text = pick(["Shot rims out", "Turnover", "Contested miss", "Shot clock violation"]);
+    }
+  } else {
+    // Opponent on offense — a foul here is committed by one of MY on-floor
+    // players, tracked for real: personal fouls, foul trouble, fouling out.
+    if (res.nonShootingFoul || res.shootingFoul) {
+      const foulerId = pickFoulingDefender(g.onFloor);
+      const foulerPl = foulerId ? ctx.roster.find((p) => p.id === foulerId) : null;
+      if (foulerId) {
+        playerFouls[foulerId] = (playerFouls[foulerId] || 0) + 1;
+        myFoulsThisHalf += 1;
+      }
+      if (res.nonShootingFoul) {
+        const intentional = res.forcedFoul;
+        if (myFoulsThisHalf >= BONUS_TEAM_FOULS) {
+          const doubleBonus = myFoulsThisHalf >= DOUBLE_BONUS_TEAM_FOULS;
+          const { made, taken } = shootFreeThrows(OPP_FT_PCT, doubleBonus ? 2 : 1, !doubleBonus);
+          opp += made;
+          text = intentional
+            ? `${foulerPl ? foulerPl.name : "We"} fouls on purpose to stop the clock — ${ctx.oppName} in the bonus, ${made} of ${taken}`
+            : `${foulerPl ? foulerPl.name : "We"} fouls — ${ctx.oppName} in the bonus, ${made} of ${taken}`;
+        } else if (intentional) {
+          text = `${foulerPl ? foulerPl.name : "We"} fouls on purpose to stop the clock — ${ctx.oppName} not in the bonus yet, no free throws`;
+        } else {
+          text = `${foulerPl ? foulerPl.name : "We"} whistled for a foul — ${ctx.oppName} not in the bonus yet`;
+        }
+      } else {
+        const who = pickScorer(ctx.oppRoster, ctx.oppDc, ctx.oppMinutes);
+        if (res.made) {
+          opp += res.pts;
+          const { made } = shootFreeThrows(OPP_FT_PCT, 1);
+          opp += made;
+          text = `${who} (${ctx.oppName}) scores, and-1 on ${foulerPl ? foulerPl.name : "us"}${made ? " — good" : " — missed"}`;
+        } else {
+          const attempts = res.three ? 3 : 2;
+          const { made, taken } = shootFreeThrows(OPP_FT_PCT, attempts);
+          opp += made;
+          text = `${foulerPl ? foulerPl.name : "We"} fouled ${who} on the shot — ${made} of ${taken} for ${ctx.oppName}`;
+        }
+      }
+      if (foulerId && playerFouls[foulerId] >= FOULED_OUT_LIMIT) {
+        const pos = POSITIONS.find((p) => onFloor[p] === foulerId);
+        const order = (ctx.dc[pos] || []).filter((pid) => ctx.roster.find((p) => p.id === pid));
+        const nextId = order.find((pid) =>
+          pid !== foulerId
+          && !isHurt(ctx.roster.find((p) => p.id === pid))
+          && !g.gameInjuries.some((h) => h.id === pid)
+          && (playerFouls[pid] || 0) < FOULED_OUT_LIMIT);
+        if (nextId) {
+          onFloor[pos] = nextId;
+          const nextPl = ctx.roster.find((p) => p.id === nextId);
+          foulOutEntry = `${foulerPl.name} fouls out (5 personal fouls). ${nextPl.name} checks in.`;
+        } else {
+          foulOutEntry = `${foulerPl.name} fouls out (5 personal fouls). No healthy sub available at ${pos} — playing on shorthanded.`;
+        }
+      }
+    } else if (res.made) {
+      opp += res.pts; const who = pickScorer(ctx.oppRoster, ctx.oppDc, ctx.oppMinutes); text = `${who} (${ctx.oppName}) ${res.three ? "hits from deep" : "answers with a bucket"}`;
+    } else {
+      text = pick([`${ctx.oppName} misses`, `Stop! ${ctx.oppName} turns it over`, `${ctx.oppName} bricks it`]);
+    }
+  }
   const fatigue = clamp(g.fatigue + 0.02 + (g.gp.defScheme === "press" ? 0.05 : 0) + (g.gp.tempo === "fast" ? 0.03 : 0), 0, 4);
   const boostPoss = offMe && g.boostPoss > 0 ? g.boostPoss - 1 : g.boostPoss;
-  const oppRun = offMe ? (res.made ? 0 : g.oppRun) : (res.made ? g.oppRun + res.pts : g.oppRun);
-  const half = inOT ? 2 : (event > ctx.T ? 2 : 1);
+  const oppRun = offMe ? (my > g.my ? 0 : g.oppRun) : (opp > g.opp ? g.oppRun + (opp - g.opp) : g.oppRun);
   let log = [{ id: event, my, opp, offMe, text, half, ot: inOT, otPeriod: period }, ...g.log];
+  if (foulOutEntry) log = [{ id: `foulout${event}`, my, opp, foulOut: true, text: foulOutEntry, half, ot: inOT, otPeriod: period }, ...log];
 
   // Credit this possession's slice of game clock to the 5 players actually
   // on the floor, and roll each of them against the same per-game injury
@@ -8618,7 +9029,6 @@ function stepLive(g, ctx) {
   const minDelta = (1200 / ctx.T) / 60;
   const boxMinutes = { ...g.boxMinutes };
   const gameInjuries = [...g.gameInjuries];
-  const onFloor = { ...g.onFloor };
   POSITIONS.forEach((pos) => {
     const id = onFloor[pos];
     if (!id) return;
@@ -8634,7 +9044,7 @@ function stepLive(g, ctx) {
       const gamesOut = injuryLengthFor(type, ctx.gamesRemaining);
       gameInjuries.push({ id, name: pl.name, type: type.name, gamesOut, seasonEnding: !!type.seasonEnding });
       const order = (ctx.dc[pos] || []).filter((pid) => ctx.roster.find((p) => p.id === pid));
-      const next = order.find((pid) => pid !== id && !isHurt(ctx.roster.find((p) => p.id === pid)) && !gameInjuries.some((h) => h.id === pid));
+      const next = order.find((pid) => pid !== id && !isHurt(ctx.roster.find((p) => p.id === pid)) && !gameInjuries.some((h) => h.id === pid) && (playerFouls[pid] || 0) < FOULED_OUT_LIMIT);
       if (next) {
         onFloor[pos] = next;
         const nextPl = ctx.roster.find((p) => p.id === next);
@@ -8652,7 +9062,52 @@ function stepLive(g, ctx) {
   // at a period's end starts the next 5-minute OT period, repeating for as
   // long as it takes, never sudden death mid-period.
   const finished = event === periodEnd && my !== opp;
-  return { ...g, my, opp, event, fatigue, boostPoss, oppRun, log, finished, inOT, otPeriod: period, onFloor, boxMinutes, gameInjuries };
+  return { ...g, my, opp, event, fatigue, boostPoss, oppRun, log, finished, inOT, otPeriod: period, onFloor, boxMinutes, gameInjuries, playerFouls, myFoulsThisHalf, oppFoulsThisHalf };
+}
+
+// Optional quality-of-life assist (the coach opts in): between possessions,
+// rest a starter who's either gassed (34+ minutes) or in real foul trouble
+// (4 fouls, or 2 in the first half) for their next-healthiest backup in the
+// pregame depth-chart order — but only a backup with a real rest gap (3+
+// fewer minutes), so it settles into a natural, minutes-balancing rotation
+// instead of flapping the same two players back and forth every possession.
+// A manual sub always overrides this on the next pass, same as any other
+// on-floor state.
+function autoManageSubs(g, ctx) {
+  if (g.finished) return g;
+  const onFloor = { ...g.onFloor };
+  const playerFouls = g.playerFouls || {};
+  let changed = false;
+  let log = g.log;
+  const half = g.inOT ? 2 : (g.event > ctx.T ? 2 : 1);
+  POSITIONS.forEach((pos) => {
+    const id = onFloor[pos];
+    if (!id) return;
+    const pl = ctx.roster.find((p) => p.id === id);
+    if (!pl) return;
+    const mins = g.boxMinutes[id] || 0;
+    const pf = playerFouls[id] || 0;
+    const gassed = mins >= 34;
+    const foulTrouble = pf >= 4 || (pf >= 2 && half === 1);
+    if (!gassed && !foulTrouble) return;
+    const order = (ctx.dc[pos] || []).filter((pid) => ctx.roster.find((p) => p.id === pid));
+    const rested = order.find((pid) =>
+      pid !== id
+      && !Object.values(onFloor).includes(pid)
+      && !isHurt(ctx.roster.find((p) => p.id === pid))
+      && !g.gameInjuries.some((h) => h.id === pid)
+      && (playerFouls[pid] || 0) < FOULED_OUT_LIMIT
+      && (g.boxMinutes[pid] || 0) <= mins - 3);
+    if (rested) {
+      onFloor[pos] = rested;
+      changed = true;
+      const nextPl = ctx.roster.find((p) => p.id === rested);
+      const reason = gassed ? "getting a breather" : "sitting with foul trouble";
+      log = [{ id: `auto${g.event}-${pos}`, my: g.my, opp: g.opp, autosub: true, text: `${pl.name} comes out (${reason}) — ${nextPl.name} checks in.`, half, ot: g.inOT, otPeriod: g.otPeriod }, ...log];
+    }
+  });
+  if (!changed) return g;
+  return { ...g, onFloor, log: log.slice(0, 80) };
 }
 
 // Clock + period label for the current game state — regulation halves (20
@@ -9041,6 +9496,10 @@ function LiveGame({ ctxInit, onFinish, onClose, onScoutOpponent }) {
   const T = TEMPO_POSS.balanced; // possessions per team are locked at tip from tempo
   const [tempo, setTempo] = useState("balanced");
   const [started, setStarted] = useState(false);
+  // Opt-in quality-of-life assist — see autoManageSubs. Off by default so a
+  // coach who wants to hand-manage every substitution isn't surprised by one
+  // happening without a click.
+  const [autoManage, setAutoManage] = useState(false);
   // onFloor tracks who's literally on the court at each position right now —
   // subs and mid-game injury promotions update it live. boxMinutes/
   // gameInjuries accumulate the ACTUAL playing time and any knocks suffered
@@ -9053,6 +9512,11 @@ function LiveGame({ ctxInit, onFinish, onClose, onScoutOpponent }) {
     onFloor: initialOnFloor(ctxInit.dc, ctxInit.roster),
     boxMinutes: {},
     gameInjuries: [],
+    // Personal fouls persist all game; team fouls reset each half (see
+    // stepLive) and drive the bonus/double-bonus free-throw rules.
+    playerFouls: {},
+    myFoulsThisHalf: 0,
+    oppFoulsThisHalf: 0,
   }));
   const totalPoss = TEMPO_POSS[tempo];
   const tend = useMemo(() => liveTendencies(ctxInit.roster, g.onFloor), [ctxInit.roster, g.onFloor]);
@@ -9099,14 +9563,32 @@ function LiveGame({ ctxInit, onFinish, onClose, onScoutOpponent }) {
   function runN(n) {
     setG((s) => {
       let next = s;
-      for (let i = 0; i < n && !next.finished; i++) next = stepLive(next, gctx);
+      for (let i = 0; i < n && !next.finished; i++) {
+        next = stepLive(next, gctx);
+        if (autoManage) next = autoManageSubs(next, gctx);
+      }
+      return next;
+    });
+  }
+  // Clutch-time decisions: exactly one deliberate possession, not the usual
+  // two-at-a-time "Run Possession" — a crunch-time call is made one trip at
+  // a time, not in a batch.
+  function runForcedPossession(action) {
+    setG((s) => {
+      if (s.finished) return s;
+      let next = stepLive(s, gctx, action);
+      if (autoManage) next = autoManageSubs(next, gctx);
       return next;
     });
   }
   function playToFinal() {
     setG((s) => {
       let next = s, guard = 0;
-      while (!next.finished && guard < 400) { next = stepLive(next, gctx); guard++; }
+      while (!next.finished && guard < 400) {
+        next = stepLive(next, gctx);
+        if (autoManage) next = autoManageSubs(next, gctx);
+        guard++;
+      }
       return next;
     });
   }
@@ -9131,6 +9613,14 @@ function LiveGame({ ctxInit, onFinish, onClose, onScoutOpponent }) {
   const clock = fmtClock(g, totalPoss);
   const leading = g.my > g.opp;
   const oppOnRun = g.oppRun >= 6 && g.timeouts > 0 && !g.finished;
+  // Clutch time: final 2 minutes of whatever period is live. `nextOffMe`
+  // mirrors stepLive's own offMe calc for the possession about to be played,
+  // so each button only ever shows up when it's actually that team's turn.
+  const [clockMin, clockSec] = clock.label.split(":").map(Number);
+  const clutchTime = !g.finished && started && (clockMin * 60 + clockSec) <= 120;
+  const nextOffMe = g.event % 2 === 0;
+  const canFoulToStop = clutchTime && !nextOffMe && g.opp > g.my;
+  const canHoldForShot = clutchTime && nextOffMe && g.my > g.opp;
 
   function finish() {
     const win = g.my > g.opp;
@@ -9150,6 +9640,12 @@ function LiveGame({ ctxInit, onFinish, onClose, onScoutOpponent }) {
           <div className="cbb-num" style={{ fontSize: 13, color: C.wood, fontWeight: 700 }}>{clock.periodLabel}</div>
           <div className="cbb-num" style={{ fontSize: 20, fontWeight: 700, display: "flex", alignItems: "center", gap: 5, justifyContent: "center" }}><Clock size={14} color={C.dim} />{clock.label}</div>
           <div style={{ fontSize: 10.5, color: C.dimmer, marginTop: 3 }}>TO left: {g.timeouts}</div>
+          <div style={{ fontSize: 10.5, color: C.dimmer, marginTop: 2 }}>
+            Fouls: You {g.myFoulsThisHalf}
+            {g.myFoulsThisHalf >= DOUBLE_BONUS_TEAM_FOULS ? <span style={{ color: C.red }}> DOUBLE BONUS</span> : g.myFoulsThisHalf >= BONUS_TEAM_FOULS ? <span style={{ color: C.gold }}> BONUS</span> : null}
+            {" · "}Opp {g.oppFoulsThisHalf}
+            {g.oppFoulsThisHalf >= DOUBLE_BONUS_TEAM_FOULS ? <span style={{ color: C.green }}> DOUBLE BONUS</span> : g.oppFoulsThisHalf >= BONUS_TEAM_FOULS ? <span style={{ color: C.green }}> BONUS</span> : null}
+          </div>
         </div>
         <div style={{ textAlign: "center", minWidth: 120 }}>
           <div style={{ fontSize: 12, color: C.dim, letterSpacing: "0.06em" }}>{ctx.oppName}</div>
@@ -9232,22 +9728,32 @@ function LiveGame({ ctxInit, onFinish, onClose, onScoutOpponent }) {
               coming out stops accruing box-score minutes immediately —
               not just at the final buzzer. */}
           <div style={{ marginBottom: 14 }}>
-            <div style={{ fontSize: 10.5, color: C.dim, letterSpacing: "0.06em", marginBottom: 5, display: "flex", alignItems: "center", gap: 5 }}>
-              <Users size={12} /> SUBSTITUTIONS
+            <div style={{ fontSize: 10.5, color: C.dim, letterSpacing: "0.06em", marginBottom: 5, display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
+              <span style={{ display: "flex", alignItems: "center", gap: 5 }}><Users size={12} /> SUBSTITUTIONS</span>
+              <label style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer", fontSize: 10.5, color: autoManage ? C.gold : C.dimmer, letterSpacing: "normal", textTransform: "none" }}>
+                <input type="checkbox" checked={autoManage} onChange={(e) => setAutoManage(e.target.checked)} />
+                Auto-rest gassed/foul-trouble starters
+              </label>
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 8 }}>
               {(() => {
                 const onFloorSet = new Set(Object.values(g.onFloor).filter(Boolean));
+                const foulsOf = (id) => g.playerFouls[id] || 0;
                 return POSITIONS.map((pos) => {
                   const onFloorId = g.onFloor[pos];
                   const onFloorPl = ctx.roster.find((p) => p.id === onFloorId);
                   if (!onFloorPl) return null;
-                  const bench = ctx.roster.filter((p) => !onFloorSet.has(p.id) && !isHurt(p) && !g.gameInjuries.some((h) => h.id === p.id));
+                  const bench = ctx.roster.filter((p) => !onFloorSet.has(p.id) && !isHurt(p) && !g.gameInjuries.some((h) => h.id === p.id) && foulsOf(p.id) < FOULED_OUT_LIMIT);
+                  const pf = foulsOf(onFloorId);
+                  const foulColor = pf >= 4 ? C.red : (pf >= 2 && !g.inOT && g.event <= totalPoss) ? C.gold : C.dimmer;
                   return (
                     <div key={pos} style={{ border: `1px solid ${C.line}`, padding: "6px 8px" }}>
                       <div style={{ fontSize: 10, color: C.dimmer }}>{pos}</div>
                       <div style={{ fontSize: 12, color: C.cream, fontWeight: 600 }}>
                         {onFloorPl.name} <span style={{ color: C.dimmer, fontWeight: 400 }}>· {Math.round(g.boxMinutes[onFloorId] || 0)} min</span>
+                      </div>
+                      <div style={{ fontSize: 10, color: foulColor, marginTop: 1 }}>
+                        {pf} foul{pf === 1 ? "" : "s"}{pf === 2 && g.event <= totalPoss && !g.inOT ? " — foul trouble, 1st half" : pf === 4 ? " — one away from fouling out" : ""}
                       </div>
                       <select
                         value=""
@@ -9256,7 +9762,7 @@ function LiveGame({ ctxInit, onFinish, onClose, onScoutOpponent }) {
                         style={{ width: "100%", marginTop: 4, background: C.panel, border: `1px solid ${C.line}`, color: C.cream, fontSize: 11, padding: "3px 4px" }}
                       >
                         <option value="">{bench.length ? "Sub in…" : "No one available"}</option>
-                        {bench.map((p) => <option key={p.id} value={p.id}>{p.name} · OVR {p.overall}</option>)}
+                        {bench.map((p) => <option key={p.id} value={p.id}>{p.name} · OVR {p.overall}{foulsOf(p.id) ? ` · ${foulsOf(p.id)}pf` : ""}</option>)}
                       </select>
                     </div>
                   );
@@ -9264,6 +9770,26 @@ function LiveGame({ ctxInit, onFinish, onClose, onScoutOpponent }) {
               })()}
             </div>
           </div>
+
+          {/* Clutch-time decisions — final 2 minutes only, and only when
+              it's actually the relevant team's turn: fouling to stop the
+              clock only makes sense on defense while trailing, holding for
+              the last shot only while leading and about to have the ball. */}
+          {!g.finished && clutchTime && (canFoulToStop || canHoldForShot) && (
+            <div style={{ border: `1px solid ${C.gold}`, background: "rgba(200,160,40,0.08)", padding: "8px 12px", marginBottom: 10, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+              <span style={{ fontSize: 11, color: C.gold, letterSpacing: "0.05em", fontWeight: 700 }}>CLUTCH TIME</span>
+              {canFoulToStop && (
+                <button onClick={() => runForcedPossession("foul")} className="cbb-btn" style={{ ...btnStyle(C.red, "#fff"), fontSize: 12, padding: "6px 12px" }}>
+                  <AlertTriangle size={13} /> Foul to Stop the Clock
+                </button>
+              )}
+              {canHoldForShot && (
+                <button onClick={() => runForcedPossession("hold")} className="cbb-btn" style={{ ...btnStyle(C.gold, "#221a00"), fontSize: 12, padding: "6px 12px" }}>
+                  <Clock size={13} /> Hold for the Last Shot
+                </button>
+              )}
+            </div>
+          )}
 
           {/* Controls */}
           {!g.finished ? (
@@ -9287,8 +9813,8 @@ function LiveGame({ ctxInit, onFinish, onClose, onScoutOpponent }) {
           <div className="cbb-scroll" style={{ maxHeight: 200, overflowY: "auto", border: `1px solid ${C.line}` }}>
             {g.log.length === 0 && <div style={{ padding: 12, fontSize: 12, color: C.dimmer }}>Tip-off. Run a possession to get started.</div>}
             {g.log.map((l) => (
-              <div key={l.id} style={{ display: "flex", justifyContent: "space-between", gap: 10, padding: "5px 10px", borderBottom: `1px solid ${C.line}`, fontSize: l.scouting ? 11 : 12, background: l.timeout ? C.panelAlt : l.injury ? "rgba(200,60,60,0.1)" : "transparent" }}>
-                <span style={{ color: l.scouting ? C.dim : l.timeout ? C.gold : l.injury ? C.red : l.offMe ? C.cream : C.dim, fontStyle: l.scouting ? "italic" : "normal" }}>{l.text}</span>
+              <div key={l.id} style={{ display: "flex", justifyContent: "space-between", gap: 10, padding: "5px 10px", borderBottom: `1px solid ${C.line}`, fontSize: (l.scouting || l.autosub) ? 11 : 12, background: l.timeout ? C.panelAlt : (l.injury || l.foulOut) ? "rgba(200,60,60,0.1)" : "transparent" }}>
+                <span style={{ color: l.scouting ? C.dim : l.autosub ? C.dimmer : l.timeout ? C.gold : (l.injury || l.foulOut) ? C.red : l.offMe ? C.cream : C.dim, fontStyle: (l.scouting || l.autosub) ? "italic" : "normal" }}>{l.text}</span>
                 <span className="cbb-num" style={{ color: C.dimmer, flexShrink: 0 }}>{l.my}-{l.opp}</span>
               </div>
             ))}
@@ -9931,7 +10457,7 @@ function RecordCategoryList({ label, rows, statKey, yearField }) {
   );
 }
 
-function ProgramTab({ state, team, record, reputation, rivalIds, rankById }) {
+function ProgramTab({ state, team, record, reputation, rivalIds, rankById, onRetire }) {
   const coach = state.coach || EMPTY_COACH;
   const careerW = coach.wins, careerL = coach.losses;
   const winPct = careerW + careerL > 0 ? (careerW / (careerW + careerL)).toFixed(3).replace(/^0/, "") : "—";
@@ -9949,7 +10475,14 @@ function ProgramTab({ state, team, record, reputation, rivalIds, rankById }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20, maxWidth: 940 }}>
       {coach.name && (
-        <div className="cbb-num" style={{ fontSize: 22, fontWeight: 700 }}>Coach {coach.name}</div>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
+          <div className="cbb-num" style={{ fontSize: 22, fontWeight: 700 }}>Coach {coach.name}</div>
+          {onRetire && coach.seasons > 0 && (
+            <button onClick={onRetire} className="cbb-btn" style={{ background: "transparent", border: `1px solid ${C.line}`, color: C.dim, padding: "7px 12px", fontSize: 12, cursor: "pointer" }}>
+              Retire
+            </button>
+          )}
+        </div>
       )}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 14 }}>
         <StatBlock label="Career Record" value={`${careerW}-${careerL}`} />
@@ -9971,6 +10504,10 @@ function ProgramTab({ state, team, record, reputation, rivalIds, rankById }) {
             <TrendIcon size={16} /> {trendText}
           </div>
         </div>
+        {(() => {
+          const banner = programHistoryBanner(team.id);
+          return banner ? <div style={{ fontSize: 11.5, color: C.gold, marginTop: 8, paddingTop: 8, borderTop: `1px solid ${C.line}` }}>{banner} — real program history</div> : null;
+        })()}
       </Panel>
 
       <Panel style={{ padding: 20 }}>
@@ -10740,6 +11277,21 @@ function PostseasonTab({ postseason, userTeamId, seasonOver, rankById, onStart, 
         </div>
       )}
 
+      {ps.phase !== "conf" && ps.madness && ps.madness.firstFourResults && ps.madness.firstFourResults.length > 0 && (
+        <div style={{ marginBottom: 18 }}>
+          <div style={{ fontSize: 12, color: C.wood, fontWeight: 600, letterSpacing: "0.06em", marginBottom: 8 }}>FIRST FOUR</div>
+          <Panel style={{ padding: 12 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 8 }}>
+              {ps.madness.firstFourResults.map((r, i) => (
+                <div key={i} style={{ fontSize: 12.5, color: C.dim, cursor: "pointer" }} onClick={() => onViewTeam(r.winner)}>
+                  <span style={{ color: C.cream, fontWeight: 600 }}>{TEAM_MAP[r.winner]?.name}</span> beat {TEAM_MAP[r.loser]?.name} <span className="cbb-num" style={{ color: C.dimmer }}>{r.score}</span>
+                </div>
+              ))}
+            </div>
+          </Panel>
+        </div>
+      )}
+
       {ps.phase !== "conf" && ps.madness && (
         <div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 16, marginBottom: 18 }}>
@@ -10789,6 +11341,12 @@ export default function CBBDynasty() {
   const [session, setSession] = useState(null); // active dynasty state
   const [pickingTeamFor, setPickingTeamFor] = useState(null); // slot number when choosing a team
   const [onboarding, setOnboarding] = useState(null); // { team, slot, year } once a team's picked, before naming your coach + the how-to-play guide
+  // Save export/import — only 3 local slots exist and there's no cloud sync,
+  // so this is the only backup a long dynasty has, and the only way to move
+  // one to another device.
+  const [importSlot, setImportSlot] = useState(null);
+  const [importError, setImportError] = useState(null);
+  const importFileRef = useRef(null);
 
   useEffect(() => {
     (async () => {
@@ -10825,10 +11383,11 @@ export default function CBBDynasty() {
       recruitingPoints: weeklyRecruitingBudget(team),
       recruitingWeekIndex: 1,
       strengths: genSeasonStrengths(),
+      programErasById: {},
       history: [],
       postseason: null,
       offseason: null,
-      coach: { ...EMPTY_COACH, name: (coachName && coachName.trim()) || fullName() },
+      coach: { ...EMPTY_COACH, name: (coachName && coachName.trim()) || fullName(), hireYear: year },
       coachesById: baselineCoachesById(team.id, year),
       programRecords: { seasons: [], careers: [] },
       awardsHistory: [],
@@ -10849,6 +11408,55 @@ export default function CBBDynasty() {
     setSession(null);
     setPickingTeamFor(null);
     setSlots(await loadAllSlots());
+  }
+
+  // Download one slot's save as a plain JSON file — a real backup before a
+  // risky action (retiring, deleting a slot to free it up), and the only way
+  // to move a dynasty to another device with just 3 local slots and no cloud
+  // sync.
+  function exportSlot(slot) {
+    const data = slots[slot];
+    if (!data) return;
+    const teamName = TEAM_MAP[data.teamId]?.name || "dynasty";
+    const fileName = `${teamName.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-${seasonLabel(data.year).replace(/\s/g, "")}.json`;
+    const blob = new Blob([JSON.stringify(data)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = fileName;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  function beginImport(slot) {
+    setImportError(null);
+    setImportSlot(slot);
+    // Actual file selection happens on the next tick via the ref, once
+    // importSlot has committed — see the hidden input's onChange below.
+    setTimeout(() => importFileRef.current?.click(), 0);
+  }
+
+  async function handleImportFile(e) {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = ""; // let the same file be picked again later
+    if (!file || importSlot == null) return;
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text);
+      if (!parsed || typeof parsed !== "object" || !parsed.teamId || !parsed.roster || !parsed.coach) {
+        throw new Error("That doesn't look like a CBB Dynasty save file.");
+      }
+      parsed.slot = importSlot;
+      await saveDynasty(parsed);
+      setSlots(await loadAllSlots());
+      setImportError(null);
+    } catch (err) {
+      setImportError(err.message || "Couldn't read that file.");
+    } finally {
+      setImportSlot(null);
+    }
   }
 
   if (loading) {
@@ -10888,13 +11496,23 @@ export default function CBBDynasty() {
         <img src="/images/logo.png" alt="CBB Dynasty" style={{ width: 48, height: 48, borderRadius: "50%", marginBottom: 10 }} />
         <h2 className="cbb-num" style={{ fontSize: 24, fontWeight: 700, marginBottom: 6 }}>Choose a save slot</h2>
         <div style={{ fontSize: 12, color: C.dimmer, marginBottom: 18 }}>
-          {SAVE_SLOTS.length} dynasty saves at a time — delete one below to free it up for a new one.
+          {SAVE_SLOTS.length} dynasty saves at a time — delete one below to free it up for a new one. Export a save to back it up or move it to another device; import loads one into an empty slot.
         </div>
+        {importError && (
+          <div style={{ fontSize: 12, color: C.red, border: `1px solid ${C.red}`, padding: "8px 12px", marginBottom: 14 }}>{importError}</div>
+        )}
+        <input
+          ref={importFileRef}
+          type="file"
+          accept="application/json"
+          onChange={handleImportFile}
+          style={{ display: "none" }}
+        />
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           {SAVE_SLOTS.map((slot) => {
             const s = slots[slot];
             return (
-              <div key={slot} style={{ border: `1px solid ${C.line}`, padding: "14px 16px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+              <div key={slot} style={{ border: `1px solid ${C.line}`, padding: "14px 16px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
                 <div style={{ minWidth: 0 }}>
                   <div style={{ fontSize: 10, color: C.dim, letterSpacing: "0.06em" }}>SLOT {slot}</div>
                   {s ? (
@@ -10913,6 +11531,14 @@ export default function CBBDynasty() {
                     <>
                       <button onClick={() => setSession(s)} className="cbb-btn" style={btnStyle(C.wood)}>Continue</button>
                       <button
+                        onClick={() => exportSlot(slot)}
+                        className="cbb-btn"
+                        title="Download this save as a JSON file"
+                        style={{ background: "transparent", border: `1px solid ${C.line}`, color: C.dim, padding: "9px 12px", fontSize: 12.5, cursor: "pointer" }}
+                      >
+                        Export
+                      </button>
+                      <button
                         onClick={async () => { await deleteSlot(slot); setSlots(await loadAllSlots()); }}
                         className="cbb-btn"
                         style={{ background: "transparent", border: `1px solid ${C.line}`, color: C.dim, padding: "9px 12px", fontSize: 12.5, cursor: "pointer" }}
@@ -10921,7 +11547,17 @@ export default function CBBDynasty() {
                       </button>
                     </>
                   ) : (
-                    <button onClick={() => setPickingTeamFor(slot)} className="cbb-btn" style={btnStyle(C.panelAlt, C.cream)}>New Dynasty</button>
+                    <>
+                      <button onClick={() => setPickingTeamFor(slot)} className="cbb-btn" style={btnStyle(C.panelAlt, C.cream)}>New Dynasty</button>
+                      <button
+                        onClick={() => beginImport(slot)}
+                        className="cbb-btn"
+                        title="Load a save from a JSON file into this slot"
+                        style={{ background: "transparent", border: `1px solid ${C.line}`, color: C.dim, padding: "9px 12px", fontSize: 12.5, cursor: "pointer" }}
+                      >
+                        Import
+                      </button>
+                    </>
                   )}
                 </div>
               </div>
