@@ -5562,8 +5562,10 @@ function DynastyApp({ initial, onExit }) {
     if (!state.postseason || state.postseason.phase !== "done" || state.offseason) return;
     const nextYear = state.year + 1;
     const transferBoard = seedInterest(genTransferBoard(nextYear), team);
-    const draftDeclarations = decideEarlyDeclarations(state.roster);
-    const transferRisks = computeTransferRisks(state.roster, state.minutes, team, new Set(draftDeclarations.map((d) => d.id)));
+    // Draft declarations and transfer-risk flags aren't decided yet — they
+    // wait on confirmNilAllocations, so nobody's stay-or-go read is made off
+    // a stale figure the coach hasn't had a chance to react to. See
+    // confirmNilAllocations for why nilLocked gates the reveal.
     // Checked once, right here, before the coach sees a single roster
     // decision — a real market offer (if one exists) is meant to be the
     // very first thing on the table each offseason.
@@ -5574,8 +5576,9 @@ function DynastyApp({ initial, onExit }) {
         week: 1,
         transferBoard,
         committedTransfers: [],
-        draftDeclarations,
-        transferRisks,
+        draftDeclarations: null,
+        transferRisks: null,
+        nilLocked: false,
         points: weeklyRecruitingBudget(team),
         scheduleDraft: genSchedule(team, nextYear),
         done: false,
@@ -5588,6 +5591,23 @@ function DynastyApp({ initial, onExit }) {
     flash(seasonEndOffer
       ? `Offseason underway — but ${TEAM_MAP[seasonEndOffer.teamId].name} wants to talk to you first.`
       : "Offseason underway — work the transfer portal, set your schedule, or take a new job.");
+  }
+
+  // Locks in the coach's broad NIL pass and, only now, reveals who's
+  // actually declaring for the draft and who's unhappy enough to be a
+  // transfer risk — both read off whatever the coach just set on the
+  // roster, not a stale pre-offseason figure. Player Decisions stays gated
+  // until this has run once; RosterNilPanel is disabled after, so any
+  // further money for a specific flagged player goes through that player's
+  // own counter-offer control instead of a second silent roster-wide pass.
+  function confirmNilAllocations() {
+    setState((s) => {
+      const os = s.offseason;
+      if (!os || os.nilLocked) return s;
+      const draftDeclarations = decideEarlyDeclarations(s.roster);
+      const transferRisks = computeTransferRisks(s.roster, s.minutes, team, new Set(draftDeclarations.map((d) => d.id)));
+      return { ...s, offseason: { ...os, nilLocked: true, draftDeclarations, transferRisks } };
+    });
   }
 
   // Mirrors doRecruitAction exactly — calls/offers apply immediately, visits
@@ -6846,6 +6866,7 @@ function DynastyApp({ initial, onExit }) {
               coachRepScore={clamp(reputation / 150, 0, 1)}
               onPersuade={persuadePlayer}
               onSetPlayerNil={setPlayerNil}
+              onConfirmNil={confirmNilAllocations}
               onResolveTransferRisk={resolveTransferRisk}
               onAdvanceWeek={advanceOffseasonWeek}
               onEditGame={editDraftGame}
@@ -7199,15 +7220,18 @@ function DashboardTab({ state, team, record, nextGame, stage, onSim, onPlay, onS
           </div>
         )}
         {stage === "offseasonDone" && (() => {
+          const nilLocked = !!state.offseason?.nilLocked;
           const unresolvedTotal = ((state.offseason?.draftDeclarations || []).filter((d) => !d.attempted).length)
             + ((state.offseason?.transferRisks || []).filter((r) => !r.resolved).length);
-          const decisionsDone = unresolvedTotal === 0;
+          const decisionsDone = nilLocked && unresolvedTotal === 0;
           return (
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 14, flexWrap: "wrap" }}>
               <div style={{ color: C.dim, fontSize: 14, flex: 1, minWidth: 220 }}>
                 {decisionsDone
                   ? `The offseason is complete. Begin the ${seasonLabel(state.year + 1)} season.`
-                  : `${unresolvedTotal} player decision${unresolvedTotal > 1 ? "s" : ""} still need resolving before the new season can begin.`}
+                  : !nilLocked
+                    ? "Confirm this offseason's NIL allocations before the new season can begin."
+                    : `${unresolvedTotal} player decision${unresolvedTotal > 1 ? "s" : ""} still need resolving before the new season can begin.`}
               </div>
               <button onClick={decisionsDone ? onAdvanceYear : () => onGoTab("offseason")} className="cbb-btn"
                 style={btnStyle(C.gold, "#221a00")}>
@@ -8513,7 +8537,7 @@ function NilAmountInput({ value, min = 0, max, onCommit, disabled, width = 110, 
   );
 }
 
-function RosterNilPanel({ roster, nilBudget, offseason, recruitingBoard, teamId, onSetNil, onViewPlayer }) {
+function RosterNilPanel({ roster, nilBudget, offseason, recruitingBoard, teamId, onSetNil, onViewPlayer, locked }) {
   const editable = roster.filter((p) => !p.generatedWalkOn).sort((a, b) => b.overall - a.overall);
   return (
     <Panel style={{ overflow: "hidden" }}>
@@ -8538,7 +8562,7 @@ function RosterNilPanel({ roster, nilBudget, offseason, recruitingBoard, teamId,
                 <NilAmountInput
                   value={p.nil || 0}
                   max={Math.max(p.nil || 0, nilAvailableAmount(nilBudget, roster, offseason, recruitingBoard, teamId, p.id))}
-                  disabled={p.class === "SR"}
+                  disabled={p.class === "SR" || locked}
                   onCommit={(amount) => onSetNil(p.id, amount)}
                 />
               </td>
@@ -8622,7 +8646,7 @@ function TransferRiskPanel({ transferRisks, roster, nilBudget, offseason, recrui
   );
 }
 
-function OffseasonTab({ stage, offseason, hsBoard, team, roster, nextYear, committedFreshmen, scholarshipInfo, rankById, onAction, onSign, onNilOffer, nilBudget, trajectory, coachRepScore, onPersuade, onSetPlayerNil, onResolveTransferRisk, onAdvanceWeek, onEditGame, onChangeJob, onAdvanceYear, onViewTeam, onViewPlayer, onCut, onDev }) {
+function OffseasonTab({ stage, offseason, hsBoard, team, roster, nextYear, committedFreshmen, scholarshipInfo, rankById, onAction, onSign, onNilOffer, nilBudget, trajectory, coachRepScore, onPersuade, onSetPlayerNil, onConfirmNil, onResolveTransferRisk, onAdvanceWeek, onEditGame, onChangeJob, onAdvanceYear, onViewTeam, onViewPlayer, onCut, onDev }) {
   if (!offseason) {
     return (
       <div>
@@ -8637,12 +8661,13 @@ function OffseasonTab({ stage, offseason, hsBoard, team, roster, nextYear, commi
 
   const draftNonConf = (offseason.scheduleDraft || []).filter((g) => !g.conf);
   const committed = offseason.committedTransfers || [];
+  const nilLocked = !!offseason.nilLocked;
   const draftDeclarations = offseason.draftDeclarations || [];
   const transferRisks = offseason.transferRisks || [];
   const unresolvedDraft = draftDeclarations.filter((d) => !d.attempted).length;
   const unresolvedTransferRisk = transferRisks.filter((r) => !r.resolved).length;
   const unresolvedTotal = unresolvedDraft + unresolvedTransferRisk;
-  const decisionsDone = unresolvedTotal === 0;
+  const decisionsDone = nilLocked && unresolvedTotal === 0;
   const recruitingNilPending = [...offseason.transferBoard, ...(hsBoard || [])].reduce((sum, r) =>
     sum + ((r.committedTo === team.id || !r.committedTo) ? (r.nilOffer || 0) : 0), 0);
   const committedNil = committedRosterNil(roster, offseason, null);
@@ -8678,43 +8703,61 @@ function OffseasonTab({ stage, offseason, hsBoard, team, roster, nextYear, commi
       </div>
 
       <div style={{ fontSize: 12, color: C.wood, fontWeight: 600, letterSpacing: "0.06em", marginBottom: 8 }}>
-        PLAYER DECISIONS {!decisionsDone && <span style={{ color: C.gold }}>· {unresolvedTotal} remaining</span>}
+        PLAYER DECISIONS {nilLocked && !decisionsDone && <span style={{ color: C.gold }}>· {unresolvedTotal} remaining</span>}
       </div>
       <div style={{ fontSize: 11.5, color: C.dimmer, marginBottom: 10, maxWidth: 760 }}>
-        Every real player&apos;s NIL, one row per name — edit it directly. Below that: anyone who declared for the draft needs a pitch, and anyone flagged as a transfer risk needs an offer or a decision to let them go. Nothing else opens up until these are all resolved.
+        {nilLocked
+          ? "Every real player's NIL is locked in for the year. Below: anyone who declared for the draft needs a pitch, and anyone flagged as a transfer risk needs an offer or a decision to let them go — nothing else opens up until these are all resolved."
+          : "Set every real player's NIL first, one row per name. Only once you confirm it below does the game reveal who's actually declaring for the draft or unhappy enough to transfer — reading their real market ask against whatever you just paid them, not a stale preseason number."}
       </div>
-      <div style={{ marginBottom: 18 }}>
-        <RosterNilPanel roster={roster} nilBudget={nilBudget} offseason={offseason} recruitingBoard={hsBoard} teamId={team.id} onSetNil={onSetPlayerNil} onViewPlayer={onViewPlayer} />
-      </div>
-
-      <div style={{ fontSize: 11.5, color: C.wood, fontWeight: 600, letterSpacing: "0.06em", marginBottom: 8 }}>NBA DRAFT DECLARATIONS</div>
-      <div style={{ marginBottom: 18 }}>
-        <DraftDecisionsPanel
-          declarations={draftDeclarations}
-          onPersuade={onPersuade}
-          trajectory={trajectory}
-          coachRepScore={coachRepScore}
-          nilBudget={Math.max(0, nilBudget - committedNil)}
-          recruitingNilPending={recruitingNilPending}
-        />
+      <div style={{ marginBottom: nilLocked ? 18 : 10 }}>
+        <RosterNilPanel roster={roster} nilBudget={nilBudget} offseason={offseason} recruitingBoard={hsBoard} teamId={team.id} onSetNil={onSetPlayerNil} onViewPlayer={onViewPlayer} locked={nilLocked} />
       </div>
 
-      <div style={{ fontSize: 11.5, color: C.wood, fontWeight: 600, letterSpacing: "0.06em", marginBottom: 8 }}>TRANSFER RISK</div>
-      <TransferRiskPanel
-        transferRisks={transferRisks}
-        roster={roster}
-        nilBudget={nilBudget}
-        offseason={offseason}
-        recruitingBoard={hsBoard}
-        teamId={team.id}
-        onResolve={onResolveTransferRisk}
-      />
+      {!nilLocked ? (
+        <div style={{ marginBottom: 18 }}>
+          <button onClick={onConfirmNil} className="cbb-btn"
+            style={{ ...btnStyle(C.gold, "#221a00"), fontSize: 13, padding: "10px 16px" }}>
+            <Check size={14} /> Confirm NIL Allocations
+          </button>
+          <div style={{ fontSize: 11, color: C.dimmer, marginTop: 6 }}>
+            This locks the roster's NIL for the year and reveals draft declarations and transfer risk below — you won't be able to edit these figures again this offseason, but you'll still be able to offer a specific flagged player more (or let them walk) once they show up.
+          </div>
+        </div>
+      ) : (
+        <>
+          <div style={{ fontSize: 11.5, color: C.wood, fontWeight: 600, letterSpacing: "0.06em", marginBottom: 8 }}>NBA DRAFT DECLARATIONS</div>
+          <div style={{ marginBottom: 18 }}>
+            <DraftDecisionsPanel
+              declarations={draftDeclarations}
+              onPersuade={onPersuade}
+              trajectory={trajectory}
+              coachRepScore={coachRepScore}
+              nilBudget={Math.max(0, nilBudget - committedNil)}
+              recruitingNilPending={recruitingNilPending}
+            />
+          </div>
+
+          <div style={{ fontSize: 11.5, color: C.wood, fontWeight: 600, letterSpacing: "0.06em", marginBottom: 8 }}>TRANSFER RISK</div>
+          <TransferRiskPanel
+            transferRisks={transferRisks}
+            roster={roster}
+            nilBudget={nilBudget}
+            offseason={offseason}
+            recruitingBoard={hsBoard}
+            teamId={team.id}
+            onResolve={onResolveTransferRisk}
+          />
+        </>
+      )}
 
       {!decisionsDone ? (
         <div style={{ marginTop: 22 }}>
           <Panel style={{ padding: 20, textAlign: "center" }}>
             <div style={{ color: C.dim, fontSize: 13 }}>
-              Resolve every player decision above — {unresolvedTotal} left — before the transfer portal, player development, and schedule setup open up.
+              {!nilLocked
+                ? "Confirm your NIL allocations above before the transfer portal, player development, and schedule setup open up."
+                : `Resolve every player decision above — ${unresolvedTotal} left — before the transfer portal, player development, and schedule setup open up.`}
             </div>
           </Panel>
         </div>
