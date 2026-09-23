@@ -2809,6 +2809,14 @@ const NIL_TIER_RANGES = {
   mid: [150_000, 900_000],
   low: [20_000, 250_000],
 };
+// Hard per-tier NIL budget ceilings — high major $20M, mid major $5M, low
+// major $500K. No team's budget, including real starting data and any
+// objective-bonus growth, is ever allowed above its tier's number.
+const NIL_TIER_CEILINGS = {
+  high: 20_000_000,
+  mid: 5_000_000,
+  low: 500_000,
+};
 
 function nilTierFor(team) {
   if (HIGH_MAJOR_CONFS.has(team.conf)) return "high";
@@ -2864,11 +2872,12 @@ const REAL_NIL_BUDGET_BY_ID = (() => {
 // match, otherwise the old generated estimate — its tier's range (driven by
 // conference), positioned by the team's existing 1-5 prestige.
 function nilBudgetForTeam(team) {
+  const ceiling = NIL_TIER_CEILINGS[nilTierFor(team)];
   const real = REAL_NIL_BUDGET_BY_ID[team.id];
-  if (real != null) return real;
+  if (real != null) return Math.min(real, ceiling);
   const [lo, hi] = NIL_TIER_RANGES[nilTierFor(team)];
   const t = clamp((team.prestige - 1) / 4, 0, 1);
-  return Math.round(lo + (hi - lo) * t);
+  return Math.min(Math.round(lo + (hi - lo) * t), ceiling);
 }
 
 function baselineNilBudgetById() {
@@ -4451,15 +4460,11 @@ function cpuNilGrowth(quality) {
   return clamp(0.02 + (quality ?? 0.5) * 0.28, 0.02, 0.30);
 }
 
-// Real starting budgets (nil_budgets.json) run up to ~$8.8M, well above the
-// ~$4M ceiling the growth rates below were originally tuned against. Left
-// uncapped, a plausible ~16%/season average compounds an $8M budget past
-// $80M over a 15-season dynasty. Growth tapers smoothly toward zero as a
-// budget nears this ceiling — never a hard wall, but never past it either.
-const NIL_BUDGET_CEILING = 20_000_000;
-function taperedNilGrowth(prev, rawGrowthPct) {
-  const room = clamp(1 - prev / NIL_BUDGET_CEILING, 0, 1);
-  return Math.min(prev * (1 + rawGrowthPct * room), NIL_BUDGET_CEILING);
+// Growth (including objective bonuses) tapers smoothly toward zero as a
+// budget nears its tier's NIL_TIER_CEILINGS number and never crosses it.
+function taperedNilGrowth(prev, rawGrowthPct, ceiling) {
+  const room = clamp(1 - prev / ceiling, 0, 1);
+  return Math.min(prev * (1 + rawGrowthPct * room), ceiling);
 }
 
 // Advance every team's NIL budget one season: the human's team grades its 3
@@ -4482,11 +4487,12 @@ function advanceNilBudgets(prevNilById, userTeamId, userObjectives, evalCtx, yea
   const next = {};
   for (const t of TEAMS) {
     const prev = prevNilById[t.id] ?? nilBudgetForTeam(t);
+    const ceiling = NIL_TIER_CEILINGS[nilTierFor(t)];
     if (t.id === userTeamId) {
-      next[t.id] = Math.round(taperedNilGrowth(prev, totalBoost));
+      next[t.id] = Math.round(taperedNilGrowth(prev, totalBoost, ceiling));
     } else {
       const quality = seasonQualityFor(t, year, powerById, null);
-      next[t.id] = Math.round(taperedNilGrowth(prev, cpuNilGrowth(quality)));
+      next[t.id] = Math.round(taperedNilGrowth(prev, cpuNilGrowth(quality), ceiling));
     }
   }
   return { nextNilById: next, met, totalBoost };
