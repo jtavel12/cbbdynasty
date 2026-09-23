@@ -34,6 +34,51 @@ const C = {
 };
 
 const POSITIONS = ["PG", "SG", "SF", "PF", "C"];
+// One color per position, reused everywhere a roster/recruit row needs to
+// be scannable at a glance (Roster, Depth Chart, Recruiting, Transfer
+// Portal) instead of reading as an undifferentiated list of names.
+const POSITION_COLORS = { PG: C.blue, SG: C.gold, SF: C.wood, PF: C.green, C: C.red };
+// A small filled dot in the position's color, placed left of a player's
+// name — cheap to render, doesn't compete with the row's own text weight.
+function PositionDot({ pos, size = 8 }) {
+  const color = POSITION_COLORS[pos] || C.dimmer;
+  return <span style={{ display: "inline-block", width: size, height: size, borderRadius: "50%", background: color, marginRight: 7, flexShrink: 0 }} />;
+}
+
+// Relative luminance of a #rrggbb hex — used to auto-pick a readable
+// light-or-dark label color against an arbitrary team primary color rather
+// than assuming every team's own secondary color has enough contrast.
+function relativeLuminance(hex) {
+  const c = (hex || "").replace("#", "");
+  if (c.length !== 6) return 0.5;
+  const r = parseInt(c.slice(0, 2), 16), g = parseInt(c.slice(2, 4), 16), b = parseInt(c.slice(4, 6), 16);
+  return (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+}
+// No licensed real team logos, so every team gets a small generated crest
+// instead — its own primary/secondary colors plus its abbreviation, the
+// same two data points TEAMS already carries — reused everywhere a team
+// currently shows up as only a name or a bare color dot (sidebar header,
+// Schedule, Standings, bracket matchups) so a team actually looks like a
+// team, not a labeled spreadsheet row.
+function TeamCrest({ team, size = 26 }) {
+  if (!team) return null;
+  const labelColor = relativeLuminance(team.primary) > 0.55 ? "#171d27" : "#f5f2ea";
+  return (
+    <div
+      className="cbb-num"
+      title={team.name}
+      style={{
+        width: size, height: size, minWidth: size, borderRadius: Math.round(size * 0.22),
+        background: team.primary, border: `${Math.max(1, Math.round(size * 0.055))}px solid ${team.secondary}`,
+        display: "flex", alignItems: "center", justifyContent: "center",
+        color: labelColor, fontWeight: 700, fontSize: Math.round(size * 0.4), letterSpacing: "-0.03em",
+        flexShrink: 0, lineHeight: 1, boxSizing: "border-box",
+      }}
+    >
+      {(team.abbr || team.name.slice(0, 3)).slice(0, size < 22 ? 2 : 4)}
+    </div>
+  );
+}
 
 // The granular attribute model. Every player carries a rating for each of
 // these; a position's overall is a weighted blend of them (POS_WEIGHTS below).
@@ -5331,9 +5376,17 @@ function CoachOnboarding({ team, onComplete }) {
   }
 
   return (
-    <div className="cbb-root cbb-scroll" style={{ minHeight: "100vh", background: C.bg, color: C.cream, padding: "40px 24px", overflowY: "auto" }}>
+    <div className="cbb-root cbb-scroll" style={{ minHeight: "100vh", background: C.bg, color: C.cream, padding: "40px 24px", overflowY: "auto", position: "relative" }}>
       <GlobalStyle />
-      <div style={{ maxWidth: 760, margin: "0 auto" }}>
+      <div
+        className="cbb-hero-glow"
+        style={{
+          position: "absolute", top: -180, left: "50%", transform: "translateX(-50%)",
+          width: 900, height: 500, pointerEvents: "none",
+          background: `radial-gradient(closest-side, rgba(216,168,58,0.16), rgba(193,101,47,0.08) 55%, transparent 75%)`,
+        }}
+      />
+      <div style={{ maxWidth: 760, margin: "0 auto", position: "relative" }}>
         <div className="cbb-num" style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, letterSpacing: "0.22em", color: C.wood, fontWeight: 600, marginBottom: 12 }}>
           <Flame size={14} color={C.gold} /> COACH {name.trim().toUpperCase()} · {team.name.toUpperCase()}
         </div>
@@ -7221,10 +7274,12 @@ function DynastyApp({ initial, onExit }) {
       <GlobalStyle />
       {/* LEFT RAIL */}
       <div className="cbb-rail" style={{ background: C.bgRail, borderRight: `1px solid ${C.line}`, display: "flex", flexDirection: "column" }}>
-        <div title={`${team.name} · ${team.conf}`} style={{ padding: "20px 18px", borderBottom: `1px solid ${C.line}` }}>
-          <div style={{ width: 10, height: 10, background: team.primary, display: "inline-block", marginRight: 8 }} />
-          <span className="cbb-num cbb-rail-label" style={{ fontWeight: 600, fontSize: 15 }}>{team.name}</span>
-          <div className="cbb-rail-label" style={{ fontSize: 11, color: C.dim, marginTop: 4 }}>{team.conf}</div>
+        <div title={`${team.name} · ${team.conf}`} style={{ padding: "16px 18px", borderBottom: `1px solid ${C.line}`, display: "flex", alignItems: "center", gap: 10 }}>
+          <TeamCrest team={team} size={34} />
+          <div className="cbb-rail-label" style={{ minWidth: 0 }}>
+            <span className="cbb-num" style={{ fontWeight: 600, fontSize: 15, display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{team.name}</span>
+            <div style={{ fontSize: 11, color: C.dim, marginTop: 2 }}>{team.conf}</div>
+          </div>
         </div>
         <div style={{ flex: 1, padding: "10px 0" }}>
           {navTabs.map((t) => {
@@ -7578,8 +7633,8 @@ function DashboardTab({ state, team, record, nextGame, stage, onSim, onPlay, onS
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20, maxWidth: 900 }}>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 14 }}>
+        <StatBlock label="Record" value={`${record.w}-${record.l}`} lead />
         <StatBlock label="Team Overall" value={overall} />
-        <StatBlock label="Record" value={`${record.w}-${record.l}`} />
         <StatBlock label="Roster Size" value={state.roster.length} />
         <StatBlock label="NIL Budget" value={formatNil(nilBudget)} />
       </div>
@@ -8050,7 +8105,11 @@ function SeasonTrendChart({ history }) {
 function btnStyle(bg, color = "#fff") {
   return { display: "flex", alignItems: "center", gap: 6, background: bg, color, border: "none", padding: "9px 14px", fontSize: 13, cursor: "pointer", fontWeight: 600 };
 }
-function StatBlock({ label, value }) {
+// `lead` marks the one stat in a row that should actually draw the eye
+// first — a gold-tinted background and a larger number — so a row of
+// otherwise-identical panels isn't uniformly flat. Used sparingly (Record
+// on Dashboard); everything else stays the quiet default on purpose.
+function StatBlock({ label, value, lead = false }) {
   const prevRef = useRef(value);
   const [pop, setPop] = useState(false);
   useEffect(() => {
@@ -8062,9 +8121,9 @@ function StatBlock({ label, value }) {
     }
   }, [value]);
   return (
-    <Panel style={{ padding: "16px 18px" }}>
-      <div style={{ fontSize: 11, color: C.dim, letterSpacing: "0.08em" }}>{label.toUpperCase()}</div>
-      <div className={`cbb-num${pop ? " cbb-value-pop" : ""}`} style={{ fontSize: 28, fontWeight: 700, marginTop: 4 }}>{value}</div>
+    <Panel style={lead ? { padding: "16px 18px", borderColor: C.wood, background: `linear-gradient(160deg, ${C.panelAlt} 0%, ${C.panel} 100%)` } : { padding: "16px 18px" }}>
+      <div style={{ fontSize: 11, color: lead ? C.gold : C.dim, letterSpacing: "0.08em" }}>{label.toUpperCase()}</div>
+      <div className={`cbb-num${pop ? " cbb-value-pop" : ""}`} style={{ fontSize: lead ? 34 : 28, fontWeight: 700, marginTop: 4 }}>{value}</div>
     </Panel>
   );
 }
@@ -8112,7 +8171,8 @@ function RosterTab({ roster, onViewPlayer, onChangePosition }) {
           {sorted.map((p) => (
             <tr key={p.id} className="cbb-row" style={{ borderBottom: `1px solid ${C.line}` }}>
               <td style={{ ...td, cursor: onViewPlayer ? "pointer" : "default" }} onClick={() => onViewPlayer && onViewPlayer(p.id)}>
-                <div style={{ fontWeight: 600 }}>
+                <div style={{ fontWeight: 600, display: "flex", alignItems: "center" }}>
+                  <PositionDot pos={p.pos} />
                   {p.realName ? "• " : ""}{p.name}
                   {isHurt(p) && <span title={p.injuryType || undefined} style={{ fontSize: 9.5, color: C.red, marginLeft: 6, letterSpacing: "0.06em", border: `1px solid ${C.red}`, padding: "1px 4px" }}>{injuryBadge(p)}</span>}
                 </div>
@@ -8609,7 +8669,8 @@ function RecruitBoard({ board, otherBoard, committedIds, targets, onToggleTarget
                   )}
                   <span className="cbb-num" style={{ width: 34, color: C.dimmer, fontSize: 11 }}>#{r.nationalRank ?? "—"}</span>
                   <div style={{ minWidth: 150 }}>
-                    <div style={{ fontWeight: 600, fontSize: 13.5 }}>
+                    <div style={{ fontWeight: 600, fontSize: 13.5, display: "flex", alignItems: "center" }}>
+                      <PositionDot pos={r.pos} />
                       {r.name}
                       {needSet.has(r.pos) && (
                         <span style={{ fontSize: 9.5, color: C.gold, marginLeft: 6, letterSpacing: "0.06em", border: `1px solid ${C.wood}`, padding: "1px 4px", verticalAlign: "middle" }}>FILLS NEED</span>
@@ -8744,7 +8805,7 @@ function CompareTargetsModal({ recruits, team, onClose }) {
             {recruits.map((r) => (
               <tr key={r.id}>
                 <td style={{ padding: "8px 10px", borderBottom: `1px solid ${C.line}`, fontWeight: 600, color: C.cream }}>
-                  {r.name}
+                  <span style={{ display: "inline-flex", alignItems: "center" }}><PositionDot pos={r.pos} />{r.name}</span>
                   <div style={{ fontWeight: 400, color: C.dim, fontSize: 11 }}>{r.pos} · {r.hometown || r.state}</div>
                 </td>
                 {cols.map((c) => (
@@ -9917,7 +9978,15 @@ function stepLive(g, ctx, forcedAction = null) {
   const fatigue = clamp(g.fatigue + 0.02 + (g.gp.defScheme === "press" ? 0.05 : 0) + (g.gp.tempo === "fast" ? 0.03 : 0), 0, 4);
   const boostPoss = offMe && g.boostPoss > 0 ? g.boostPoss - 1 : g.boostPoss;
   const oppRun = offMe ? (my > g.my ? 0 : g.oppRun) : (opp > g.opp ? g.oppRun + (opp - g.opp) : g.oppRun);
-  let log = [{ id: event, my, opp, offMe, text, half, ot: inOT, otPeriod: period }, ...g.log];
+  // Structured outcome flags (on top of the narrated `text`) so the
+  // play-by-play can color-code by what actually happened instead of
+  // reading like an undifferentiated wall of text — a make for us, a make
+  // for them, a foul, and a plain miss/turnover all mean something
+  // different at a glance.
+  const scored = my !== g.my || opp !== g.opp;
+  const foul = !!(res.nonShootingFoul || res.shootingFoul);
+  const three = !!res.three;
+  let log = [{ id: event, my, opp, offMe, text, half, ot: inOT, otPeriod: period, scored, foul, three }, ...g.log];
   if (foulOutEntry) log = [{ id: `foulout${event}`, my, opp, foulOut: true, text: foulOutEntry, half, ot: inOT, otPeriod: period }, ...log];
 
   // Credit this possession's slice of game clock to the 5 players actually
@@ -10541,7 +10610,7 @@ function LiveGame({ ctxInit, onFinish, onClose, onScoutOpponent }) {
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: C.bg, border: `1px solid ${C.line}`, padding: "16px 22px", marginBottom: 16 }}>
         <div style={{ textAlign: "center", minWidth: 120 }}>
           <div style={{ fontSize: 12, color: C.dim, letterSpacing: "0.06em" }}>{TEAM_MAP[ctxInit.teamId]?.name || "YOU"}</div>
-          <div className="cbb-num" style={{ fontSize: 44, fontWeight: 700, color: leading ? C.gold : C.cream, lineHeight: 1 }}>{g.my}</div>
+          <div key={g.my} className="cbb-num cbb-score-pop" style={{ fontSize: 44, fontWeight: 700, color: leading ? C.gold : C.cream, lineHeight: 1 }}>{g.my}</div>
         </div>
         <div style={{ textAlign: "center" }}>
           <div className="cbb-num" style={{ fontSize: 13, color: C.wood, fontWeight: 700 }}>{clock.periodLabel}</div>
@@ -10556,7 +10625,7 @@ function LiveGame({ ctxInit, onFinish, onClose, onScoutOpponent }) {
         </div>
         <div style={{ textAlign: "center", minWidth: 120 }}>
           <div style={{ fontSize: 12, color: C.dim, letterSpacing: "0.06em" }}>{ctx.oppName}</div>
-          <div className="cbb-num" style={{ fontSize: 44, fontWeight: 700, color: !leading && g.opp > g.my ? C.red : C.cream, lineHeight: 1 }}>{g.opp}</div>
+          <div key={g.opp} className="cbb-num cbb-score-pop" style={{ fontSize: 44, fontWeight: 700, color: !leading && g.opp > g.my ? C.red : C.cream, lineHeight: 1 }}>{g.opp}</div>
         </div>
       </div>
 
@@ -10719,12 +10788,26 @@ function LiveGame({ ctxInit, onFinish, onClose, onScoutOpponent }) {
           <div style={{ fontSize: 10.5, color: C.dim, letterSpacing: "0.06em", marginBottom: 6 }}>PLAY-BY-PLAY</div>
           <div className="cbb-scroll" style={{ maxHeight: 200, overflowY: "auto", border: `1px solid ${C.line}` }}>
             {g.log.length === 0 && <div style={{ padding: 12, fontSize: 12, color: C.dimmer }}>Tip-off. Run a possession to get started.</div>}
-            {g.log.map((l) => (
-              <div key={l.id} style={{ display: "flex", justifyContent: "space-between", gap: 10, padding: "5px 10px", borderBottom: `1px solid ${C.line}`, fontSize: (l.scouting || l.autosub) ? 11 : 12, background: l.timeout ? C.panelAlt : (l.injury || l.foulOut) ? "rgba(200,60,60,0.1)" : "transparent" }}>
-                <span style={{ color: l.scouting ? C.dim : l.autosub ? C.dimmer : l.timeout ? C.gold : (l.injury || l.foulOut) ? C.red : l.offMe ? C.cream : C.dim, fontStyle: (l.scouting || l.autosub) ? "italic" : "normal" }}>{l.text}</span>
-                <span className="cbb-num" style={{ color: C.dimmer, flexShrink: 0 }}>{l.my}-{l.opp}</span>
-              </div>
-            ))}
+            {g.log.map((l) => {
+              // Outcome color: the special narration flags (scouting, sub,
+              // timeout, injury/foul-out) still win, same as before — under
+              // those, what the play actually did drives the color: a
+              // three lights up gold, any other make is green, a live
+              // foul is amber, and a plain miss/turnover stays quiet.
+              const color = l.scouting ? C.dim
+                : l.autosub ? C.dimmer
+                : l.timeout ? C.gold
+                : (l.injury || l.foulOut) ? C.red
+                : l.scored ? (l.offMe ? (l.three ? C.gold : C.green) : C.red)
+                : l.foul ? C.gold
+                : C.dimmer;
+              return (
+                <div key={l.id} className="cbb-slide-in" style={{ display: "flex", justifyContent: "space-between", gap: 10, padding: "5px 10px", borderBottom: `1px solid ${C.line}`, fontSize: (l.scouting || l.autosub) ? 11 : 12, background: l.timeout ? C.panelAlt : (l.injury || l.foulOut) ? "rgba(200,60,60,0.1)" : "transparent" }}>
+                  <span style={{ color, fontStyle: (l.scouting || l.autosub) ? "italic" : "normal", fontWeight: l.scored && l.offMe ? 600 : 400 }}>{l.three && l.scored && l.offMe ? "★ " : ""}{l.text}</span>
+                  <span className="cbb-num" style={{ color: C.dimmer, flexShrink: 0 }}>{l.my}-{l.opp}</span>
+                </div>
+              );
+            })}
           </div>
         </div>
       )}
@@ -11415,7 +11498,7 @@ function ProgramTab({ state, team, record, reputation, rivalIds, rankById, onRet
         </div>
       )}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 14 }}>
-        <StatBlock label="Career Record" value={`${careerW}-${careerL}`} />
+        <StatBlock label="Career Record" value={`${careerW}-${careerL}`} lead />
         <StatBlock label="Win %" value={winPct} />
         <StatBlock label="Seasons" value={coach.seasons} />
         <StatBlock label="Reputation" value={reputation} />
@@ -11765,7 +11848,8 @@ function ScheduleRow({ g, teamConf, rankById, isRival, onViewTeam, onEditGame, o
             ))}
           </select>
         ) : (
-          <span onClick={() => onViewTeam(g.oppId)} style={{ cursor: "pointer" }}>
+          <span onClick={() => onViewTeam(g.oppId)} style={{ cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 7 }}>
+            <TeamCrest team={opp} size={20} />
             <RankBadge rank={rankById?.[g.oppId]} />
             <span style={{ borderBottom: `1px dotted ${C.dim}` }}>{opp.name}</span>
           </span>
@@ -11877,9 +11961,20 @@ function ScheduleSetupModal({ team, year, games, programBudget, onEditGame, onCo
   const affordable = programBudget + netDelta >= 0;
   return (
     <div className="cbb-scroll" style={{ position: "fixed", inset: 0, zIndex: 60, overflowY: "auto", minHeight: "100vh", background: C.bg, padding: "40px 20px", display: "flex", justifyContent: "center" }}>
-      <div style={{ width: "100%", maxWidth: 860 }}>
-        <div style={{ fontSize: 11, color: C.wood, letterSpacing: "0.08em", fontWeight: 600, marginBottom: 4 }}>{seasonLabel(year)} — SCHEDULE SETUP</div>
-        <h2 className="cbb-num" style={{ fontSize: 26, fontWeight: 700, margin: "0 0 10px" }}>Set your non-conference slate</h2>
+      <div
+        className="cbb-hero-glow"
+        style={{
+          position: "absolute", top: -180, left: "50%", transform: "translateX(-50%)",
+          width: 900, height: 500, pointerEvents: "none",
+          background: `radial-gradient(closest-side, rgba(216,168,58,0.16), rgba(193,101,47,0.08) 55%, transparent 75%)`,
+        }}
+      />
+      <div style={{ width: "100%", maxWidth: 860, position: "relative" }}>
+        <div className="cbb-num" style={{ fontSize: 11, color: C.wood, letterSpacing: "0.08em", fontWeight: 600, marginBottom: 4 }}>{seasonLabel(year)} — SCHEDULE SETUP</div>
+        <h2 className="cbb-display" style={{ fontSize: "clamp(26px, 3.6vw, 36px)", margin: "0 0 10px" }}>
+          <span style={{ color: C.cream }}>Set your non-conference </span>
+          <span className="cbb-gradient-text">slate.</span>
+        </h2>
         <div style={{ fontSize: 13, color: C.dim, marginBottom: 20, maxWidth: 720 }}>
           Pick all {nonConf.length} non-conference opponents before the season starts — your conference slate is fixed automatically. Once you confirm, this schedule is locked in for the whole season.
           A real prestige gap against a non-conference opponent means a real guarantee-game payout: the higher-tier program pays the full fee to book the game, and the lower-tier program only banks {Math.round(GUARANTEE_KEEP_PCT * 100)}% of it for their own program budget — the rest goes to the Athletic Department generally, not the team.
@@ -12011,8 +12106,11 @@ function StandingsTab({ team, ranked, rankById, userRecord, onViewTeam }) {
               <tr key={t.id} className="cbb-row" style={{ borderBottom: `1px solid ${C.line}`, background: t.isUser ? C.panelAlt : "transparent", cursor: "pointer" }} onClick={() => onViewTeam(t.id)}>
                 <td style={td}>{i + 1}</td>
                 <td style={{ ...td, fontWeight: t.isUser ? 700 : 500 }}>
-                  <RankBadge rank={rankById[t.id]} />
-                  <span style={{ borderBottom: t.isUser ? "none" : `1px dotted ${C.dim}` }}>{t.name}</span>{t.isUser ? " (you)" : ""}
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}>
+                    <TeamCrest team={t} size={20} />
+                    <RankBadge rank={rankById[t.id]} />
+                    <span style={{ borderBottom: t.isUser ? "none" : `1px dotted ${C.dim}` }}>{t.name}</span>{t.isUser ? " (you)" : ""}
+                  </span>
                 </td>
                 <td style={td}>{t.conf}</td>
                 {inConf ? (
@@ -12196,9 +12294,10 @@ function MatchupBox({ m, seedOf, userTeamId, onViewTeam }) {
           fontWeight: isWinner ? 700 : 400,
         }}
       >
-        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12 }}>
-          {seed ? <span className="cbb-num" style={{ color: C.dim, marginRight: 5, fontSize: 10.5 }}>{seed}</span> : null}
-          {t.name}
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 5, overflow: "hidden", fontSize: 12 }}>
+          {seed ? <span className="cbb-num" style={{ color: C.dim, fontSize: 10.5, flexShrink: 0 }}>{seed}</span> : null}
+          <TeamCrest team={t} size={15} />
+          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.name}</span>
         </span>
         <span className={`cbb-num${justDecided && isWinner ? " cbb-score-pop" : ""}`} style={{ fontSize: 12, color: isWinner ? C.wood : C.dimmer }}>{score ?? ""}</span>
       </div>
@@ -12398,18 +12497,48 @@ function PostseasonTab({ postseason, userTeamId, seasonOver, rankById, onStart, 
         )}
       </div>
 
-      {ps.champion && (
+      {ps.champion && (ps.champion === userTeamId ? (
+        // The one moment worth spending real visual budget on — this is the
+        // payoff of an entire season, not another status panel, so it gets
+        // its own glow wash, a bigger crown-pop, and the same gradient
+        // display headline treatment onboarding uses.
+        <div
+          className="cbb-hero-in"
+          style={{
+            position: "relative", overflow: "hidden", marginBottom: 18,
+            border: `1px solid ${C.gold}`, background: `linear-gradient(160deg, ${C.panelAlt} 0%, ${C.panel} 100%)`,
+            padding: "36px 30px", textAlign: "center",
+          }}
+        >
+          <div
+            className="cbb-hero-glow"
+            style={{
+              position: "absolute", top: -140, left: "50%", transform: "translateX(-50%)",
+              width: 700, height: 380, pointerEvents: "none",
+              background: `radial-gradient(closest-side, rgba(216,168,58,0.28), rgba(193,101,47,0.1) 55%, transparent 75%)`,
+            }}
+          />
+          <div style={{ position: "relative" }}>
+            <span className="cbb-crown-pop" style={{ display: "inline-flex" }}><Crown size={52} color={C.gold} /></span>
+            <div className="cbb-num" style={{ fontSize: 12, color: C.gold, letterSpacing: "0.18em", marginTop: 10 }}>NATIONAL CHAMPIONS</div>
+            <h2 className="cbb-display" style={{ fontSize: "clamp(30px, 5vw, 46px)", margin: "6px 0 8px" }}>
+              <span className="cbb-gradient-text">{TEAM_MAP[ps.champion].name}</span>
+            </h2>
+            <div style={{ fontSize: 13.5, color: C.dim }}>Cut down the nets. Head to the Dashboard to advance to next season.</div>
+          </div>
+        </div>
+      ) : (
         <Panel style={{ padding: 20, marginBottom: 18, borderColor: C.gold, background: C.panelAlt, display: "flex", alignItems: "center", gap: 14 }}>
           <Crown size={30} color={C.gold} />
           <div>
             <div style={{ fontSize: 11, color: C.gold, letterSpacing: "0.1em" }}>NATIONAL CHAMPION</div>
-            <div className="cbb-num" style={{ fontSize: 26, fontWeight: 700, color: ps.champion === userTeamId ? C.gold : C.cream }}>
-              {TEAM_MAP[ps.champion].name}{ps.champion === userTeamId ? " — that's you!" : ""}
+            <div className="cbb-num" style={{ fontSize: 26, fontWeight: 700, color: C.cream }}>
+              {TEAM_MAP[ps.champion].name}
             </div>
             <div style={{ fontSize: 12, color: C.dim, marginTop: 2 }}>Head to the Dashboard to advance to next season.</div>
           </div>
         </Panel>
-      )}
+      ))}
 
       {ps.phase === "conf" && (
         <div>
@@ -12457,9 +12586,15 @@ function PostseasonTab({ postseason, userTeamId, seasonOver, rankById, onStart, 
         <div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 16, marginBottom: 18 }}>
             {ps.madness.regions.map((r) => (
-              <div key={r.name}>
+              // minWidth: 0 overrides a CSS Grid item's implicit min-width:
+              // auto — without it the item refuses to shrink below the
+              // bracket's full intrinsic width (4 rounds' worth of columns),
+              // which was pushing every region wider than its 1fr track and
+              // squeezing/clipping the whole row instead of letting
+              // BracketView's own overflow-x scroll handle it.
+              <div key={r.name} style={{ minWidth: 0 }}>
                 <div style={{ fontSize: 12, color: C.wood, fontWeight: 600, letterSpacing: "0.06em", marginBottom: 8 }}>{r.name.toUpperCase()} REGION</div>
-                <Panel style={{ padding: 12 }}>
+                <Panel style={{ padding: 12, minWidth: 0 }}>
                   <BracketView bracket={r.bracket} userTeamId={userTeamId} onViewTeam={onViewTeam} />
                 </Panel>
               </div>
@@ -12659,11 +12794,19 @@ export default function CBBDynasty() {
   }
 
   return (
-    <div className="cbb-root" style={{ minHeight: "100vh", background: C.bg, color: C.cream, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+    <div className="cbb-root" style={{ minHeight: "100vh", background: C.bg, color: C.cream, display: "flex", alignItems: "center", justifyContent: "center", padding: 24, position: "relative", overflow: "hidden" }}>
       <GlobalStyle />
-      <Panel style={{ padding: 30, maxWidth: 560, width: "100%" }}>
+      <div
+        className="cbb-hero-glow"
+        style={{
+          position: "absolute", top: -180, left: "50%", transform: "translateX(-50%)",
+          width: 900, height: 500, pointerEvents: "none",
+          background: `radial-gradient(closest-side, rgba(216,168,58,0.16), rgba(193,101,47,0.08) 55%, transparent 75%)`,
+        }}
+      />
+      <Panel className="cbb-hero-in" style={{ padding: 30, maxWidth: 560, width: "100%", position: "relative" }}>
         <img src="/images/logo.png" alt="CBB Dynasty" style={{ width: 48, height: 48, borderRadius: "50%", marginBottom: 10 }} />
-        <h2 className="cbb-num" style={{ fontSize: 24, fontWeight: 700, marginBottom: 6 }}>Choose a save slot</h2>
+        <h2 className="cbb-display cbb-gradient-text" style={{ fontSize: 32, margin: "0 0 8px" }}>Choose a save slot</h2>
         <div style={{ fontSize: 12, color: C.dimmer, marginBottom: 18 }}>
           {SAVE_SLOTS.length} dynasty saves at a time — delete one below to free it up for a new one. Export a save to back it up or move it to another device; import loads one into an empty slot.
         </div>
