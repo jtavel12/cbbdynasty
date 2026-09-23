@@ -7031,6 +7031,11 @@ function DynastyApp({ initial, onExit }) {
   }
 
   function hireAssistant(role, candidate) {
+    const salary = assistantSalaryFor(candidate, team);
+    if (programBudget < salary) {
+      flash(`Not enough in the program budget — ${candidate.name} costs ${formatNil(salary)}/yr.`);
+      return;
+    }
     setState((s) => ({ ...s, assistants: { ...(s.assistants || {}), [role]: candidate } }));
     flash(`Hired ${candidate.name} as ${ASSISTANT_ROLES[role].label} (${candidate.rating} rated).`);
   }
@@ -9517,13 +9522,15 @@ function SettingsModal({ settings, onChange, onClose }) {
 // Three freshly generated candidates for one assistant role — hiring is
 // instant and free (no salary/contract system yet), so this is purely a
 // "which one" decision. `rating` maps straight to assistantBonus.
-function AssistantHireModal({ role, candidates, team, onHire, onClose }) {
+function AssistantHireModal({ role, candidates, team, programBudget, onHire, onClose }) {
   const info = ASSISTANT_ROLES[role];
   return (
     <Modal title={`Hire ${info.label}`} subtitle={info.blurb} onClose={onClose} maxWidth={520}>
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {candidates.map((c) => {
           const bonus = assistantBonus(c);
+          const salary = assistantSalaryFor(c, team);
+          const affordable = programBudget >= salary;
           return (
             <Panel key={c.id} style={{ padding: "12px 16px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
               <div>
@@ -9531,12 +9538,15 @@ function AssistantHireModal({ role, candidates, team, onHire, onClose }) {
                 <div style={{ fontSize: 11.5, color: C.dim, marginTop: 2 }}>
                   {c.rating} rating · {bonus >= 0 ? "+" : ""}{bonus} {role === "recruiting" ? "recruiting pts/wk" : "dev pts/offseason"}
                 </div>
-                <div style={{ fontSize: 11.5, color: C.dimmer, marginTop: 2 }}>
-                  {formatNil(assistantSalaryFor(c, team))}/yr from program budget
+                <div style={{ fontSize: 11.5, color: affordable ? C.dimmer : C.red, marginTop: 2 }}>
+                  {formatNil(salary)}/yr from program budget
                 </div>
               </div>
-              <button onClick={() => onHire(c)} className="cbb-btn" style={{ ...btnStyle(C.wood), fontSize: 12.5 }}>
-                Hire
+              <button onClick={() => onHire(c)} disabled={!affordable} className="cbb-btn"
+                style={{ fontSize: 12.5, padding: "6px 14px", cursor: affordable ? "pointer" : "not-allowed",
+                  border: `1px solid ${affordable ? C.wood : C.line}`, background: affordable ? C.wood : "transparent",
+                  color: affordable ? "#fff" : C.dimmer, fontWeight: 600 }}>
+                {affordable ? "Hire" : "Can't afford"}
               </button>
             </Panel>
           );
@@ -11473,6 +11483,7 @@ function ProgramTab({ state, team, record, reputation, rivalIds, rankById, onRet
           role={hiringRole}
           candidates={candidates}
           team={team}
+          programBudget={programBudget}
           onHire={(candidate) => { onHireAssistant(hiringRole, candidate); setHiringRole(null); }}
           onClose={() => setHiringRole(null)}
         />
@@ -11854,6 +11865,7 @@ function ScheduleSetupModal({ team, year, games, programBudget, onEditGame, onCo
   const takenOppIds = new Set(nonConf.map((g) => g.oppId));
   const preview = useMemo(() => applyGuaranteeFees(games, team), [games, team]);
   const netDelta = preview.netDelta;
+  const affordable = programBudget + netDelta >= 0;
   return (
     <div className="cbb-scroll" style={{ position: "fixed", inset: 0, zIndex: 60, overflowY: "auto", minHeight: "100vh", background: C.bg, padding: "40px 20px", display: "flex", justifyContent: "center" }}>
       <div style={{ width: "100%", maxWidth: 860 }}>
@@ -11908,9 +11920,15 @@ function ScheduleSetupModal({ team, year, games, programBudget, onEditGame, onCo
             </tbody>
           </table>
         </Panel>
-        <button onClick={onConfirm} className="cbb-btn" style={{ ...btnStyle(C.gold, "#221a00"), width: "100%", justifyContent: "center", fontSize: 15, padding: "13px 14px" }}>
-          <Check size={15} /> Confirm Schedule
+        <button onClick={onConfirm} disabled={!affordable} className="cbb-btn"
+          style={{ ...btnStyle(affordable ? C.gold : C.line, affordable ? "#221a00" : C.dimmer), width: "100%", justifyContent: "center", fontSize: 15, padding: "13px 14px", cursor: affordable ? "pointer" : "not-allowed" }}>
+          <Check size={15} /> {affordable ? "Confirm Schedule" : "Not enough in the program budget"}
         </button>
+        {!affordable && (
+          <div style={{ fontSize: 11.5, color: C.red, marginTop: 8, textAlign: "center" }}>
+            This slate's guarantee fees cost more than your program budget can cover — swap in a cheaper opponent somewhere above.
+          </div>
+        )}
       </div>
     </div>
   );
