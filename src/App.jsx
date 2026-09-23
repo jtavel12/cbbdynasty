@@ -7893,6 +7893,7 @@ function NilOfferRow({ recruit, nilBudget, nilPending, onNilOffer }) {
 // limits (calls, home visits) and the signing-progress readout.
 function RecruitBoard({ board, otherBoard, committedIds, targets, onToggleTarget, points, weekIndex, totalWeeks, onAction, onSign, onNilOffer, nilBudget, needs, maxSign, emptyLabel, team }) {
   const [view, setView] = useState("all"); // all | targets | committed
+  const [compareOpen, setCompareOpen] = useState(false);
   const [posFilter, setPosFilter] = useState("ALL");
   const [starFilter, setStarFilter] = useState(0);
   const [stateFilter, setStateFilter] = useState("ALL");
@@ -7987,6 +7988,12 @@ function RecruitBoard({ board, otherBoard, committedIds, targets, onToggleTarget
         {chip("All", view === "all", () => setView("all"))}
         {canTarget && chip(`Targets (${targetSet.size})`, view === "targets", () => setView("targets"))}
         {chip(`Committed (${committedIds.length})`, view === "committed", () => setView("committed"))}
+        {canTarget && targetSet.size >= 2 && (
+          <button onClick={() => setCompareOpen(true)} className="cbb-btn"
+            style={{ fontSize: 12, padding: "6px 12px", border: `1px solid ${C.wood}`, background: "transparent", color: C.gold, cursor: "pointer", display: "flex", alignItems: "center", gap: 5 }}>
+            <ListOrdered size={12} /> Compare ({targetSet.size})
+          </button>
+        )}
         <input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
@@ -8157,7 +8164,61 @@ function RecruitBoard({ board, otherBoard, committedIds, targets, onToggleTarget
           <div style={{ color: C.dimmer, fontSize: 11.5, padding: "6px 4px" }}>Showing top {shown.length} of {list.length} — refine with search or filters to see more.</div>
         )}
       </div>
+      {compareOpen && (
+        <CompareTargetsModal
+          recruits={board.filter((r) => targetSet.has(r.id))}
+          team={team}
+          onClose={() => setCompareOpen(false)}
+        />
+      )}
     </div>
+  );
+}
+
+// A side-by-side read-out of every starred target, for weighing offers
+// against each other without hopping between rows one at a time.
+function CompareTargetsModal({ recruits, team, onClose }) {
+  const cols = [
+    { label: "", render: (r) => <StarRow stars={r.stars} /> },
+    { label: "Rank", render: (r) => `#${r.nationalRank ?? "—"}` },
+    { label: "Interest", render: (r) => `${Math.round(r.interest || 0)}%` },
+    { label: "Sign chance", render: (r) => `${Math.round(signChance(r) * 100)}%` },
+    { label: "NIL offer", render: (r) => formatNil(r.nilOffer || 0) },
+    { label: "Desired NIL", render: (r) => formatNil(r.nilTarget || 0) },
+    { label: "Distance", render: (r) => {
+      if (r.international) return "Int'l";
+      const miles = recruitDistanceMiles(r, team);
+      return miles != null ? `${Math.round(miles)} mi` : "—";
+    } },
+  ];
+  return (
+    <Modal title="Compare Targets" subtitle={`${recruits.length} starred prospect${recruits.length === 1 ? "" : "s"}`} onClose={onClose} maxWidth={720}>
+      <div style={{ overflowX: "auto" }}>
+        <table className="cbb-num" style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+          <thead>
+            <tr>
+              <th style={{ textAlign: "left", padding: "6px 10px", color: C.dim, fontWeight: 600, borderBottom: `1px solid ${C.line}` }}>Prospect</th>
+              {cols.map((c) => (
+                <th key={c.label || "stars"} style={{ textAlign: "left", padding: "6px 10px", color: C.dim, fontWeight: 600, borderBottom: `1px solid ${C.line}` }}>{c.label}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {recruits.map((r) => (
+              <tr key={r.id}>
+                <td style={{ padding: "8px 10px", borderBottom: `1px solid ${C.line}`, fontWeight: 600, color: C.cream }}>
+                  {r.name}
+                  <div style={{ fontWeight: 400, color: C.dim, fontSize: 11 }}>{r.pos} · {r.hometown || r.state}</div>
+                </td>
+                {cols.map((c) => (
+                  <td key={c.label || "stars"} style={{ padding: "8px 10px", borderBottom: `1px solid ${C.line}`, color: C.cream }}>{c.render(r)}</td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </Modal>
   );
 }
 
