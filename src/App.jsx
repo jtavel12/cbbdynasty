@@ -1598,6 +1598,30 @@ function deservedMinutesFor(player, roster) {
   return DEFAULT_MIN_SPLITS[rank] ?? 0;
 }
 
+// Team chemistry: a 0-100 read on the roster's cohesion, blended from two
+// signals — how experienced the group is together (veteran share, i.e. not
+// true freshmen) and how evenly NIL money is spread rather than concentrated
+// on one or two players. Purely derived fresh from the current roster every
+// time it's needed, never persisted, so there's nothing to migrate and no
+// way for it to drift out of sync with roster moves.
+function teamChemistryScore(roster) {
+  const active = (roster || []).filter((p) => !p.generatedWalkOn);
+  if (!active.length) return 70;
+  const vetShare = active.filter((p) => p.class !== "FR").length / active.length;
+  const totalNil = active.reduce((sum, p) => sum + (p.nil || 0), 0);
+  const maxNil = active.reduce((m, p) => Math.max(m, p.nil || 0), 0);
+  const evenShare = 1 / active.length;
+  const maxShare = totalNil > 0 ? maxNil / totalNil : evenShare;
+  const nilFairness = clamp(1 - (maxShare - evenShare) * 2, 0, 1);
+  return Math.round(clamp(35 + vetShare * 35 + nilFairness * 30, 0, 100));
+}
+function chemistryTier(score) {
+  if (score >= 80) return { label: "Tight-knit", color: "#4caf6e" };
+  if (score >= 60) return { label: "Solid", color: "#c9a94a" };
+  if (score >= 40) return { label: "Uneven", color: "#d38b2e" };
+  return { label: "Fractured", color: "#c0392b" };
+}
+
 // A player is a transfer risk if they're being meaningfully underpaid
 // relative to their real market NIL, or clearly deserved more run than
 // they got — either one is shown as the reason, both if it's both. True
@@ -1640,10 +1664,15 @@ function computeTransferRisks(roster, minutesMap, team, draftDeclaredIds) {
 // meeting their real NIL demand makes staying likely, low-balling makes
 // leaving likely, with real randomness either way rather than a hard
 // cutoff; an unresolved playing-time gripe isn't fixed by money alone.
-function retentionChance(demand, offeredNil, minutesSatisfied) {
+// `chemistry` (0-100, see teamChemistryScore) applies a modest ±15% swing on
+// top of the money/minutes math — a tight-knit locker room gives a real
+// player another reason to stick around beyond the numbers, and a fractured
+// one works against even a fair counter-offer.
+function retentionChance(demand, offeredNil, minutesSatisfied, chemistry = 70) {
   const ratio = demand > 0 ? clamp((offeredNil || 0) / demand, 0, 1.5) : 1;
   let chance = clamp(0.15 + ratio * 0.65, 0.05, 0.92);
   if (!minutesSatisfied) chance *= 0.7;
+  chance *= clamp(0.85 + (chemistry / 100) * 0.3, 0.85, 1.15);
   return clamp(chance, 0.05, 0.95);
 }
 
@@ -3807,12 +3836,16 @@ function topRecords(list, key, n = 5) {
 // one shot left to start somewhere (juniors especially) are the likeliest
 // to transfer out on their own, separate from anyone the user cuts or loses
 // to the draft.
-function unhappyDepartureChance(p, seasonSeed, newYear) {
+// `chemistry` (0-100, see teamChemistryScore) nudges the base chance —
+// a fractured roster gives a marginal player one more reason to walk, a
+// tight-knit one gives him a reason to stick around and fight for run.
+function unhappyDepartureChance(p, seasonSeed, newYear, chemistry = 70) {
   if (p.class === "FR") return 0;
   const playRate = clamp((p.season.gp || 0) / TOTAL_SEASON_WEEKS, 0, 1);
   if (playRate >= 0.5) return 0; // real rotation minutes — no reason to bolt
   const classMult = p.class === "JR" ? 1.15 : 0.85; // SO
-  return clamp((0.5 - playRate) * 0.7 * classMult, 0, 0.42);
+  const chemMult = clamp(1.25 - (chemistry / 100) * 0.5, 0.75, 1.25);
+  return clamp((0.5 - playRate) * 0.7 * classMult * chemMult, 0, 0.42);
 }
 
 // `resolvedTransferOutIds`, when given, is the exact set of unhappy
@@ -3823,9 +3856,10 @@ function unhappyDepartureChance(p, seasonSeed, newYear) {
 function progressRosterForNewYear(roster, incoming, team, newYear, seasonSeed, scholarshipLimit = SCHOLARSHIP_LIMIT, resolvedTransferOutIds = null) {
   const graduated = roster.filter((p) => p.class === "SR").map((p) => finalizeCareerRecord(p, newYear - 1));
   const departed = [];
+  const chemistry = teamChemistryScore(roster);
   const staying = roster.filter((p) => p.class !== "SR").filter((p) => {
     if (resolvedTransferOutIds) return !resolvedTransferOutIds.has(p.id);
-    const chance = unhappyDepartureChance(p, seasonSeed, newYear);
+    const chance = unhappyDepartureChance(p, seasonSeed, newYear, chemistry);
     if (chance <= 0) return true;
     const rng = seasonRngFor(seasonSeed ?? 0, `leave:${p.id}`, newYear);
     if (rng() < chance) {
@@ -5798,7 +5832,7 @@ function DynastyApp({ initial, onExit }) {
     const maxOffer = Math.max(player.nil || 0, available);
     const offeredNil = walk ? (player.nil || 0) : clamp(Math.round(Number(counterNil) || 0), player.nil || 0, maxOffer);
     const minutesSatisfied = risk.reason === "nil";
-    const chance = walk ? 0 : retentionChance(risk.nilDemand, offeredNil, minutesSatisfied);
+    const chance = walk ? 0 : retentionChance(risk.nilDemand, offeredNil, minutesSatisfied, teamChemistryScore(state.roster));
     const staying = !walk && Math.random() < chance;
     setState((s) => ({
       ...s,
@@ -7680,11 +7714,21 @@ function pct(made, attempted) { return attempted ? `${Math.round((made / attempt
 function RosterTab({ roster, onViewPlayer, onChangePosition }) {
   const sorted = [...roster].sort((a, b) => b.overall - a.overall);
   const realCount = roster.filter((p) => p.realName).length;
+  const chemistry = teamChemistryScore(roster);
+  const chemTier = chemistryTier(chemistry);
   return (
     <div>
-      <div style={{ fontSize: 11.5, color: C.dimmer, marginBottom: 10 }}>
-        {realCount > 0 ? `${realCount} of ${roster.length} names came from real Torvik data (marked with •). ` : ""}
-        Click any player for a full profile and game log. Changing a player&apos;s position here moves them to that position&apos;s depth-chart slot and recalculates their overall.
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 10, flexWrap: "wrap" }}>
+        <div style={{ fontSize: 11.5, color: C.dimmer, flex: 1, minWidth: 260 }}>
+          {realCount > 0 ? `${realCount} of ${roster.length} names came from real Torvik data (marked with •). ` : ""}
+          Click any player for a full profile and game log. Changing a player&apos;s position here moves them to that position&apos;s depth-chart slot and recalculates their overall.
+        </div>
+        <div title="Blends roster experience (veteran share) with how evenly NIL money is spread across the team. A tight-knit roster gives transfer-risk retention offers a boost and makes bench players less likely to quietly walk; a fractured one works against both."
+          style={{ display: "flex", alignItems: "center", gap: 8, border: `1px solid ${C.line}`, padding: "6px 12px", whiteSpace: "nowrap" }}>
+          <span style={{ fontSize: 10.5, color: C.dim, letterSpacing: "0.06em" }}>CHEMISTRY</span>
+          <span className="cbb-num" style={{ fontSize: 15, fontWeight: 700, color: chemTier.color }}>{chemistry}</span>
+          <span style={{ fontSize: 11, color: chemTier.color, fontWeight: 600 }}>{chemTier.label}</span>
+        </div>
       </div>
       <Panel style={{ overflow: "hidden" }}>
       <div style={{ overflowX: "auto" }}>
@@ -8808,7 +8852,7 @@ function TransferRiskPanel({ transferRisks, roster, nilBudget, offseason, recrui
         const available = nilAvailableAmount(nilBudget, roster, offseason, recruitingBoard, teamId, r.id);
         const maxOffer = Math.max(player.nil || 0, available);
         const counter = clamp(counterChoice[r.id] ?? (player.nil || 0), player.nil || 0, maxOffer);
-        const previewChance = retentionChance(r.nilDemand, counter, r.reason === "nil");
+        const previewChance = retentionChance(r.nilDemand, counter, r.reason === "nil", teamChemistryScore(roster));
         const reasonText = r.reason === "both" ? "underpaid relative to their market value AND buried behind lesser talent"
           : r.reason === "nil" ? "underpaid relative to their real market value"
           : "not getting minutes their ability clearly deserves";
