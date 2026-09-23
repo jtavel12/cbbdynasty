@@ -12,8 +12,8 @@
     "conf": "Big Ten",
     "tier": "High",
     "prestige": 5,
-    "annualNilBudget": 7000000,
-    "basis": "Estimated"
+    "annualNilBudget": 3200000,
+    "basis": "Estimated (prestige adjusted by user)"
   },
   {
     "name": "Kansas",
@@ -68,16 +68,16 @@
     "conf": "Big Ten",
     "tier": "High",
     "prestige": 5,
-    "annualNilBudget": 7000000,
-    "basis": "Estimated"
+    "annualNilBudget": 3200000,
+    "basis": "Estimated (prestige adjusted by user)"
   },
   {
     "name": "UCLA",
     "conf": "Big Ten",
     "tier": "High",
     "prestige": 5,
-    "annualNilBudget": 7000000,
-    "basis": "Estimated"
+    "annualNilBudget": 3200000,
+    "basis": "Estimated (prestige adjusted by user)"
   },
   {
     "name": "UConn",
@@ -108,8 +108,8 @@
     "conf": "Big 12",
     "tier": "High",
     "prestige": 4,
-    "annualNilBudget": 2900000,
-    "basis": "Estimated"
+    "annualNilBudget": 4000000,
+    "basis": "Estimated (prestige adjusted by user)"
   },
   {
     "name": "Arkansas",
@@ -316,8 +316,8 @@
     "conf": "Big 12",
     "tier": "High",
     "prestige": 4,
-    "annualNilBudget": 2900000,
-    "basis": "Estimated"
+    "annualNilBudget": 2400000,
+    "basis": "Estimated (prestige adjusted by user)"
   },
   {
     "name": "Virginia",
@@ -444,8 +444,8 @@
     "conf": "Big 12",
     "tier": "High",
     "prestige": 3,
-    "annualNilBudget": 1900000,
-    "basis": "Estimated"
+    "annualNilBudget": 3200000,
+    "basis": "Estimated (prestige adjusted by user)"
   },
   {
     "name": "Miami (FL)",
@@ -508,16 +508,16 @@
     "conf": "SEC",
     "tier": "High",
     "prestige": 3,
-    "annualNilBudget": 1900000,
-    "basis": "Estimated"
+    "annualNilBudget": 3200000,
+    "basis": "Estimated (prestige adjusted by user)"
   },
   {
     "name": "Texas A&M",
     "conf": "SEC",
     "tier": "High",
     "prestige": 3,
-    "annualNilBudget": 1900000,
-    "basis": "Estimated"
+    "annualNilBudget": 3200000,
+    "basis": "Estimated (prestige adjusted by user)"
   },
   {
     "name": "Texas Tech",
@@ -564,16 +564,16 @@
     "conf": "Big Ten",
     "tier": "High",
     "prestige": 2,
-    "annualNilBudget": 1300000,
-    "basis": "Estimated"
+    "annualNilBudget": 2400000,
+    "basis": "Estimated (prestige adjusted by user)"
   },
   {
     "name": "Ole Miss",
     "conf": "SEC",
     "tier": "High",
     "prestige": 2,
-    "annualNilBudget": 1300000,
-    "basis": "Estimated"
+    "annualNilBudget": 2400000,
+    "basis": "Estimated (prestige adjusted by user)"
   },
   {
     "name": "Penn State",
@@ -596,24 +596,24 @@
     "conf": "SEC",
     "tier": "High",
     "prestige": 2,
-    "annualNilBudget": 1300000,
-    "basis": "Estimated"
+    "annualNilBudget": 2400000,
+    "basis": "Estimated (prestige adjusted by user)"
   },
   {
     "name": "TCU",
     "conf": "Big 12",
     "tier": "High",
     "prestige": 2,
-    "annualNilBudget": 1300000,
-    "basis": "Estimated"
+    "annualNilBudget": 2400000,
+    "basis": "Estimated (prestige adjusted by user)"
   },
   {
     "name": "UCF",
     "conf": "Big 12",
     "tier": "High",
     "prestige": 2,
-    "annualNilBudget": 1300000,
-    "basis": "Estimated"
+    "annualNilBudget": 2400000,
+    "basis": "Estimated (prestige adjusted by user)"
   },
   {
     "name": "Virginia Tech",
@@ -628,8 +628,8 @@
     "conf": "Big Ten",
     "tier": "High",
     "prestige": 1,
-    "annualNilBudget": 1000000,
-    "basis": "Estimated"
+    "annualNilBudget": 1600000,
+    "basis": "Estimated (prestige adjusted by user)"
   },
   {
     "name": "Gonzaga",
@@ -660,16 +660,16 @@
     "conf": "American",
     "tier": "Mid",
     "prestige": 4,
-    "annualNilBudget": 1800000,
-    "basis": "Estimated"
+    "annualNilBudget": 525000,
+    "basis": "Estimated (prestige adjusted by user)"
   },
   {
     "name": "UNLV",
     "conf": "Mountain West",
     "tier": "Mid",
     "prestige": 4,
-    "annualNilBudget": 1800000,
-    "basis": "Estimated"
+    "annualNilBudget": 525000,
+    "basis": "Estimated (prestige adjusted by user)"
   },
   {
     "name": "Bradley",
@@ -684,16 +684,16 @@
     "conf": "American",
     "tier": "Mid",
     "prestige": 3,
-    "annualNilBudget": 650000,
-    "basis": "Estimated"
+    "annualNilBudget": 337500,
+    "basis": "Estimated (prestige adjusted by user)"
   },
   {
     "name": "College of the Holy Cross",
     "conf": "Patriot",
-    "tier": "Mid",
+    "tier": "Low",
     "prestige": 3,
-    "annualNilBudget": 650000,
-    "basis": "Estimated"
+    "annualNilBudget": 77500,
+    "basis": "Estimated (prestige adjusted by user)"
   },
   {
     "name": "Davidson",
@@ -780,8 +780,8 @@
     "conf": "Ivy",
     "tier": "Mid",
     "prestige": 3,
-    "annualNilBudget": 650000,
-    "basis": "Estimated"
+    "annualNilBudget": 337500,
+    "basis": "Estimated (prestige adjusted by user)"
   },
   {
     "name": "Princeton",
@@ -828,8 +828,8 @@
     "conf": "American",
     "tier": "Mid",
     "prestige": 3,
-    "annualNilBudget": 650000,
-    "basis": "Estimated"
+    "annualNilBudget": 337500,
+    "basis": "Estimated (prestige adjusted by user)"
   },
   {
     "name": "UAB",
@@ -962,10 +962,10 @@
   {
     "name": "Canisius",
     "conf": "MAAC",
-    "tier": "Mid",
+    "tier": "Low",
     "prestige": 2,
-    "annualNilBudget": 280000,
-    "basis": "Estimated"
+    "annualNilBudget": 20000,
+    "basis": "Estimated (prestige adjusted by user)"
   },
   {
     "name": "Central Michigan",
@@ -980,8 +980,8 @@
     "conf": "CAA",
     "tier": "Mid",
     "prestige": 2,
-    "annualNilBudget": 280000,
-    "basis": "Estimated"
+    "annualNilBudget": 525000,
+    "basis": "Estimated (prestige adjusted by user)"
   },
   {
     "name": "Chattanooga",
@@ -1036,8 +1036,8 @@
     "conf": "Horizon",
     "tier": "Mid",
     "prestige": 2,
-    "annualNilBudget": 280000,
-    "basis": "Estimated"
+    "annualNilBudget": 150000,
+    "basis": "Estimated (prestige adjusted by user)"
   },
   {
     "name": "Drake",
@@ -1132,8 +1132,8 @@
     "conf": "Atlantic 10",
     "tier": "Mid",
     "prestige": 2,
-    "annualNilBudget": 280000,
-    "basis": "Estimated"
+    "annualNilBudget": 525000,
+    "basis": "Estimated (prestige adjusted by user)"
   },
   {
     "name": "George Washington",
@@ -1164,8 +1164,8 @@
     "conf": "Horizon",
     "tier": "Mid",
     "prestige": 2,
-    "annualNilBudget": 280000,
-    "basis": "Estimated"
+    "annualNilBudget": 150000,
+    "basis": "Estimated (prestige adjusted by user)"
   },
   {
     "name": "Hampton",
@@ -1180,8 +1180,8 @@
     "conf": "Ivy",
     "tier": "Mid",
     "prestige": 2,
-    "annualNilBudget": 280000,
-    "basis": "Estimated"
+    "annualNilBudget": 525000,
+    "basis": "Estimated (prestige adjusted by user)"
   },
   {
     "name": "Hawaii",
@@ -1274,10 +1274,10 @@
   {
     "name": "Liberty",
     "conf": "Conference USA",
-    "tier": "Mid",
+    "tier": "Low",
     "prestige": 2,
-    "annualNilBudget": 280000,
-    "basis": "Estimated"
+    "annualNilBudget": 135000,
+    "basis": "Estimated (prestige adjusted by user)"
   },
   {
     "name": "Long Beach State",
@@ -1484,8 +1484,8 @@
     "conf": "Horizon",
     "tier": "Mid",
     "prestige": 2,
-    "annualNilBudget": 280000,
-    "basis": "Estimated"
+    "annualNilBudget": 525000,
+    "basis": "Estimated (prestige adjusted by user)"
   },
   {
     "name": "Old Dominion",
@@ -1532,16 +1532,16 @@
     "conf": "American",
     "tier": "Mid",
     "prestige": 2,
-    "annualNilBudget": 280000,
-    "basis": "Estimated"
+    "annualNilBudget": 150000,
+    "basis": "Estimated (prestige adjusted by user)"
   },
   {
     "name": "Richmond",
     "conf": "Atlantic 10",
     "tier": "Mid",
     "prestige": 2,
-    "annualNilBudget": 280000,
-    "basis": "Estimated"
+    "annualNilBudget": 525000,
+    "basis": "Estimated (prestige adjusted by user)"
   },
   {
     "name": "Robert Morris",
@@ -1556,8 +1556,8 @@
     "conf": "Atlantic 10",
     "tier": "Mid",
     "prestige": 2,
-    "annualNilBudget": 280000,
-    "basis": "Estimated"
+    "annualNilBudget": 525000,
+    "basis": "Estimated (prestige adjusted by user)"
   },
   {
     "name": "Saint Peter's",
@@ -1604,8 +1604,8 @@
     "conf": "American",
     "tier": "Mid",
     "prestige": 2,
-    "annualNilBudget": 280000,
-    "basis": "Estimated"
+    "annualNilBudget": 525000,
+    "basis": "Estimated (prestige adjusted by user)"
   },
   {
     "name": "Southern Illinois",
@@ -1668,8 +1668,8 @@
     "conf": "American",
     "tier": "Mid",
     "prestige": 2,
-    "annualNilBudget": 280000,
-    "basis": "Estimated"
+    "annualNilBudget": 150000,
+    "basis": "Estimated (prestige adjusted by user)"
   },
   {
     "name": "University at Buffalo",
@@ -1724,24 +1724,24 @@
     "conf": "Ivy",
     "tier": "Mid",
     "prestige": 2,
-    "annualNilBudget": 280000,
-    "basis": "Estimated"
+    "annualNilBudget": 525000,
+    "basis": "Estimated (prestige adjusted by user)"
   },
   {
     "name": "Appalachian State",
     "conf": "Sun Belt",
-    "tier": "Mid",
+    "tier": "Low",
     "prestige": 1,
-    "annualNilBudget": 150000,
-    "basis": "Estimated"
+    "annualNilBudget": 77500,
+    "basis": "Estimated (prestige adjusted by user)"
   },
   {
     "name": "Arkansas State",
     "conf": "Sun Belt",
-    "tier": "Mid",
+    "tier": "Low",
     "prestige": 1,
-    "annualNilBudget": 150000,
-    "basis": "Estimated"
+    "annualNilBudget": 77500,
+    "basis": "Estimated (prestige adjusted by user)"
   },
   {
     "name": "Army",
@@ -1844,8 +1844,8 @@
     "conf": "Horizon",
     "tier": "Mid",
     "prestige": 1,
-    "annualNilBudget": 150000,
-    "basis": "Estimated"
+    "annualNilBudget": 337500,
+    "basis": "Estimated (prestige adjusted by user)"
   },
   {
     "name": "College of William & Mary",
@@ -1914,10 +1914,10 @@
   {
     "name": "Florida Gulf Coast",
     "conf": "ASUN",
-    "tier": "Mid",
+    "tier": "Low",
     "prestige": 1,
-    "annualNilBudget": 150000,
-    "basis": "Estimated"
+    "annualNilBudget": 77500,
+    "basis": "Estimated (prestige adjusted by user)"
   },
   {
     "name": "Gardner\u2013Webb",
@@ -1930,10 +1930,10 @@
   {
     "name": "Georgia Southern",
     "conf": "Sun Belt",
-    "tier": "Mid",
+    "tier": "Low",
     "prestige": 1,
-    "annualNilBudget": 150000,
-    "basis": "Estimated"
+    "annualNilBudget": 77500,
+    "basis": "Estimated (prestige adjusted by user)"
   },
   {
     "name": "High Point",
@@ -2170,10 +2170,10 @@
   {
     "name": "Radford",
     "conf": "Big South",
-    "tier": "Mid",
+    "tier": "Low",
     "prestige": 1,
-    "annualNilBudget": 150000,
-    "basis": "Estimated"
+    "annualNilBudget": 77500,
+    "basis": "Estimated (prestige adjusted by user)"
   },
   {
     "name": "Rider",
@@ -2194,10 +2194,10 @@
   {
     "name": "Sacramento State",
     "conf": "Big West",
-    "tier": "Mid",
+    "tier": "Low",
     "prestige": 1,
-    "annualNilBudget": 150000,
-    "basis": "Estimated"
+    "annualNilBudget": 77500,
+    "basis": "Estimated (prestige adjusted by user)"
   },
   {
     "name": "Sacred Heart",
@@ -2234,10 +2234,10 @@
   {
     "name": "South Dakota",
     "conf": "Summit",
-    "tier": "Mid",
+    "tier": "Low",
     "prestige": 1,
-    "annualNilBudget": 150000,
-    "basis": "Estimated"
+    "annualNilBudget": 77500,
+    "basis": "Estimated (prestige adjusted by user)"
   },
   {
     "name": "Southeast Missouri",
@@ -2258,10 +2258,10 @@
   {
     "name": "Southern Miss",
     "conf": "Sun Belt",
-    "tier": "Mid",
+    "tier": "Low",
     "prestige": 1,
-    "annualNilBudget": 150000,
-    "basis": "Estimated"
+    "annualNilBudget": 77500,
+    "basis": "Estimated (prestige adjusted by user)"
   },
   {
     "name": "Southern Utah",
@@ -2332,8 +2332,8 @@
     "conf": "American",
     "tier": "Mid",
     "prestige": 1,
-    "annualNilBudget": 150000,
-    "basis": "Estimated"
+    "annualNilBudget": 337500,
+    "basis": "Estimated (prestige adjusted by user)"
   },
   {
     "name": "UC Davis",
@@ -2346,10 +2346,10 @@
   {
     "name": "UC Irvine",
     "conf": "Big West",
-    "tier": "Mid",
+    "tier": "Low",
     "prestige": 1,
-    "annualNilBudget": 150000,
-    "basis": "Estimated"
+    "annualNilBudget": 135000,
+    "basis": "Estimated (prestige adjusted by user)"
   },
   {
     "name": "UC Riverside",
@@ -2362,10 +2362,10 @@
   {
     "name": "UC San Diego",
     "conf": "Big West",
-    "tier": "Mid",
+    "tier": "Low",
     "prestige": 1,
-    "annualNilBudget": 150000,
-    "basis": "Estimated"
+    "annualNilBudget": 77500,
+    "basis": "Estimated (prestige adjusted by user)"
   },
   {
     "name": "UIC",
@@ -2564,8 +2564,8 @@
     "conf": "Southland",
     "tier": "Low",
     "prestige": 2,
-    "annualNilBudget": 70000,
-    "basis": "Estimated"
+    "annualNilBudget": 20000,
+    "basis": "Estimated (prestige adjusted by user)"
   },
   {
     "name": "Lamar",
@@ -2588,8 +2588,8 @@
     "conf": "Southland",
     "tier": "Low",
     "prestige": 2,
-    "annualNilBudget": 70000,
-    "basis": "Estimated"
+    "annualNilBudget": 135000,
+    "basis": "Estimated (prestige adjusted by user)"
   },
   {
     "name": "Mississippi Valley State",
@@ -2636,8 +2636,8 @@
     "conf": "Southland",
     "tier": "Low",
     "prestige": 2,
-    "annualNilBudget": 70000,
-    "basis": "Estimated"
+    "annualNilBudget": 135000,
+    "basis": "Estimated (prestige adjusted by user)"
   },
   {
     "name": "Texas Southern",
@@ -2708,8 +2708,8 @@
     "conf": "America East",
     "tier": "Low",
     "prestige": 1,
-    "annualNilBudget": 30000,
-    "basis": "Estimated"
+    "annualNilBudget": 77500,
+    "basis": "Estimated (prestige adjusted by user)"
   },
   {
     "name": "Central Arkansas",
@@ -2860,16 +2860,16 @@
     "conf": "Southland",
     "tier": "Low",
     "prestige": 1,
-    "annualNilBudget": 30000,
-    "basis": "Estimated"
+    "annualNilBudget": 77500,
+    "basis": "Estimated (prestige adjusted by user)"
   },
   {
     "name": "Texas Rio Grande Valley",
     "conf": "Southland",
     "tier": "Low",
     "prestige": 1,
-    "annualNilBudget": 30000,
-    "basis": "Estimated"
+    "annualNilBudget": 77500,
+    "basis": "Estimated (prestige adjusted by user)"
   },
   {
     "name": "Texas State",
