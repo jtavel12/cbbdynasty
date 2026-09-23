@@ -1622,20 +1622,30 @@ function chemistryTier(score) {
   return { label: "Fractured", color: "#c0392b" };
 }
 
+// A player who's actually played meaningful minutes this season is more
+// willing to stay for less than pure market rate — a real loyalty discount
+// on what "close to market" means for them, not a free pass. Caps at 20%
+// off for a true full-time starter; a bench player gets none.
+function loyaltyDiscountFor(player) {
+  const playRate = clamp((player.season?.gp || 0) / TOTAL_SEASON_WEEKS, 0, 1);
+  return clamp(playRate * 0.20, 0, 0.20);
+}
+
 // A player is a transfer risk if they're being meaningfully underpaid
-// relative to their real market NIL, or clearly deserved more run than
-// they got — either one is shown as the reason, both if it's both. True
-// freshmen get a full season before this ever applies, same floor
-// unhappyDepartureChance used to enforce.
-const NIL_RISK_GAP = 0.35;   // demand this much above current NIL = underpaid
+// relative to their real market NIL (after their own loyalty discount), or
+// clearly deserved more run than they got — either one is shown as the
+// reason, both if it's both. True freshmen get a full season before this
+// ever applies, same floor unhappyDepartureChance used to enforce.
+const NIL_RISK_GAP = 0.15;   // effective demand this much above current NIL = underpaid
 const MINUTES_RISK_GAP = 8;  // deserved-vs-actual minutes gap that registers as a real gripe
 function transferRiskFor(player, roster, minutesMap, team) {
   // Seniors are already leaving via graduation regardless of NIL or
   // minutes — flagging them as a flight risk too is redundant noise.
   if (player.class === "FR" || player.class === "SR" || player.generatedWalkOn) return null;
   const nilDemand = playerNilDemand(player, team);
+  const effectiveDemand = nilDemand * (1 - loyaltyDiscountFor(player));
   const current = player.nil || 0;
-  const nilGap = nilDemand > 0 ? clamp((nilDemand - current) / nilDemand, -1, 1) : 0;
+  const nilGap = effectiveDemand > 0 ? clamp((effectiveDemand - current) / effectiveDemand, -1, 1) : 0;
   const nilRisk = nilGap >= NIL_RISK_GAP;
 
   const deservedMinutes = deservedMinutesFor(player, roster);
@@ -1660,20 +1670,22 @@ function computeTransferRisks(roster, minutesMap, team, draftDeclaredIds) {
     .map((r) => ({ ...r, resolved: false, staying: null }));
 }
 
-// Whether a retention counter-offer actually keeps a flagged player —
-// meeting their real NIL demand makes staying likely, low-balling makes
-// leaving likely, with real randomness either way rather than a hard
-// cutoff; an unresolved playing-time gripe isn't fixed by money alone.
-// `chemistry` (0-100, see teamChemistryScore) applies a modest ±15% swing on
-// top of the money/minutes math — a tight-knit locker room gives a real
-// player another reason to stick around beyond the numbers, and a fractured
-// one works against even a fair counter-offer.
-function retentionChance(demand, offeredNil, minutesSatisfied, chemistry = 70) {
-  const ratio = demand > 0 ? clamp((offeredNil || 0) / demand, 0, 1.5) : 1;
-  let chance = clamp(0.15 + ratio * 0.65, 0.05, 0.92);
+// Whether a retention counter-offer actually keeps a flagged player. This is
+// deliberately a steep curve, not a coin flip — a player who's still
+// significantly underpaid relative to market (even after their own loyalty
+// discount, see loyaltyDiscountFor) is a real flight risk, not a 50/50; only
+// an offer that actually closes in on their real value keeps them with any
+// confidence. `chemistry` (0-100, see teamChemistryScore) applies a modest
+// ±15% swing on top of the money/minutes math — a tight-knit locker room
+// gives a real player another reason to stick around beyond the numbers,
+// and a fractured one works against even a fair counter-offer.
+function retentionChance(demand, offeredNil, minutesSatisfied, chemistry = 70, loyalty = 0) {
+  const effectiveDemand = Math.max(1, demand * (1 - (loyalty || 0)));
+  const ratio = effectiveDemand > 0 ? clamp((offeredNil || 0) / effectiveDemand, 0, 1.5) : 1;
+  let chance = clamp(-0.05 + ratio * 0.95, 0.03, 0.95);
   if (!minutesSatisfied) chance *= 0.7;
   chance *= clamp(0.85 + (chemistry / 100) * 0.3, 0.85, 1.15);
-  return clamp(chance, 0.05, 0.95);
+  return clamp(chance, 0.03, 0.95);
 }
 
 // Total NIL already tied up in the CURRENT roster (excludes `excludeId`, so a
@@ -2114,6 +2126,10 @@ function computeClassRank(board, committedIds, userTeamId) {
 // one who chose a similar-caliber program starts warmer than one who chose a
 // very different level. A blue-chip who signed with a powerhouse has ~no
 // interest in a low-major — the Anthony-Davis-won't-look-at-you effect.
+// Every starting figure below is scaled by STARTING_INTEREST_MULT (25% off
+// the original design) to make recruiting a real grind instead of most
+// boards opening halfway warm already.
+const STARTING_INTEREST_MULT = 0.75;
 function seedInterest(board, team) {
   return board.map((r) => {
     // Hometown pull: recruits within 250 miles of campus lean toward staying
@@ -2121,10 +2137,10 @@ function seedInterest(board, team) {
     const miles = recruitDistanceMiles(r, team);
     const proximityBoost = miles != null && miles <= 250 ? 12 : 0;
     const here = r.real && findOurTeamByRealName(r.originalTeam)?.id === team.id;
-    if (here) return { ...r, interest: clamp(randInt(50, 75) + proximityBoost, 1, 90), proximityBoost };
+    if (here) return { ...r, interest: clamp(Math.round((randInt(50, 75) + proximityBoost) * STARTING_INTEREST_MULT), 1, 90), proximityBoost };
     const signedPr = r.signedPrestige ?? r.originalPrestige ?? 3;
     const gap = Math.abs(team.prestige - signedPr);
-    const interest = clamp(Math.round(58 - gap * 20 + rand(-6, 6)) + proximityBoost, 1, 67);
+    const interest = clamp(Math.round((58 - gap * 20 + rand(-6, 6) + proximityBoost) * STARTING_INTEREST_MULT), 1, 67);
     return { ...r, interest, proximityBoost };
   });
 }
@@ -2601,17 +2617,20 @@ function nonConfOppAllowed(slate, gameId, oppId, teamConf) {
 // number a coach previews while building the schedule is exactly what gets
 // applied once they confirm it — nothing changes between preview and lock.
 const GUARANTEE_TIER_RANK = { high: 3, mid: 2, low: 1 };
-const GUARANTEE_FEE_RANGES = { 1: [40_000, 120_000], 2: [150_000, 400_000] };
+// A single continuous $50K-$120K band, scaled by the raw prestige gap (not
+// by discrete tier gap) — a lower-tier team that's not THAT much worse
+// commands closer to the floor; a genuinely overmatched "buy game" opponent
+// commands the full $120K ceiling.
+const GUARANTEE_FEE_FLOOR = 50_000;
+const GUARANTEE_FEE_MAX = 120_000;
 const GUARANTEE_KEEP_PCT = 0.10;
 function guaranteeFeeFor(userTeam, oppTeam) {
   if (!userTeam || !oppTeam) return null;
   const uRank = GUARANTEE_TIER_RANK[nilTierFor(userTeam)];
   const oRank = GUARANTEE_TIER_RANK[nilTierFor(oppTeam)];
-  const gap = Math.abs(uRank - oRank);
-  if (gap === 0) return null;
-  const [lo, hi] = GUARANTEE_FEE_RANGES[gap];
+  if (uRank === oRank) return null;
   const prestigeGap = clamp(Math.abs((userTeam.prestige || 2) - (oppTeam.prestige || 2)) / 4, 0, 1);
-  const amount = Math.round(lo + (hi - lo) * prestigeGap);
+  const amount = Math.round(GUARANTEE_FEE_FLOOR + (GUARANTEE_FEE_MAX - GUARANTEE_FEE_FLOOR) * prestigeGap);
   return { amount, direction: uRank > oRank ? "pay" : "receive" };
 }
 // Stamps every non-conference game in `slate` with its guarantee fee (or
@@ -4446,58 +4465,47 @@ function generateAssistantCandidates(team) {
 
 /* =========================================================================
    PROGRAM BUDGET + FACILITIES
-   A second, separate pool of money from the NIL budget — athletic-
-   department capital, not player compensation. Seeded and grown with the
-   same tier/prestige shape as NIL (see nilBudgetForTeam/advanceNilBudgets)
-   but on a much smaller scale, and with no per-team objectives system:
-   every team's program budget just grows a modest amount each season off
-   how well that season went, tapering toward its tier's ceiling. It funds
-   facility upgrades, and (see scheduling) is what a guarantee-game payment
-   actually moves through.
+   A second pool of money from the NIL budget, tied directly to it rather
+   than running its own independent formula: seeded at 50% of a team's own
+   NIL budget, and growing every season at EXACTLY the same rate NIL just
+   grew at for that team (see advanceNilBudgets' growthRatioById) — the two
+   budgets receive boosts at the same rate, off the same underlying
+   performance signal, rather than each compounding on its own schedule.
+   Unlike NIL, program budget has no ceiling — it's athletic-department
+   capital (facilities, coach salaries), not a per-player compensation pool,
+   so there's no tier cap to taper toward.
    ========================================================================= */
-const PROGRAM_BUDGET_TIER_RANGES = {
-  high: [1_500_000, 6_000_000],
-  mid: [400_000, 1_800_000],
-  low: [80_000, 500_000],
-};
-const PROGRAM_BUDGET_TIER_CEILINGS = { high: 15_000_000, mid: 4_000_000, low: 1_000_000 };
-
 function programBudgetForTeam(team) {
-  const tier = nilTierFor(team);
-  const [lo, hi] = PROGRAM_BUDGET_TIER_RANGES[tier];
-  const t = clamp((team.prestige - 1) / 4, 0, 1);
-  return Math.round(lo + (hi - lo) * t);
+  return Math.round(nilBudgetForTeam(team) * 0.5);
 }
 function baselineProgramBudgetById() {
   const out = {};
   for (const t of TEAMS) out[t.id] = programBudgetForTeam(t);
   return out;
 }
-function taperedProgramBudgetGrowth(prev, rawGrowthPct, ceiling) {
-  const room = clamp(1 - prev / ceiling, 0, 1);
-  return Math.min(prev * (1 + rawGrowthPct * room), ceiling);
-}
-// Every team's program budget grows a little each season off the same 0..1
-// season-quality signal driftPrestige/cpuNilGrowth already compute — no
-// separate objectives system, since this is meant to read as ordinary
-// athletic-department revenue (ticket sales, boosters), not a coach's
-// personal NIL pitch. The Arena facility (see FACILITIES below) adds a
-// little more on top, applied here since it's the only place this number
-// changes.
-function programBudgetGrowthPct(quality, arenaLevel = 0) {
-  const base = clamp(0.03 + (quality ?? 0.5) * 0.07, 0.03, 0.10);
-  return base + (arenaLevel || 0) * 0.01;
-}
-function advanceProgramBudgets(prevById, year, powerById, facilitiesById) {
+// `growthRatioById` is NIL's own actual per-team growth ratio this season
+// (from advanceNilBudgets) — program budget mirrors it exactly, uncapped,
+// plus a little more from the Arena & Fan Experience facility on top.
+function advanceProgramBudgets(prevById, growthRatioById, facilitiesById) {
   const next = {};
   for (const t of TEAMS) {
     const prev = prevById[t.id] ?? programBudgetForTeam(t);
-    const ceiling = PROGRAM_BUDGET_TIER_CEILINGS[nilTierFor(t)];
-    const quality = seasonQualityFor(t, year, powerById, null);
+    const rate = (growthRatioById && growthRatioById[t.id]) || 0;
     const arenaLevel = facilitiesById?.[t.id]?.arena || 0;
-    next[t.id] = Math.round(taperedProgramBudgetGrowth(prev, programBudgetGrowthPct(quality, arenaLevel), ceiling));
+    next[t.id] = Math.round(Math.max(0, prev * (1 + rate + arenaLevel * 0.01)));
   }
   return next;
+}
+
+// A coach's annual salary — paid out of the program budget, never NIL
+// (that's player money, not staff pay), once per season. Scales with the
+// program's own tier and the coach's own reputation, since a proven name
+// commands more.
+const COACH_SALARY_BASE = { high: 900_000, mid: 350_000, low: 120_000 };
+function coachSalaryFor(team, reputation) {
+  const base = COACH_SALARY_BASE[nilTierFor(team)];
+  const repMult = clamp(1 + (reputation || 0) / 300, 0.7, 2.2);
+  return Math.round(base * repMult);
 }
 
 // Four facility types, each upgradeable 0-5, purchased with the program
@@ -4654,32 +4662,35 @@ function coachOfYear(evalRes, psSummary) {
    JSON.stringify for save/load. advanceYear() looks the function back up by
    id from this pool at grading time.
    ========================================================================= */
+// boostPct values are half of the original design (previously 0.08-0.20) —
+// halved across the board to slow how fast a user's own NIL budget compounds
+// season over season.
 const NIL_OBJECTIVE_POOL = [
-  { id: "natty", label: "Win the National Championship", boostPct: 0.20, minTier: 5, maxTier: 5,
+  { id: "natty", label: "Win the National Championship", boostPct: 0.10, minTier: 5, maxTier: 5,
     evaluate: (ctx) => ctx.psSummary === "National Champions" },
-  { id: "final_four", label: "Reach the Final Four", boostPct: 0.18, minTier: 4, maxTier: 5,
+  { id: "final_four", label: "Reach the Final Four", boostPct: 0.09, minTier: 4, maxTier: 5,
     evaluate: (ctx) => psValue(ctx.psSummary) >= psValue("Final Four") },
-  { id: "elite_eight", label: "Reach the Elite Eight", boostPct: 0.15, minTier: 3, maxTier: 5,
+  { id: "elite_eight", label: "Reach the Elite Eight", boostPct: 0.075, minTier: 3, maxTier: 5,
     evaluate: (ctx) => psValue(ctx.psSummary) >= psValue("Elite Eight") },
-  { id: "conf_tourney", label: "Win your conference tournament", boostPct: 0.14, minTier: 1, maxTier: 5,
+  { id: "conf_tourney", label: "Win your conference tournament", boostPct: 0.07, minTier: 1, maxTier: 5,
     evaluate: (ctx) => ctx.confChampionId === ctx.teamId },
-  { id: "make_tourney", label: "Make the NCAA Tournament", boostPct: 0.12, minTier: 3, maxTier: 5,
+  { id: "make_tourney", label: "Make the NCAA Tournament", boostPct: 0.06, minTier: 3, maxTier: 5,
     evaluate: (ctx) => psValue(ctx.psSummary) >= psValue("NCAA Tournament") },
-  { id: "top25", label: "Finish the season ranked in the AP Top 25", boostPct: 0.12, minTier: 3, maxTier: 5,
+  { id: "top25", label: "Finish the season ranked in the AP Top 25", boostPct: 0.06, minTier: 3, maxTier: 5,
     evaluate: (ctx) => (ctx.rankById[ctx.teamId] || 999) <= 25 },
-  { id: "win25", label: "Win 25 games", boostPct: 0.12, minTier: 4, maxTier: 5,
+  { id: "win25", label: "Win 25 games", boostPct: 0.06, minTier: 4, maxTier: 5,
     evaluate: (ctx) => ctx.record.w >= 25 },
-  { id: "win20", label: "Win 20 games", boostPct: 0.10, minTier: 3, maxTier: 4,
+  { id: "win20", label: "Win 20 games", boostPct: 0.05, minTier: 3, maxTier: 4,
     evaluate: (ctx) => ctx.record.w >= 20 },
-  { id: "win15", label: "Win 15 games", boostPct: 0.09, minTier: 2, maxTier: 3,
+  { id: "win15", label: "Win 15 games", boostPct: 0.045, minTier: 2, maxTier: 3,
     evaluate: (ctx) => ctx.record.w >= 15 },
-  { id: "finish500", label: "Finish .500 or better", boostPct: 0.08, minTier: 1, maxTier: 3,
+  { id: "finish500", label: "Finish .500 or better", boostPct: 0.04, minTier: 1, maxTier: 3,
     evaluate: (ctx) => ctx.record.w >= ctx.record.l },
-  { id: "beat_ranked", label: "Beat a ranked (Top 25) opponent", boostPct: 0.08, minTier: 1, maxTier: 5,
+  { id: "beat_ranked", label: "Beat a ranked (Top 25) opponent", boostPct: 0.04, minTier: 1, maxTier: 5,
     evaluate: (ctx) => ctx.beatRanked },
-  { id: "beat_rival", label: "Beat your rival", boostPct: 0.09, minTier: 1, maxTier: 5,
+  { id: "beat_rival", label: "Beat your rival", boostPct: 0.045, minTier: 1, maxTier: 5,
     evaluate: (ctx) => ctx.beatRival },
-  { id: "improve", label: "Win more games than last season", boostPct: 0.08, minTier: 1, maxTier: 2,
+  { id: "improve", label: "Win more games than last season", boostPct: 0.04, minTier: 1, maxTier: 2,
     evaluate: (ctx) => ctx.prevWins == null || ctx.record.w > ctx.prevWins },
 ];
 const NIL_OBJECTIVE_BY_ID = Object.fromEntries(NIL_OBJECTIVE_POOL.map((o) => [o.id, o]));
@@ -4731,17 +4742,25 @@ function taperedNilGrowth(prev, rawGrowthPct, ceiling) {
 function advanceNilBudgets(prevNilById, userTeamId, userObjectives, evalCtx, year, powerById) {
   const { met, totalBoost } = evaluateNilObjectives(userObjectives, evalCtx);
   const next = {};
+  // Each team's ACTUAL realized growth ratio this season (after tapering
+  // toward its ceiling), so advanceProgramBudgets can mirror the exact same
+  // rate rather than recomputing its own — the two budgets "receive boosts
+  // at the same rate" off one shared number, not two independent formulas.
+  const growthRatioById = {};
   for (const t of TEAMS) {
     const prev = prevNilById[t.id] ?? nilBudgetForTeam(t);
     const ceiling = NIL_TIER_CEILINGS[nilTierFor(t)];
+    let grown;
     if (t.id === userTeamId) {
-      next[t.id] = Math.round(taperedNilGrowth(prev, totalBoost, ceiling));
+      grown = taperedNilGrowth(prev, totalBoost, ceiling);
     } else {
       const quality = seasonQualityFor(t, year, powerById, null);
-      next[t.id] = Math.round(taperedNilGrowth(prev, cpuNilGrowth(quality), ceiling));
+      grown = taperedNilGrowth(prev, cpuNilGrowth(quality), ceiling);
     }
+    next[t.id] = Math.round(grown);
+    growthRatioById[t.id] = prev > 0 ? grown / prev - 1 : 0;
   }
-  return { nextNilById: next, met, totalBoost };
+  return { nextNilById: next, met, totalBoost, growthRatioById };
 }
 
 function hotSeatTier(sec) {
@@ -5474,6 +5493,13 @@ function DynastyApp({ initial, onExit }) {
   const [visit, setVisit] = useState(null); // { recruit, actionKey } for the interactive visit modal
   const [riskIt, setRiskIt] = useState(null); // { recruit, source } for the Risk It confirmation modal
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // Local, not persisted: whether the "Begin Season" flow is currently
+  // showing next season's ScheduleSetupModal. Fires at the END of the
+  // offseason (right before the transition), not the start of it — see
+  // beginSeasonFlow below. A reload mid-review just drops back to the
+  // Offseason tab with "Begin Season" still there to click again; nothing
+  // about the offseason itself is lost.
+  const [seasonScheduleReview, setSeasonScheduleReview] = useState(false);
   const saveTimer = useRef(null);
 
   useEffect(() => {
@@ -5674,18 +5700,16 @@ function DynastyApp({ initial, onExit }) {
   }
 
   // Forced schedule setup: blocks the entire app, same tier as firedFlow
-  // above, until this season's (or next season's, mid-offseason) non-
-  // conference slate is confirmed. Reads whichever draft actually exists —
-  // the offseason's scheduleDraft once one's been started, otherwise
-  // state.schedule directly (true for a brand-new dynasty and right after
-  // changeJob, neither of which have an offseason object yet).
+  // above. Only ever true right after a brand-new dynasty starts or right
+  // after changeJob — the normal season-to-season case is handled instead
+  // by seasonScheduleReview below, triggered from "Begin Season" at the END
+  // of the offseason rather than gating its start.
   if (state.needsScheduleSetup) {
-    const draftGames = state.offseason ? state.offseason.scheduleDraft : state.schedule;
     return (
       <ScheduleSetupModal
         team={team}
-        year={state.offseason ? state.year + 1 : state.year}
-        games={draftGames}
+        year={state.year}
+        games={state.schedule}
         programBudget={programBudget}
         onEditGame={editScheduleSetupGame}
         onConfirm={confirmScheduleSetup}
@@ -5882,11 +5906,6 @@ function DynastyApp({ initial, onExit }) {
         devPoints: DEV_POINTS_PER_OFFSEASON + assistantBonus(state.assistants?.development) + facilityDevBonus(state.facilitiesById?.[state.teamId]?.development),
         devSpent: {},
       },
-      // Gates the whole app behind ScheduleSetupModal (see the render guard
-      // near the top of DynastyApp) until next season's non-conference
-      // schedule is confirmed — before the coach touches recruiting or the
-      // transfer portal, same as a real AD locks the slate early.
-      needsScheduleSetup: true,
       seasonEndJobOffer: seasonEndOffer,
     }));
     setTab("offseason");
@@ -6027,7 +6046,7 @@ function DynastyApp({ initial, onExit }) {
     const maxOffer = Math.max(player.nil || 0, available);
     const offeredNil = walk ? (player.nil || 0) : clamp(Math.round(Number(counterNil) || 0), player.nil || 0, maxOffer);
     const minutesSatisfied = risk.reason === "nil";
-    const chance = walk ? 0 : retentionChance(risk.nilDemand, offeredNil, minutesSatisfied, teamChemistryScore(state.roster));
+    const chance = walk ? 0 : retentionChance(risk.nilDemand, offeredNil, minutesSatisfied, teamChemistryScore(state.roster), loyaltyDiscountFor(player));
     const staying = !walk && Math.random() < chance;
     setState((s) => ({
       ...s,
@@ -6126,22 +6145,21 @@ function DynastyApp({ initial, onExit }) {
     });
   }
 
-  // Locks in the schedule a coach just built in ScheduleSetupModal: stamps
-  // every non-conference game with its guarantee-fee outcome (see
-  // applyGuaranteeFees) and applies the net dollar effect to this team's
-  // own program budget right here, once — not recomputed later, so what the
-  // modal previewed is exactly what happened.
+  // Locks in the schedule a coach just built in ScheduleSetupModal's forced
+  // gate — only reachable for a brand-new dynasty or right after changeJob,
+  // neither of which has an offseason object yet (the normal season-to-
+  // season case goes through the seasonScheduleReview flow instead, which
+  // hands the fee-stamping off to advanceYear itself). Stamps every non-
+  // conference game with its guarantee-fee outcome (see applyGuaranteeFees)
+  // and applies the net dollar effect to this team's own program budget
+  // right here, once — not recomputed later, so what the modal previewed is
+  // exactly what happened.
   function confirmScheduleSetup() {
     setState((s) => {
-      const usingDraft = !!s.offseason;
-      const slate = usingDraft ? s.offseason.scheduleDraft : s.schedule;
-      const { games, netDelta } = applyGuaranteeFees(slate, team);
+      const { games, netDelta } = applyGuaranteeFees(s.schedule, team);
       const programBudgetById = { ...(s.programBudgetById || baselineProgramBudgetById()) };
       programBudgetById[s.teamId] = Math.round((programBudgetById[s.teamId] ?? programBudgetForTeam(team)) + netDelta);
-      const base = usingDraft
-        ? { ...s, offseason: { ...s.offseason, scheduleDraft: games } }
-        : { ...s, schedule: games };
-      return { ...base, programBudgetById, needsScheduleSetup: false };
+      return { ...s, schedule: games, programBudgetById, needsScheduleSetup: false };
     });
     flash("Schedule locked in for the season.");
   }
@@ -6728,6 +6746,15 @@ function DynastyApp({ initial, onExit }) {
     });
   }
 
+  // Both "Begin Season" buttons (Dashboard and Offseason) call this instead
+  // of advanceYear directly — it just opens the ScheduleSetupModal review;
+  // confirming THAT is what actually calls advanceYear (see its render
+  // below), which does the real fee-stamping as part of its own season
+  // transition.
+  function beginSeasonFlow() {
+    setSeasonScheduleReview(true);
+  }
+
   function advanceYear() {
     const powerById = powerTableFor(state.strengths, state.year);
     const awards = computeAwards(state, rankById, ranked, powerById);
@@ -6848,13 +6875,26 @@ function DynastyApp({ initial, onExit }) {
       record, psSummary, rankById, teamId: state.teamId, confChampionId, beatRanked, beatRival,
       prevWins: prevHistoryEntry ? prevHistoryEntry.wins : null,
     };
-    const { nextNilById, met: nilMet, totalBoost: nilBoost } = advanceNilBudgets(
+    const { nextNilById, met: nilMet, totalBoost: nilBoost, growthRatioById } = advanceNilBudgets(
       state.nilBudgetById || baselineNilBudgetById(), state.teamId, state.nilObjectives, nilCtx, state.year, powerById
     );
     const nextNilObjectives = pickObjectivesFor(nextPrestige[state.teamId] ?? team.prestige);
     const nextProgramBudgetById = advanceProgramBudgets(
-      state.programBudgetById || baselineProgramBudgetById(), state.year, powerById, state.facilitiesById
+      state.programBudgetById || baselineProgramBudgetById(), growthRatioById, state.facilitiesById
     );
+    // Coach salary comes out of the program budget once per season — never
+    // NIL, that's player money.
+    const coachSalary = coachSalaryFor(team, reputation);
+    nextProgramBudgetById[state.teamId] = Math.max(0, (nextProgramBudgetById[state.teamId] ?? 0) - coachSalary);
+
+    // The schedule the coach just confirmed via ScheduleSetupModal (right
+    // before hitting "Begin Season" — see the seasonScheduleReview gate in
+    // DynastyApp) is stamped with its guarantee-fee outcome for real here,
+    // once, as part of the same season transition everything else in this
+    // function applies.
+    const rawNextSchedule = (os && os.scheduleDraft) ? os.scheduleDraft : genSchedule(team, newYear);
+    const { games: nextSchedule, netDelta: scheduleFeeDelta } = applyGuaranteeFees(rawNextSchedule, team);
+    nextProgramBudgetById[state.teamId] = Math.max(0, (nextProgramBudgetById[state.teamId] ?? 0) + scheduleFeeDelta);
 
     // Prestige movement since last season, for trend indicators.
     const prevP = state.prestigeById || baselinePrestigeById();
@@ -6895,7 +6935,7 @@ function DynastyApp({ initial, onExit }) {
       roster: newRoster,
       depthChart: newDepthChart,
       minutes: defaultMinutesFor(newDepthChart),
-      schedule: (os && os.scheduleDraft) ? os.scheduleDraft : genSchedule(team, newYear),
+      schedule: nextSchedule,
       recruitingBoard: seedInterest(genRecruitPool(newYear + 1), team),
       incomingCommits: [],
       recruitTargets: [],
@@ -7021,12 +7061,16 @@ function DynastyApp({ initial, onExit }) {
       record, psSummary, rankById, teamId: state.teamId, confChampionId, beatRanked, beatRival,
       prevWins: prevHistoryEntry ? prevHistoryEntry.wins : null,
     };
-    const { nextNilById } = advanceNilBudgets(
+    const { nextNilById, growthRatioById } = advanceNilBudgets(
       state.nilBudgetById || baselineNilBudgetById(), state.teamId, state.nilObjectives, nilCtx, state.year, powerById
     );
     const nextProgramBudgetById = advanceProgramBudgets(
-      state.programBudgetById || baselineProgramBudgetById(), state.year, powerById, state.facilitiesById
+      state.programBudgetById || baselineProgramBudgetById(), growthRatioById, state.facilitiesById
     );
+    // The old job's final season still owes its coach a salary before the
+    // move — out of THAT program's budget, not the new one's.
+    const leavingCoachSalary = coachSalaryFor(team, reputation);
+    nextProgramBudgetById[state.teamId] = Math.max(0, (nextProgramBudgetById[state.teamId] ?? 0) - leavingCoachSalary);
 
     // Record book: the whole roster you're leaving behind had their stint
     // under you end right here, same as if they'd graduated.
@@ -7176,7 +7220,7 @@ function DynastyApp({ initial, onExit }) {
               stage={stage}
               onSim={simOneGame} onPlay={playOneGame} onSimToConf={simToConferencePlay} onSimSeason={simToEndOfSeason}
               onEnterPostseason={startPostseason} onEnterOffseason={enterOffseason}
-              onGoTab={setTab} onAdvanceYear={advanceYear}
+              onGoTab={setTab} onAdvanceYear={beginSeasonFlow}
               reputation={reputation} bracketology={bracketology}
               expectation={state.expectation || seasonExpectation(team.prestige)}
               jobSecurity={state.coach?.jobSecurity ?? 60}
@@ -7250,7 +7294,7 @@ function DynastyApp({ initial, onExit }) {
               onResolveTransferRisk={resolveTransferRisk}
               onAdvanceWeek={advanceOffseasonWeek}
               onChangeJob={() => setJobPickerOpen(true)}
-              onAdvanceYear={advanceYear}
+              onAdvanceYear={beginSeasonFlow}
               onViewTeam={setViewTeamId}
               onViewPlayer={setPlayerViewId}
               onCut={cutPlayer}
@@ -7330,6 +7374,16 @@ function DynastyApp({ initial, onExit }) {
             setState((s) => ({ ...s, seasonEndJobOffer: null }));
             flash(`You're staying at ${team.name}.`);
           }}
+        />
+      )}
+      {seasonScheduleReview && state.offseason && (
+        <ScheduleSetupModal
+          team={team}
+          year={state.year + 1}
+          games={state.offseason.scheduleDraft}
+          programBudget={programBudget}
+          onEditGame={editScheduleSetupGame}
+          onConfirm={() => { setSeasonScheduleReview(false); advanceYear(); }}
         />
       )}
       {settingsOpen && (
@@ -9114,7 +9168,7 @@ function TransferRiskPanel({ transferRisks, roster, nilBudget, offseason, recrui
         const available = nilAvailableAmount(nilBudget, roster, offseason, recruitingBoard, teamId, r.id);
         const maxOffer = Math.max(player.nil || 0, available);
         const counter = clamp(counterChoice[r.id] ?? (player.nil || 0), player.nil || 0, maxOffer);
-        const previewChance = retentionChance(r.nilDemand, counter, r.reason === "nil", teamChemistryScore(roster));
+        const previewChance = retentionChance(r.nilDemand, counter, r.reason === "nil", teamChemistryScore(roster), loyaltyDiscountFor(player));
         const reasonText = r.reason === "both" ? "underpaid relative to their market value AND buried behind lesser talent"
           : r.reason === "nil" ? "underpaid relative to their real market value"
           : "not getting minutes their ability clearly deserves";
@@ -9314,7 +9368,7 @@ function OffseasonTab({ stage, offseason, hsBoard, team, roster, nextYear, commi
           />
 
           <div style={{ fontSize: 12, color: C.wood, fontWeight: 600, letterSpacing: "0.06em", margin: "22px 0 8px" }}>{seasonLabel(nextYear)} SCHEDULE</div>
-          <div style={{ fontSize: 11.5, color: C.dimmer, marginBottom: 10 }}>Already locked in for the season — see the Schedule tab for the full slate, including any guarantee-game payouts.</div>
+          <div style={{ fontSize: 11.5, color: C.dimmer, marginBottom: 10 }}>You&apos;ll set and lock in next season&apos;s non-conference slate — including any guarantee-game payouts — when you hit Begin Season below.</div>
         </>
         );
       })()}
@@ -10088,17 +10142,27 @@ function VisitExperience({ recruit, actionKey, team, onClose, onFinish }) {
   const [step, setStep] = useState(0);          // which moment we're on
   const [picked, setPicked] = useState(null);   // outcome of the current moment, pre-continue
   const [log, setLog] = useState([]);           // [{ prompt, choice, gain, blurb }]
+  // Every stop, independently, has exactly one of its 3 options (picked
+  // fresh each stop, never the same slot twice in a row on purpose) secretly
+  // primed to backfire. The coach never knows which before clicking, so
+  // across one 3-stop visit the number of bad stops is genuinely random —
+  // 0, 1, 2, or 3 — each option a true 1-in-3 shot independent of the
+  // others, not a guaranteed exactly-one-per-visit like before.
+  const negativeIndex = useMemo(() => randInt(0, 2), [step]);
   const cost = actionCostFor(actionKey, recruit, team);
   const miles = recruitDistanceMiles(recruit, team);
   const total = log.reduce((a, e) => a + e.gain, 0);
   const done = step >= moments.length;
   const moment = !done ? moments[step] : null;
 
-  function choose(opt) {
+  function choose(opt, i) {
     const base = rand(script.perMoment[0], script.perMoment[1]);
     const expected = (script.perMoment[0] + script.perMoment[1]) / 2;
-    const gain = rollVisitGain(opt.tone, base);
-    setPicked({ choice: visitLabelFor(opt.label, recruit), gain, blurb: visitOutcomeBlurb(opt.tone, gain, expected) });
+    const rawGain = rollVisitGain(opt.tone, base);
+    const backfired = i === negativeIndex;
+    const gain = backfired ? -rawGain : rawGain;
+    const blurb = backfired ? "Something about this one just doesn't land — hard to say why." : visitOutcomeBlurb(opt.tone, gain, expected);
+    setPicked({ choice: visitLabelFor(opt.label, recruit), gain, blurb });
   }
   function next() {
     if (!picked) return;
@@ -10141,7 +10205,7 @@ function VisitExperience({ recruit, actionKey, team, onClose, onFinish }) {
           {!picked ? (
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               {moment.options.map((opt, i) => (
-                <button key={i} onClick={() => choose(opt)} className="cbb-btn"
+                <button key={i} onClick={() => choose(opt, i)} className="cbb-btn"
                   style={{ textAlign: "left", padding: "12px 14px", border: `1px solid ${C.line}`, background: "transparent", color: C.cream, fontSize: 13.5, cursor: "pointer" }}>
                   {visitLabelFor(opt.label, recruit)}
                 </button>
@@ -11349,7 +11413,7 @@ function ProgramTab({ state, team, record, reputation, rivalIds, rankById, onRet
             <div style={{ fontSize: 12, color: C.dim }}>Program budget: <strong className="cbb-num" style={{ color: C.gold, fontSize: 14 }}>{formatNil(programBudget)}</strong></div>
           </div>
           <div style={{ fontSize: 11.5, color: C.dimmer, marginBottom: 14 }}>
-            A separate pot from NIL — athletic-department capital, not player pay. Grows a little every season on its own (faster with a stronger Arena), and funds these upgrades.
+            Athletic-department capital, not player pay — seeded at half your NIL budget and growing at the same rate every season (faster with a stronger Arena), with no ceiling. Your coaching salary comes out of it too, along with these upgrades.
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 14 }}>
             {Object.entries(FACILITIES).map(([key, info]) => {
@@ -11719,7 +11783,7 @@ function ScheduleSetupModal({ team, year, games, programBudget, onEditGame, onCo
   const preview = useMemo(() => applyGuaranteeFees(games, team), [games, team]);
   const netDelta = preview.netDelta;
   return (
-    <div style={{ minHeight: "100vh", background: C.bg, padding: "40px 20px", display: "flex", justifyContent: "center" }}>
+    <div className="cbb-scroll" style={{ position: "fixed", inset: 0, zIndex: 60, overflowY: "auto", minHeight: "100vh", background: C.bg, padding: "40px 20px", display: "flex", justifyContent: "center" }}>
       <div style={{ width: "100%", maxWidth: 860 }}>
         <div style={{ fontSize: 11, color: C.wood, letterSpacing: "0.08em", fontWeight: 600, marginBottom: 4 }}>{seasonLabel(year)} — SCHEDULE SETUP</div>
         <h2 className="cbb-num" style={{ fontSize: 26, fontWeight: 700, margin: "0 0 10px" }}>Set your non-conference slate</h2>
