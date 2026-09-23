@@ -6205,7 +6205,7 @@ function DynastyApp({ initial, onExit }) {
     setState((s) => {
       const { games, netDelta } = applyGuaranteeFees(s.schedule, team);
       const programBudgetById = { ...(s.programBudgetById || baselineProgramBudgetById()) };
-      programBudgetById[s.teamId] = Math.round((programBudgetById[s.teamId] ?? programBudgetForTeam(team)) + netDelta);
+      programBudgetById[s.teamId] = Math.max(0, Math.round((programBudgetById[s.teamId] ?? programBudgetForTeam(team)) + netDelta));
       return { ...s, schedule: games, programBudgetById, needsScheduleSetup: false };
     });
     flash("Schedule locked in for the season.");
@@ -9517,7 +9517,7 @@ function SettingsModal({ settings, onChange, onClose }) {
 // Three freshly generated candidates for one assistant role — hiring is
 // instant and free (no salary/contract system yet), so this is purely a
 // "which one" decision. `rating` maps straight to assistantBonus.
-function AssistantHireModal({ role, candidates, onHire, onClose }) {
+function AssistantHireModal({ role, candidates, team, onHire, onClose }) {
   const info = ASSISTANT_ROLES[role];
   return (
     <Modal title={`Hire ${info.label}`} subtitle={info.blurb} onClose={onClose} maxWidth={520}>
@@ -9530,6 +9530,9 @@ function AssistantHireModal({ role, candidates, onHire, onClose }) {
                 <div style={{ fontWeight: 700, fontSize: 14, color: C.cream }}>{c.name}</div>
                 <div style={{ fontSize: 11.5, color: C.dim, marginTop: 2 }}>
                   {c.rating} rating · {bonus >= 0 ? "+" : ""}{bonus} {role === "recruiting" ? "recruiting pts/wk" : "dev pts/offseason"}
+                </div>
+                <div style={{ fontSize: 11.5, color: C.dimmer, marginTop: 2 }}>
+                  {formatNil(assistantSalaryFor(c, team))}/yr from program budget
                 </div>
               </div>
               <button onClick={() => onHire(c)} className="cbb-btn" style={{ ...btnStyle(C.wood), fontSize: 12.5 }}>
@@ -11469,6 +11472,7 @@ function ProgramTab({ state, team, record, reputation, rivalIds, rankById, onRet
         <AssistantHireModal
           role={hiringRole}
           candidates={candidates}
+          team={team}
           onHire={(candidate) => { onHireAssistant(hiringRole, candidate); setHiringRole(null); }}
           onClose={() => setHiringRole(null)}
         />
