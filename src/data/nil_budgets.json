@@ -2458,26 +2458,26 @@
   {
     "name": "Oregon State",
     "conf": "Pac-12",
-    "tier": "Low",
+    "tier": "High",
     "prestige": 3,
-    "annualNilBudget": 150000,
-    "basis": "Estimated"
+    "annualNilBudget": 1100000,
+    "basis": "Estimated (rebuilt Pac-12 realignment)"
   },
   {
     "name": "San Diego State",
     "conf": "Pac-12",
-    "tier": "Low",
+    "tier": "High",
     "prestige": 3,
-    "annualNilBudget": 150000,
-    "basis": "Estimated"
+    "annualNilBudget": 1500000,
+    "basis": "Estimated (rebuilt Pac-12 realignment)"
   },
   {
     "name": "Utah State",
     "conf": "Pac-12",
-    "tier": "Low",
+    "tier": "High",
     "prestige": 3,
-    "annualNilBudget": 150000,
-    "basis": "Estimated"
+    "annualNilBudget": 1200000,
+    "basis": "Estimated (rebuilt Pac-12 realignment)"
   },
   {
     "name": "Alabama State",
@@ -2514,18 +2514,18 @@
   {
     "name": "Boise State",
     "conf": "Pac-12",
-    "tier": "Low",
+    "tier": "High",
     "prestige": 2,
-    "annualNilBudget": 70000,
-    "basis": "Estimated"
+    "annualNilBudget": 1000000,
+    "basis": "Estimated (rebuilt Pac-12 realignment)"
   },
   {
     "name": "Colorado State",
     "conf": "Pac-12",
-    "tier": "Low",
+    "tier": "High",
     "prestige": 2,
-    "annualNilBudget": 70000,
-    "basis": "Estimated"
+    "annualNilBudget": 1000000,
+    "basis": "Estimated (rebuilt Pac-12 realignment)"
   },
   {
     "name": "Coppin State",
@@ -2546,10 +2546,10 @@
   {
     "name": "Fresno State",
     "conf": "Pac-12",
-    "tier": "Low",
+    "tier": "High",
     "prestige": 2,
-    "annualNilBudget": 70000,
-    "basis": "Estimated"
+    "annualNilBudget": 900000,
+    "basis": "Estimated (rebuilt Pac-12 realignment)"
   },
   {
     "name": "Howard",
@@ -2658,10 +2658,10 @@
   {
     "name": "Washington State",
     "conf": "Pac-12",
-    "tier": "Low",
+    "tier": "High",
     "prestige": 2,
-    "annualNilBudget": 70000,
-    "basis": "Estimated"
+    "annualNilBudget": 950000,
+    "basis": "Estimated (rebuilt Pac-12 realignment)"
   },
   {
     "name": "Abilene Christian",
@@ -2874,10 +2874,10 @@
   {
     "name": "Texas State",
     "conf": "Pac-12",
-    "tier": "Low",
+    "tier": "High",
     "prestige": 1,
-    "annualNilBudget": 30000,
-    "basis": "Estimated"
+    "annualNilBudget": 800000,
+    "basis": "Estimated (rebuilt Pac-12 realignment)"
   },
   {
     "name": "UMBC",
