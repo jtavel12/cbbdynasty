@@ -2484,32 +2484,32 @@
     "conf": "SWAC",
     "tier": "Low",
     "prestige": 2,
-    "annualNilBudget": 75000,
-    "basis": "Estimated"
+    "annualNilBudget": 118750,
+    "basis": "Estimated (low-tier, scaled by prestige)"
   },
   {
     "name": "Albany",
     "conf": "America East",
     "tier": "Low",
     "prestige": 2,
-    "annualNilBudget": 75000,
-    "basis": "Estimated"
+    "annualNilBudget": 118750,
+    "basis": "Estimated (low-tier, scaled by prestige)"
   },
   {
     "name": "Alcorn State",
     "conf": "SWAC",
     "tier": "Low",
     "prestige": 2,
-    "annualNilBudget": 75000,
-    "basis": "Estimated"
+    "annualNilBudget": 118750,
+    "basis": "Estimated (low-tier, scaled by prestige)"
   },
   {
     "name": "Austin Peay",
     "conf": "UAC",
     "tier": "Low",
     "prestige": 2,
-    "annualNilBudget": 75000,
-    "basis": "Estimated"
+    "annualNilBudget": 118750,
+    "basis": "Estimated (low-tier, scaled by prestige)"
   },
   {
     "name": "Boise State",
@@ -2532,16 +2532,16 @@
     "conf": "MEAC",
     "tier": "Low",
     "prestige": 2,
-    "annualNilBudget": 75000,
-    "basis": "Estimated"
+    "annualNilBudget": 118750,
+    "basis": "Estimated (low-tier, scaled by prestige)"
   },
   {
     "name": "Eastern Kentucky",
     "conf": "UAC",
     "tier": "Low",
     "prestige": 2,
-    "annualNilBudget": 75000,
-    "basis": "Estimated"
+    "annualNilBudget": 118750,
+    "basis": "Estimated (low-tier, scaled by prestige)"
   },
   {
     "name": "Fresno State",
@@ -2556,8 +2556,8 @@
     "conf": "MEAC",
     "tier": "Low",
     "prestige": 2,
-    "annualNilBudget": 75000,
-    "basis": "Estimated"
+    "annualNilBudget": 118750,
+    "basis": "Estimated (low-tier, scaled by prestige)"
   },
   {
     "name": "LSU New Orleans",
@@ -2565,95 +2565,95 @@
     "tier": "Low",
     "prestige": 2,
     "annualNilBudget": 75000,
-    "basis": "Estimated (prestige adjusted by user; average of 6 same-conference prestige-1 peer(s))"
+    "basis": "Estimated (low-tier, scaled by prestige)"
   },
   {
     "name": "Lamar",
     "conf": "Southland",
     "tier": "Low",
     "prestige": 2,
-    "annualNilBudget": 75000,
-    "basis": "Estimated"
+    "annualNilBudget": 118750,
+    "basis": "Estimated (low-tier, scaled by prestige)"
   },
   {
     "name": "Little Rock",
     "conf": "UAC",
     "tier": "Low",
     "prestige": 2,
-    "annualNilBudget": 75000,
-    "basis": "Estimated"
+    "annualNilBudget": 118750,
+    "basis": "Estimated (low-tier, scaled by prestige)"
   },
   {
     "name": "McNeese",
     "conf": "Southland",
     "tier": "Low",
     "prestige": 2,
-    "annualNilBudget": 75000,
-    "basis": "Estimated (prestige adjusted by user; no higher-prestige peer in conference; matched nearest peer at prestige 2 ($70,000))"
+    "annualNilBudget": 162500,
+    "basis": "Estimated (low-tier, scaled by prestige)"
   },
   {
     "name": "Mississippi Valley State",
     "conf": "SWAC",
     "tier": "Low",
     "prestige": 2,
-    "annualNilBudget": 75000,
-    "basis": "Estimated"
+    "annualNilBudget": 118750,
+    "basis": "Estimated (low-tier, scaled by prestige)"
   },
   {
     "name": "Norfolk State",
     "conf": "MEAC",
     "tier": "Low",
     "prestige": 2,
-    "annualNilBudget": 75000,
-    "basis": "Estimated"
+    "annualNilBudget": 118750,
+    "basis": "Estimated (low-tier, scaled by prestige)"
   },
   {
     "name": "North Carolina Central",
     "conf": "MEAC",
     "tier": "Low",
     "prestige": 2,
-    "annualNilBudget": 75000,
-    "basis": "Estimated"
+    "annualNilBudget": 118750,
+    "basis": "Estimated (low-tier, scaled by prestige)"
   },
   {
     "name": "SC State",
     "conf": "MEAC",
     "tier": "Low",
     "prestige": 2,
-    "annualNilBudget": 75000,
-    "basis": "Estimated"
+    "annualNilBudget": 118750,
+    "basis": "Estimated (low-tier, scaled by prestige)"
   },
   {
     "name": "Southern",
     "conf": "SWAC",
     "tier": "Low",
     "prestige": 2,
-    "annualNilBudget": 75000,
-    "basis": "Estimated"
+    "annualNilBudget": 118750,
+    "basis": "Estimated (low-tier, scaled by prestige)"
   },
   {
     "name": "Stephen F. Austin",
     "conf": "Southland",
     "tier": "Low",
     "prestige": 2,
-    "annualNilBudget": 75000,
-    "basis": "Estimated (prestige adjusted by user; no higher-prestige peer in conference; matched nearest peer at prestige 2 ($70,000))"
+    "annualNilBudget": 162500,
+    "basis": "Estimated (low-tier, scaled by prestige)"
   },
   {
     "name": "Texas Southern",
     "conf": "SWAC",
     "tier": "Low",
     "prestige": 2,
-    "annualNilBudget": 75000,
-    "basis": "Estimated"
+    "annualNilBudget": 118750,
+    "basis": "Estimated (low-tier, scaled by prestige)"
   },
   {
     "name": "Vermont",
     "conf": "America East",
     "tier": "Low",
     "prestige": 2,
-    "annualNilBudget": 75000,
-    "basis": "Estimated"
+    "annualNilBudget": 118750,
+    "basis": "Estimated (low-tier, scaled by prestige)"
   },
   {
     "name": "Washington State",
@@ -2669,7 +2669,7 @@
     "tier": "Low",
     "prestige": 1,
     "annualNilBudget": 75000,
-    "basis": "Estimated"
+    "basis": "Estimated (low-tier, scaled by prestige)"
   },
   {
     "name": "Alabama A&M",
@@ -2677,7 +2677,7 @@
     "tier": "Low",
     "prestige": 1,
     "annualNilBudget": 75000,
-    "basis": "Estimated"
+    "basis": "Estimated (low-tier, scaled by prestige)"
   },
   {
     "name": "Arkansas\u2013Pine Bluff",
@@ -2685,7 +2685,7 @@
     "tier": "Low",
     "prestige": 1,
     "annualNilBudget": 75000,
-    "basis": "Estimated"
+    "basis": "Estimated (low-tier, scaled by prestige)"
   },
   {
     "name": "Bethune\u2013Cookman",
@@ -2693,7 +2693,7 @@
     "tier": "Low",
     "prestige": 1,
     "annualNilBudget": 75000,
-    "basis": "Estimated"
+    "basis": "Estimated (low-tier, scaled by prestige)"
   },
   {
     "name": "Binghamton",
@@ -2701,15 +2701,15 @@
     "tier": "Low",
     "prestige": 1,
     "annualNilBudget": 75000,
-    "basis": "Estimated"
+    "basis": "Estimated (low-tier, scaled by prestige)"
   },
   {
     "name": "Bryant",
     "conf": "America East",
     "tier": "Low",
     "prestige": 1,
-    "annualNilBudget": 75000,
-    "basis": "Estimated (prestige adjusted by user; average of 2 same-conference prestige-2 peer(s))"
+    "annualNilBudget": 118750,
+    "basis": "Estimated (low-tier, scaled by prestige)"
   },
   {
     "name": "Central Arkansas",
@@ -2717,7 +2717,7 @@
     "tier": "Low",
     "prestige": 1,
     "annualNilBudget": 75000,
-    "basis": "Estimated"
+    "basis": "Estimated (low-tier, scaled by prestige)"
   },
   {
     "name": "Delaware State",
@@ -2725,7 +2725,7 @@
     "tier": "Low",
     "prestige": 1,
     "annualNilBudget": 75000,
-    "basis": "Estimated"
+    "basis": "Estimated (low-tier, scaled by prestige)"
   },
   {
     "name": "East Texas A&M",
@@ -2733,7 +2733,7 @@
     "tier": "Low",
     "prestige": 1,
     "annualNilBudget": 75000,
-    "basis": "Estimated"
+    "basis": "Estimated (low-tier, scaled by prestige)"
   },
   {
     "name": "Florida A&M",
@@ -2741,7 +2741,7 @@
     "tier": "Low",
     "prestige": 1,
     "annualNilBudget": 75000,
-    "basis": "Estimated"
+    "basis": "Estimated (low-tier, scaled by prestige)"
   },
   {
     "name": "Grambling State",
@@ -2749,7 +2749,7 @@
     "tier": "Low",
     "prestige": 1,
     "annualNilBudget": 75000,
-    "basis": "Estimated"
+    "basis": "Estimated (low-tier, scaled by prestige)"
   },
   {
     "name": "Houston Christian",
@@ -2757,7 +2757,7 @@
     "tier": "Low",
     "prestige": 1,
     "annualNilBudget": 75000,
-    "basis": "Estimated"
+    "basis": "Estimated (low-tier, scaled by prestige)"
   },
   {
     "name": "Incarnate Word",
@@ -2765,7 +2765,7 @@
     "tier": "Low",
     "prestige": 1,
     "annualNilBudget": 75000,
-    "basis": "Estimated"
+    "basis": "Estimated (low-tier, scaled by prestige)"
   },
   {
     "name": "Jackson State",
@@ -2773,7 +2773,7 @@
     "tier": "Low",
     "prestige": 1,
     "annualNilBudget": 75000,
-    "basis": "Estimated"
+    "basis": "Estimated (low-tier, scaled by prestige)"
   },
   {
     "name": "Maryland Eastern Shore",
@@ -2781,7 +2781,7 @@
     "tier": "Low",
     "prestige": 1,
     "annualNilBudget": 75000,
-    "basis": "Estimated"
+    "basis": "Estimated (low-tier, scaled by prestige)"
   },
   {
     "name": "Morgan State",
@@ -2789,7 +2789,7 @@
     "tier": "Low",
     "prestige": 1,
     "annualNilBudget": 75000,
-    "basis": "Estimated"
+    "basis": "Estimated (low-tier, scaled by prestige)"
   },
   {
     "name": "New Hampshire",
@@ -2797,7 +2797,7 @@
     "tier": "Low",
     "prestige": 1,
     "annualNilBudget": 75000,
-    "basis": "Estimated"
+    "basis": "Estimated (low-tier, scaled by prestige)"
   },
   {
     "name": "New Jersey Institute of Technology",
@@ -2805,7 +2805,7 @@
     "tier": "Low",
     "prestige": 1,
     "annualNilBudget": 75000,
-    "basis": "Estimated"
+    "basis": "Estimated (low-tier, scaled by prestige)"
   },
   {
     "name": "Nicholls",
@@ -2813,7 +2813,7 @@
     "tier": "Low",
     "prestige": 1,
     "annualNilBudget": 75000,
-    "basis": "Estimated"
+    "basis": "Estimated (low-tier, scaled by prestige)"
   },
   {
     "name": "North Alabama",
@@ -2821,7 +2821,7 @@
     "tier": "Low",
     "prestige": 1,
     "annualNilBudget": 75000,
-    "basis": "Estimated"
+    "basis": "Estimated (low-tier, scaled by prestige)"
   },
   {
     "name": "Northwestern State",
@@ -2829,7 +2829,7 @@
     "tier": "Low",
     "prestige": 1,
     "annualNilBudget": 75000,
-    "basis": "Estimated"
+    "basis": "Estimated (low-tier, scaled by prestige)"
   },
   {
     "name": "Prairie View A&M",
@@ -2837,7 +2837,7 @@
     "tier": "Low",
     "prestige": 1,
     "annualNilBudget": 75000,
-    "basis": "Estimated"
+    "basis": "Estimated (low-tier, scaled by prestige)"
   },
   {
     "name": "Southeastern Louisiana",
@@ -2845,7 +2845,7 @@
     "tier": "Low",
     "prestige": 1,
     "annualNilBudget": 75000,
-    "basis": "Estimated"
+    "basis": "Estimated (low-tier, scaled by prestige)"
   },
   {
     "name": "Tarleton State",
@@ -2853,15 +2853,15 @@
     "tier": "Low",
     "prestige": 1,
     "annualNilBudget": 75000,
-    "basis": "Estimated"
+    "basis": "Estimated (low-tier, scaled by prestige)"
   },
   {
     "name": "Texas A&M University-Corpus Christi",
     "conf": "Southland",
     "tier": "Low",
     "prestige": 1,
-    "annualNilBudget": 75000,
-    "basis": "Estimated (prestige adjusted by user; average of 1 same-conference prestige-2 peer(s))"
+    "annualNilBudget": 118750,
+    "basis": "Estimated (low-tier, scaled by prestige)"
   },
   {
     "name": "Texas Rio Grande Valley",
@@ -2885,7 +2885,7 @@
     "tier": "Low",
     "prestige": 1,
     "annualNilBudget": 75000,
-    "basis": "Estimated"
+    "basis": "Estimated (low-tier, scaled by prestige)"
   },
   {
     "name": "UMaine",
@@ -2893,7 +2893,7 @@
     "tier": "Low",
     "prestige": 1,
     "annualNilBudget": 75000,
-    "basis": "Estimated"
+    "basis": "Estimated (low-tier, scaled by prestige)"
   },
   {
     "name": "UMass Lowell",
@@ -2901,7 +2901,7 @@
     "tier": "Low",
     "prestige": 1,
     "annualNilBudget": 75000,
-    "basis": "Estimated"
+    "basis": "Estimated (low-tier, scaled by prestige)"
   },
   {
     "name": "UT Arlington",
@@ -2909,7 +2909,7 @@
     "tier": "Low",
     "prestige": 1,
     "annualNilBudget": 75000,
-    "basis": "Estimated"
+    "basis": "Estimated (low-tier, scaled by prestige)"
   },
   {
     "name": "West Georgia",
@@ -2917,6 +2917,6 @@
     "tier": "Low",
     "prestige": 1,
     "annualNilBudget": 75000,
-    "basis": "Estimated"
+    "basis": "Estimated (low-tier, scaled by prestige)"
   }
 ]
