@@ -8696,7 +8696,7 @@ function OffseasonTab({ stage, offseason, hsBoard, team, roster, nextYear, commi
 
       <div style={{ display: "flex", gap: 18, flexWrap: "wrap", marginBottom: 14, fontSize: 13, color: C.dim }}>
         <div>Open scholarships: <strong style={{ color: (scholarshipInfo?.open ?? 0) > 0 ? C.gold : C.red }}>{scholarshipInfo?.open ?? 0}</strong> / {scholarshipInfo?.limit ?? SCHOLARSHIP_LIMIT}</div>
-        <div>NIL committed: <strong style={{ color: C.gold }}>{formatNil(committedNil)}</strong> / {formatNil(nilBudget)}</div>
+        <div>NIL committed: <strong style={{ color: C.gold }}>{formatNil(committedNil + recruitingNilPending)}</strong> / {formatNil(nilBudget)} <span style={{ color: C.dimmer }}>({formatNil(recruitingNilPending)} pending offers)</span></div>
         <div>Portal points this week: <strong style={{ color: C.gold }}>{offseason.points}</strong></div>
         <div>Transfers committed: <strong style={{ color: C.cream }}>{committed.length}</strong></div>
         <div>HS signees this cycle: <strong style={{ color: C.cream }}>{committedFreshmen}</strong></div>
