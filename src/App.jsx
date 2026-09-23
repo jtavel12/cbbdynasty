@@ -2206,11 +2206,12 @@ function actionCostFor(actionKey, recruit, team) {
 
 // Weekly recruiting points by program tier: high-majors 100, mid-majors 75,
 // low-majors 50 — plus whatever a hired Recruiting Coordinator adds or
-// costs (see assistantBonus), floored so a bad hire can dent but never
+// costs (see assistantBonus) and the Recruiting Lounge facility's bonus,
+// floored so a bad hire (or no facility investment) can dent but never
 // zero out the week.
-function weeklyRecruitingBudget(team, assistants = null) {
+function weeklyRecruitingBudget(team, assistants = null, facilities = null) {
   const base = team.prestige >= 4 ? 100 : team.prestige === 3 ? 75 : 50;
-  return Math.max(20, base + assistantBonus(assistants?.recruiting));
+  return Math.max(20, base + assistantBonus(assistants?.recruiting) + facilityRecruitingBonus(facilities?.recruiting));
 }
 
 function canTakeAction(recruit, actionKey, pointsLeft, weekIndex = 0, team = null) {
@@ -4408,6 +4409,98 @@ function generateAssistantCandidates(team) {
 }
 
 /* =========================================================================
+   PROGRAM BUDGET + FACILITIES
+   A second, separate pool of money from the NIL budget — athletic-
+   department capital, not player compensation. Seeded and grown with the
+   same tier/prestige shape as NIL (see nilBudgetForTeam/advanceNilBudgets)
+   but on a much smaller scale, and with no per-team objectives system:
+   every team's program budget just grows a modest amount each season off
+   how well that season went, tapering toward its tier's ceiling. It funds
+   facility upgrades, and (see scheduling) is what a guarantee-game payment
+   actually moves through.
+   ========================================================================= */
+const PROGRAM_BUDGET_TIER_RANGES = {
+  high: [1_500_000, 6_000_000],
+  mid: [400_000, 1_800_000],
+  low: [80_000, 500_000],
+};
+const PROGRAM_BUDGET_TIER_CEILINGS = { high: 15_000_000, mid: 4_000_000, low: 1_000_000 };
+
+function programBudgetForTeam(team) {
+  const tier = nilTierFor(team);
+  const [lo, hi] = PROGRAM_BUDGET_TIER_RANGES[tier];
+  const t = clamp((team.prestige - 1) / 4, 0, 1);
+  return Math.round(lo + (hi - lo) * t);
+}
+function baselineProgramBudgetById() {
+  const out = {};
+  for (const t of TEAMS) out[t.id] = programBudgetForTeam(t);
+  return out;
+}
+function taperedProgramBudgetGrowth(prev, rawGrowthPct, ceiling) {
+  const room = clamp(1 - prev / ceiling, 0, 1);
+  return Math.min(prev * (1 + rawGrowthPct * room), ceiling);
+}
+// Every team's program budget grows a little each season off the same 0..1
+// season-quality signal driftPrestige/cpuNilGrowth already compute — no
+// separate objectives system, since this is meant to read as ordinary
+// athletic-department revenue (ticket sales, boosters), not a coach's
+// personal NIL pitch. The Arena facility (see FACILITIES below) adds a
+// little more on top, applied here since it's the only place this number
+// changes.
+function programBudgetGrowthPct(quality, arenaLevel = 0) {
+  const base = clamp(0.03 + (quality ?? 0.5) * 0.07, 0.03, 0.10);
+  return base + (arenaLevel || 0) * 0.01;
+}
+function advanceProgramBudgets(prevById, year, powerById, facilitiesById) {
+  const next = {};
+  for (const t of TEAMS) {
+    const prev = prevById[t.id] ?? programBudgetForTeam(t);
+    const ceiling = PROGRAM_BUDGET_TIER_CEILINGS[nilTierFor(t)];
+    const quality = seasonQualityFor(t, year, powerById, null);
+    const arenaLevel = facilitiesById?.[t.id]?.arena || 0;
+    next[t.id] = Math.round(taperedProgramBudgetGrowth(prev, programBudgetGrowthPct(quality, arenaLevel), ceiling));
+  }
+  return next;
+}
+
+// Four facility types, each upgradeable 0-5, purchased with the program
+// budget rather than NIL. Every bonus routes through an already-isolated
+// number the same way an assistant coach's bonus does (see
+// ASSISTANT_ROLES/assistantBonus) — none of them touch box-score or
+// live-game simulation math directly.
+const FACILITIES = {
+  practice: { label: "Practice Facility", blurb: "Cuts injury risk during games." },
+  recruiting: { label: "Recruiting Lounge", blurb: "Boosts weekly recruiting points." },
+  development: { label: "Player Development Center", blurb: "Boosts offseason development points." },
+  arena: { label: "Arena & Fan Experience", blurb: "Grows the program budget faster each season." },
+};
+const FACILITY_MAX_LEVEL = 5;
+function baselineFacilitiesById() {
+  const out = {};
+  for (const t of TEAMS) out[t.id] = { practice: 0, recruiting: 0, development: 0, arena: 0 };
+  return out;
+}
+// Cost to go from `currentLevel` to `currentLevel + 1` — scales with the
+// team's own tier and with how far up the ladder this step is, so maxing
+// out one facility is a real season-spanning investment, not a one-time
+// buy.
+function facilityUpgradeCost(team, currentLevel) {
+  const baseByTier = { high: 400_000, mid: 200_000, low: 80_000 };
+  const base = baseByTier[nilTierFor(team)];
+  return Math.round(base * (currentLevel + 1));
+}
+function facilityInjuryMult(level) {
+  return clamp(1 - (level || 0) * 0.06, 0.7, 1);
+}
+function facilityRecruitingBonus(level) {
+  return (level || 0) * 3;
+}
+function facilityDevBonus(level) {
+  return (level || 0) * 2;
+}
+
+/* =========================================================================
    COACH CAREER + REPUTATION
    ========================================================================= */
 const EMPTY_COACH = { wins: 0, losses: 0, seasons: 0, tourneyApps: 0, confTourneyTitles: 0, confRegSeasonTitles: 0, finalFours: 0, natTitles: 0, coyAwards: 0, jobSecurity: 60, repPenalty: 0 };
@@ -5573,7 +5666,7 @@ function DynastyApp({ initial, onExit }) {
       const lead = result.liveInjuries[0];
       inj = { injured: { id: lead.id, name: lead.name, type: lead.type, games: lead.gamesOut, seasonEnding: lead.seasonEnding, extra: result.liveInjuries.length - 1 } };
     } else {
-      const freqMult = INJURY_FREQUENCY_MULT[state.settings?.injuryFrequency || "normal"] * PRACTICE_MODE_INJURY_MULT[state.practiceMode || "normal"];
+      const freqMult = INJURY_FREQUENCY_MULT[state.settings?.injuryFrequency || "normal"] * PRACTICE_MODE_INJURY_MULT[state.practiceMode || "normal"] * facilityInjuryMult(state.facilitiesById?.[state.teamId]?.practice);
       inj = maybeInjure(roster, rotationMinutesOf(state.depthChart, roster, state.minutes), gamesRemaining, freqMult);
       roster = inj.roster;
     }
@@ -5587,7 +5680,7 @@ function DynastyApp({ initial, onExit }) {
     const newWeekIndex = schedule.filter((g) => g.played).length + 1;
     const weeksElapsed = Math.max(0, newWeekIndex - state.recruitingWeekIndex);
     const recruitingBoard = weeksElapsed > 0 ? advanceRecruitingWeeks(state.recruitingBoard, state.recruitingWeekIndex, weeksElapsed, TOTAL_SEASON_WEEKS) : state.recruitingBoard;
-    const recruitingPoints = weeksElapsed > 0 ? weeklyRecruitingBudget(team, state.assistants) : state.recruitingPoints;
+    const recruitingPoints = weeksElapsed > 0 ? weeklyRecruitingBudget(team, state.assistants, state.facilitiesById?.[state.teamId]) : state.recruitingPoints;
 
     // Head-to-head record vs conference rivals persists across seasons.
     let rivalryLedger = state.rivalryLedger || {};
@@ -5624,7 +5717,7 @@ function DynastyApp({ initial, onExit }) {
     const oppPower = teamPowerRating(opp, state.strengths, state.year);
     const mom = momentumMod(currentStreak(state.schedule));
     const gamesRemaining = Math.max(1, state.schedule.filter((g) => !g.played).length - 1);
-    const injuryMult = INJURY_FREQUENCY_MULT[state.settings?.injuryFrequency || "normal"] * PRACTICE_MODE_INJURY_MULT[state.practiceMode || "normal"];
+    const injuryMult = INJURY_FREQUENCY_MULT[state.settings?.injuryFrequency || "normal"] * PRACTICE_MODE_INJURY_MULT[state.practiceMode || "normal"] * facilityInjuryMult(state.facilitiesById?.[state.teamId]?.practice);
     setLivePlay({ teamId: state.teamId, opp, oppId: nextGame.oppId, oppPower, oppRank: rankById[nextGame.oppId] || null, home: nextGame.home, momentum: mom, roster: state.roster, dc: state.depthChart, powerBaseline, gamesRemaining, year: state.year, injuryMult });
   }
 
@@ -5647,7 +5740,7 @@ function DynastyApp({ initial, onExit }) {
       });
       roster = tickInjuries(roster);
       const gamesRemaining = Math.max(1, games.filter((x) => !x.played).length - 1);
-      roster = maybeInjure(roster, rotationMinutesOf(state.depthChart, roster, state.minutes), gamesRemaining, INJURY_FREQUENCY_MULT[state.settings?.injuryFrequency || "normal"]).roster;
+      roster = maybeInjure(roster, rotationMinutesOf(state.depthChart, roster, state.minutes), gamesRemaining, INJURY_FREQUENCY_MULT[state.settings?.injuryFrequency || "normal"] * facilityInjuryMult(state.facilitiesById?.[state.teamId]?.practice)).roster;
       const box = boxArray(result.boxByPlayer, roster);
       g.played = true;
       g.result = { win: result.win, myScore: result.myScore, oppScore: result.oppScore, oppRank, box };
@@ -5657,7 +5750,7 @@ function DynastyApp({ initial, onExit }) {
       const newWeekIndex = games.filter((g) => g.played).length + 1;
       const weeksElapsed = Math.max(0, newWeekIndex - s.recruitingWeekIndex);
       const recruitingBoard = weeksElapsed > 0 ? advanceRecruitingWeeks(s.recruitingBoard, s.recruitingWeekIndex, weeksElapsed, TOTAL_SEASON_WEEKS) : s.recruitingBoard;
-      const recruitingPoints = weeksElapsed > 0 ? weeklyRecruitingBudget(team, s.assistants) : s.recruitingPoints;
+      const recruitingPoints = weeksElapsed > 0 ? weeklyRecruitingBudget(team, s.assistants, s.facilitiesById?.[s.teamId]) : s.recruitingPoints;
       return { ...s, roster, schedule: games, recruitingBoard, recruitingPoints, recruitingWeekIndex: newWeekIndex };
     });
     flash(`Simulated the rest of the season.${sigWins ? ` ${sigWins} signature win${sigWins > 1 ? "s" : ""}.` : ""}`);
@@ -5685,7 +5778,7 @@ function DynastyApp({ initial, onExit }) {
       });
       roster = tickInjuries(roster);
       const gamesRemaining = Math.max(1, games.filter((x) => !x.played).length - 1);
-      roster = maybeInjure(roster, rotationMinutesOf(state.depthChart, roster, state.minutes), gamesRemaining, INJURY_FREQUENCY_MULT[state.settings?.injuryFrequency || "normal"]).roster;
+      roster = maybeInjure(roster, rotationMinutesOf(state.depthChart, roster, state.minutes), gamesRemaining, INJURY_FREQUENCY_MULT[state.settings?.injuryFrequency || "normal"] * facilityInjuryMult(state.facilitiesById?.[state.teamId]?.practice)).roster;
       const box = boxArray(result.boxByPlayer, roster);
       g.played = true;
       g.result = { win: result.win, myScore: result.myScore, oppScore: result.oppScore, oppRank, box };
@@ -5695,7 +5788,7 @@ function DynastyApp({ initial, onExit }) {
       const newWeekIndex = games.filter((g) => g.played).length + 1;
       const weeksElapsed = Math.max(0, newWeekIndex - s.recruitingWeekIndex);
       const recruitingBoard = weeksElapsed > 0 ? advanceRecruitingWeeks(s.recruitingBoard, s.recruitingWeekIndex, weeksElapsed, TOTAL_SEASON_WEEKS) : s.recruitingBoard;
-      const recruitingPoints = weeksElapsed > 0 ? weeklyRecruitingBudget(team, s.assistants) : s.recruitingPoints;
+      const recruitingPoints = weeksElapsed > 0 ? weeklyRecruitingBudget(team, s.assistants, s.facilitiesById?.[s.teamId]) : s.recruitingPoints;
       return { ...s, roster, schedule: games, recruitingBoard, recruitingPoints, recruitingWeekIndex: newWeekIndex };
     });
     flash(played ? label : "No games left to sim in that window.");
@@ -5726,10 +5819,10 @@ function DynastyApp({ initial, onExit }) {
         draftDeclarations: null,
         transferRisks: null,
         nilLocked: false,
-        points: weeklyRecruitingBudget(team, state.assistants),
+        points: weeklyRecruitingBudget(team, state.assistants, state.facilitiesById?.[state.teamId]),
         scheduleDraft: genSchedule(team, nextYear),
         done: false,
-        devPoints: DEV_POINTS_PER_OFFSEASON + assistantBonus(state.assistants?.development),
+        devPoints: DEV_POINTS_PER_OFFSEASON + assistantBonus(state.assistants?.development) + facilityDevBonus(state.facilitiesById?.[state.teamId]?.development),
         devSpent: {},
       },
       seasonEndJobOffer: seasonEndOffer,
@@ -5945,7 +6038,7 @@ function DynastyApp({ initial, onExit }) {
     const board = tickRecruitingWeek(os.transferBoard, nextWeek, OFFSEASON_WEEKS + 1);
     setState((s) => ({
       ...s,
-      offseason: { ...s.offseason, week: nextWeek, transferBoard: board, points: weeklyRecruitingBudget(team, s.assistants), done: closing },
+      offseason: { ...s.offseason, week: nextWeek, transferBoard: board, points: weeklyRecruitingBudget(team, s.assistants, s.facilitiesById?.[s.teamId]), done: closing },
     }));
     flash(closing ? "The transfer portal has closed — begin the next season." : `Offseason week ${nextWeek} of ${OFFSEASON_WEEKS}.`);
   }
@@ -6106,7 +6199,7 @@ function DynastyApp({ initial, onExit }) {
       oppRank: rankById[oppId] || null, home: true, momentum: mom,
       roster: state.roster, dc: state.depthChart, powerBaseline, gamesRemaining: 1,
       isPostseason: true, loc, year: state.year,
-      injuryMult: INJURY_FREQUENCY_MULT[state.settings?.injuryFrequency || "normal"],
+      injuryMult: INJURY_FREQUENCY_MULT[state.settings?.injuryFrequency || "normal"] * facilityInjuryMult(state.facilitiesById?.[state.teamId]?.practice),
     });
   }
 
@@ -6674,6 +6767,9 @@ function DynastyApp({ initial, onExit }) {
       state.nilBudgetById || baselineNilBudgetById(), state.teamId, state.nilObjectives, nilCtx, state.year, powerById
     );
     const nextNilObjectives = pickObjectivesFor(nextPrestige[state.teamId] ?? team.prestige);
+    const nextProgramBudgetById = advanceProgramBudgets(
+      state.programBudgetById || baselineProgramBudgetById(), state.year, powerById, state.facilitiesById
+    );
 
     // Prestige movement since last season, for trend indicators.
     const prevP = state.prestigeById || baselinePrestigeById();
@@ -6709,6 +6805,7 @@ function DynastyApp({ initial, onExit }) {
       seasonSeed: (Math.random() * 0xffffffff) >>> 0,
       prestigeById: nextPrestige,
       nilBudgetById: nextNilById,
+      programBudgetById: nextProgramBudgetById,
       nilObjectives: nextNilObjectives,
       roster: newRoster,
       depthChart: newDepthChart,
@@ -6717,7 +6814,7 @@ function DynastyApp({ initial, onExit }) {
       recruitingBoard: seedInterest(genRecruitPool(newYear + 1), team),
       incomingCommits: [],
       recruitTargets: [],
-      recruitingPoints: weeklyRecruitingBudget(team, state.assistants),
+      recruitingPoints: weeklyRecruitingBudget(team, state.assistants, state.facilitiesById?.[state.teamId]),
       recruitingWeekIndex: 1,
       strengths: newStrengths,
       programErasById: nextProgramErasById,
@@ -6766,6 +6863,24 @@ function DynastyApp({ initial, onExit }) {
     const current = state.assistants?.[role];
     setState((s) => ({ ...s, assistants: { ...(s.assistants || {}), [role]: null } }));
     if (current) flash(`Let go of ${current.name}, your ${ASSISTANT_ROLES[role].label}.`);
+  }
+
+  function upgradeFacility(key) {
+    const current = state.facilitiesById?.[state.teamId] || { practice: 0, recruiting: 0, development: 0, arena: 0 };
+    const level = current[key] || 0;
+    if (level >= FACILITY_MAX_LEVEL) return;
+    const cost = facilityUpgradeCost(team, level);
+    const budget = (state.programBudgetById || baselineProgramBudgetById())[state.teamId] ?? programBudgetForTeam(team);
+    if (budget < cost) { flash(`Not enough in the program budget — ${FACILITIES[key].label} upgrade costs ${formatNil(cost)}.`); return; }
+    setState((s) => {
+      const facilitiesById = { ...(s.facilitiesById || baselineFacilitiesById()) };
+      const teamFacilities = facilitiesById[s.teamId] || { practice: 0, recruiting: 0, development: 0, arena: 0 };
+      facilitiesById[s.teamId] = { ...teamFacilities, [key]: (teamFacilities[key] || 0) + 1 };
+      const programBudgetById = { ...(s.programBudgetById || baselineProgramBudgetById()) };
+      programBudgetById[s.teamId] = (programBudgetById[s.teamId] ?? programBudgetForTeam(team)) - cost;
+      return { ...s, facilitiesById, programBudgetById };
+    });
+    flash(`${FACILITIES[key].label} upgraded to level ${level + 1} for ${formatNil(cost)}.`);
   }
 
   function changeJob(newTeam) {
@@ -6824,6 +6939,9 @@ function DynastyApp({ initial, onExit }) {
     const { nextNilById } = advanceNilBudgets(
       state.nilBudgetById || baselineNilBudgetById(), state.teamId, state.nilObjectives, nilCtx, state.year, powerById
     );
+    const nextProgramBudgetById = advanceProgramBudgets(
+      state.programBudgetById || baselineProgramBudgetById(), state.year, powerById, state.facilitiesById
+    );
 
     // Record book: the whole roster you're leaving behind had their stint
     // under you end right here, same as if they'd graduated.
@@ -6840,6 +6958,7 @@ function DynastyApp({ initial, onExit }) {
       prestigeById: nextPrestige,
       coachesById: nextCoachesById,
       nilBudgetById: nextNilById,
+      programBudgetById: nextProgramBudgetById,
       nilObjectives: pickObjectivesFor(nextPrestige[newTeam.id] ?? newTeam.prestige),
       roster,
       depthChart: newDepthChart,
@@ -6848,7 +6967,7 @@ function DynastyApp({ initial, onExit }) {
       recruitingBoard: seedInterest(genRecruitPool(newYear + 1), newTeam),
       incomingCommits: [],
       recruitTargets: [],
-      recruitingPoints: weeklyRecruitingBudget(newTeam),
+      recruitingPoints: weeklyRecruitingBudget(newTeam, null, state.facilitiesById?.[newTeam.id]),
       recruitingWeekIndex: 1,
       strengths: genSeasonStrengths(nextProgramErasById),
       programErasById: nextProgramErasById,
@@ -7010,7 +7129,7 @@ function DynastyApp({ initial, onExit }) {
               targets={state.recruitTargets || []}
               onToggleTarget={toggleTarget}
               points={state.recruitingPoints}
-              budget={weeklyRecruitingBudget(team, state.assistants)}
+              budget={weeklyRecruitingBudget(team, state.assistants, state.facilitiesById?.[state.teamId])}
               weekIndex={state.recruitingWeekIndex}
               totalWeeks={TOTAL_SEASON_WEEKS}
               onAction={doRecruitAction}
@@ -7076,7 +7195,7 @@ function DynastyApp({ initial, onExit }) {
           {tab === "standings" && <StandingsTab team={team} ranked={ranked} rankById={rankById} userRecord={record} onViewTeam={setViewTeamId} />}
           {tab === "rankings" && <RankingsTab ranked={ranked} userTeamId={state.teamId} onViewTeam={setViewTeamId} />}
           {tab === "leaderboard" && <LeaderboardTab leaders={leaders} userTeamId={state.teamId} year={state.year} onViewTeam={setViewTeamId} />}
-          {tab === "program" && <ProgramTab state={state} team={team} record={record} reputation={reputation} rivalIds={rivalIds} rankById={rankById} onRetire={() => setConfirmRetire(true)} onHireAssistant={hireAssistant} onFireAssistant={fireAssistant} />}
+          {tab === "program" && <ProgramTab state={state} team={team} record={record} reputation={reputation} rivalIds={rivalIds} rankById={rankById} onRetire={() => setConfirmRetire(true)} onHireAssistant={hireAssistant} onFireAssistant={fireAssistant} onUpgradeFacility={upgradeFacility} />}
           {tab === "history" && <HistoryTab state={state} rivalIds={rivalIds} />}
           {tab === "postseason" && (
             <PostseasonTab
@@ -11069,10 +11188,12 @@ function RecordCategoryList({ label, rows, statKey, yearField }) {
   );
 }
 
-function ProgramTab({ state, team, record, reputation, rivalIds, rankById, onRetire, onHireAssistant, onFireAssistant }) {
+function ProgramTab({ state, team, record, reputation, rivalIds, rankById, onRetire, onHireAssistant, onFireAssistant, onUpgradeFacility }) {
   const [hiringRole, setHiringRole] = useState(null);
   const [candidates, setCandidates] = useState([]);
   const coach = state.coach || EMPTY_COACH;
+  const programBudget = (state.programBudgetById || baselineProgramBudgetById())[state.teamId] ?? programBudgetForTeam(team);
+  const teamFacilities = state.facilitiesById?.[state.teamId] || { practice: 0, recruiting: 0, development: 0, arena: 0 };
   const careerW = coach.wins, careerL = coach.losses;
   const winPct = careerW + careerL > 0 ? (careerW / (careerW + careerL)).toFixed(3).replace(/^0/, "") : "—";
   const prestige = Math.round(team.prestige || 2);
@@ -11172,6 +11293,46 @@ function ProgramTab({ state, team, record, reputation, rivalIds, rankById, onRet
         />
       )}
 
+      {onUpgradeFacility && (
+        <Panel style={{ padding: 20 }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 14, flexWrap: "wrap", marginBottom: 12 }}>
+            <div style={{ fontSize: 11, color: C.dim, letterSpacing: "0.08em", display: "flex", alignItems: "center", gap: 6 }}><Building2 size={13} color={C.gold} /> FACILITIES</div>
+            <div style={{ fontSize: 12, color: C.dim }}>Program budget: <strong className="cbb-num" style={{ color: C.gold, fontSize: 14 }}>{formatNil(programBudget)}</strong></div>
+          </div>
+          <div style={{ fontSize: 11.5, color: C.dimmer, marginBottom: 14 }}>
+            A separate pot from NIL — athletic-department capital, not player pay. Grows a little every season on its own (faster with a stronger Arena), and funds these upgrades.
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 14 }}>
+            {Object.entries(FACILITIES).map(([key, info]) => {
+              const level = teamFacilities[key] || 0;
+              const maxed = level >= FACILITY_MAX_LEVEL;
+              const cost = maxed ? null : facilityUpgradeCost(team, level);
+              const affordable = cost != null && programBudget >= cost;
+              const bonusText =
+                key === "practice" ? `${Math.round((1 - facilityInjuryMult(level)) * 100)}% lower injury risk`
+                : key === "recruiting" ? `+${facilityRecruitingBonus(level)} recruiting pts/wk`
+                : key === "development" ? `+${facilityDevBonus(level)} dev pts/offseason`
+                : `+${level}% budget growth/yr`;
+              return (
+                <div key={key} style={{ border: `1px solid ${C.line}`, padding: "12px 16px" }}>
+                  <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between" }}>
+                    <span style={{ fontWeight: 700, fontSize: 14, color: C.cream }}>{info.label}</span>
+                    <span className="cbb-num" style={{ fontSize: 12.5, color: C.dim }}>Lv {level}/{FACILITY_MAX_LEVEL}</span>
+                  </div>
+                  <div style={{ fontSize: 11, color: C.dimmer, marginTop: 3 }}>{info.blurb}</div>
+                  <div style={{ fontSize: 11.5, color: level > 0 ? C.gold : C.dimmer, marginTop: 6 }}>{level > 0 ? bonusText : "No bonus yet"}</div>
+                  <button onClick={() => onUpgradeFacility(key)} disabled={maxed || !affordable} className="cbb-btn"
+                    style={{ marginTop: 10, fontSize: 11.5, padding: "6px 12px", cursor: maxed || !affordable ? "not-allowed" : "pointer",
+                      border: `1px solid ${maxed ? C.line : affordable ? C.wood : C.red}`,
+                      background: "transparent", color: maxed ? C.dimmer : affordable ? C.gold : C.red, fontWeight: 600 }}>
+                    {maxed ? "Maxed out" : `Upgrade — ${formatNil(cost)}`}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        </Panel>
+      )}
     </div>
   );
 }
@@ -12080,6 +12241,8 @@ export default function CBBDynasty() {
       seasonSeed: (Math.random() * 0xffffffff) >>> 0,
       prestigeById,
       nilBudgetById: baselineNilBudgetById(),
+      programBudgetById: baselineProgramBudgetById(),
+      facilitiesById: baselineFacilitiesById(),
       nilObjectives: pickObjectivesFor(team.prestige),
       roster,
       depthChart: initialDepthChart,
