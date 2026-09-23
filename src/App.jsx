@@ -2897,7 +2897,16 @@ applyLivePrestige(baselinePrestigeById());
    drifts the same way prestige does.
    ========================================================================= */
 const HIGH_MAJOR_CONFS = new Set(["ACC", "Big Ten", "Big 12", "SEC", "Big East", "Pac-12"]);
-const MID_MAJOR_CONFS = new Set(["American", "Atlantic 10", "Mountain West", "WCC", "Missouri Valley", "CAA", "Ivy", "Horizon"]);
+// Beyond the original 8, nil_budgets.json's real per-team data splits the
+// rest of Division I cleanly into two clusters: these 13 conferences all
+// have a real-data floor around $150K (mid-major money), while America
+// East, MEAC, SWAC, Southland, and UAC (left as "low") floor out near
+// $30K. Matching the set to that split keeps a team's growth ceiling
+// (NIL_TIER_CEILINGS) consistent with what it's actually already earning.
+const MID_MAJOR_CONFS = new Set([
+  "American", "Atlantic 10", "Mountain West", "WCC", "Missouri Valley", "CAA", "Ivy", "Horizon",
+  "ASUN", "Big Sky", "Big South", "Big West", "Conference USA", "MAAC", "MAC", "NEC", "Ohio Valley", "Patriot", "Southern", "Summit", "Sun Belt",
+]);
 const NIL_TIER_RANGES = {
   high: [800_000, 4_000_000],
   mid: [150_000, 900_000],
