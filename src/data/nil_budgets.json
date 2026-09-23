@@ -12,8 +12,8 @@
     "conf": "Big Ten",
     "tier": "High",
     "prestige": 5,
-    "annualNilBudget": 3200000,
-    "basis": "Estimated (prestige adjusted by user)"
+    "annualNilBudget": 4216667,
+    "basis": "Estimated (prestige adjusted by user; average of 6 same-conference prestige-4 peer(s))"
   },
   {
     "name": "Kansas",
@@ -68,16 +68,16 @@
     "conf": "Big Ten",
     "tier": "High",
     "prestige": 5,
-    "annualNilBudget": 3200000,
-    "basis": "Estimated (prestige adjusted by user)"
+    "annualNilBudget": 4216667,
+    "basis": "Estimated (prestige adjusted by user; average of 6 same-conference prestige-4 peer(s))"
   },
   {
     "name": "UCLA",
     "conf": "Big Ten",
     "tier": "High",
     "prestige": 5,
-    "annualNilBudget": 3200000,
-    "basis": "Estimated (prestige adjusted by user)"
+    "annualNilBudget": 4216667,
+    "basis": "Estimated (prestige adjusted by user; average of 6 same-conference prestige-4 peer(s))"
   },
   {
     "name": "UConn",
@@ -108,8 +108,8 @@
     "conf": "Big 12",
     "tier": "High",
     "prestige": 4,
-    "annualNilBudget": 4000000,
-    "basis": "Estimated (prestige adjusted by user)"
+    "annualNilBudget": 7000000,
+    "basis": "Estimated (prestige adjusted by user; average of 1 same-conference prestige-5 peer(s))"
   },
   {
     "name": "Arkansas",
@@ -316,8 +316,8 @@
     "conf": "Big 12",
     "tier": "High",
     "prestige": 4,
-    "annualNilBudget": 2400000,
-    "basis": "Estimated (prestige adjusted by user)"
+    "annualNilBudget": 1900000,
+    "basis": "Estimated (prestige adjusted by user; average of 3 same-conference prestige-3 peer(s))"
   },
   {
     "name": "Virginia",
@@ -444,8 +444,8 @@
     "conf": "Big 12",
     "tier": "High",
     "prestige": 3,
-    "annualNilBudget": 3200000,
-    "basis": "Estimated (prestige adjusted by user)"
+    "annualNilBudget": 2900000,
+    "basis": "Estimated (prestige adjusted by user; average of 7 same-conference prestige-4 peer(s))"
   },
   {
     "name": "Miami (FL)",
@@ -508,16 +508,16 @@
     "conf": "SEC",
     "tier": "High",
     "prestige": 3,
-    "annualNilBudget": 3200000,
-    "basis": "Estimated (prestige adjusted by user)"
+    "annualNilBudget": 2900000,
+    "basis": "Estimated (prestige adjusted by user; average of 7 same-conference prestige-4 peer(s))"
   },
   {
     "name": "Texas A&M",
     "conf": "SEC",
     "tier": "High",
     "prestige": 3,
-    "annualNilBudget": 3200000,
-    "basis": "Estimated (prestige adjusted by user)"
+    "annualNilBudget": 2900000,
+    "basis": "Estimated (prestige adjusted by user; average of 7 same-conference prestige-4 peer(s))"
   },
   {
     "name": "Texas Tech",
@@ -564,16 +564,16 @@
     "conf": "Big Ten",
     "tier": "High",
     "prestige": 2,
-    "annualNilBudget": 2400000,
-    "basis": "Estimated (prestige adjusted by user)"
+    "annualNilBudget": 3233333,
+    "basis": "Estimated (prestige adjusted by user; average of 3 same-conference prestige-3 peer(s))"
   },
   {
     "name": "Ole Miss",
     "conf": "SEC",
     "tier": "High",
     "prestige": 2,
-    "annualNilBudget": 2400000,
-    "basis": "Estimated (prestige adjusted by user)"
+    "annualNilBudget": 1900000,
+    "basis": "Estimated (prestige adjusted by user; average of 4 same-conference prestige-3 peer(s))"
   },
   {
     "name": "Penn State",
@@ -596,24 +596,24 @@
     "conf": "SEC",
     "tier": "High",
     "prestige": 2,
-    "annualNilBudget": 2400000,
-    "basis": "Estimated (prestige adjusted by user)"
+    "annualNilBudget": 1900000,
+    "basis": "Estimated (prestige adjusted by user; average of 4 same-conference prestige-3 peer(s))"
   },
   {
     "name": "TCU",
     "conf": "Big 12",
     "tier": "High",
     "prestige": 2,
-    "annualNilBudget": 2400000,
-    "basis": "Estimated (prestige adjusted by user)"
+    "annualNilBudget": 1900000,
+    "basis": "Estimated (prestige adjusted by user; average of 3 same-conference prestige-3 peer(s))"
   },
   {
     "name": "UCF",
     "conf": "Big 12",
     "tier": "High",
     "prestige": 2,
-    "annualNilBudget": 2400000,
-    "basis": "Estimated (prestige adjusted by user)"
+    "annualNilBudget": 1900000,
+    "basis": "Estimated (prestige adjusted by user; average of 3 same-conference prestige-3 peer(s))"
   },
   {
     "name": "Virginia Tech",
@@ -628,8 +628,8 @@
     "conf": "Big Ten",
     "tier": "High",
     "prestige": 1,
-    "annualNilBudget": 1600000,
-    "basis": "Estimated (prestige adjusted by user)"
+    "annualNilBudget": 1300000,
+    "basis": "Estimated (prestige adjusted by user; average of 2 same-conference prestige-2 peer(s))"
   },
   {
     "name": "Gonzaga",
@@ -660,16 +660,16 @@
     "conf": "American",
     "tier": "Mid",
     "prestige": 4,
-    "annualNilBudget": 525000,
-    "basis": "Estimated (prestige adjusted by user)"
+    "annualNilBudget": 650000,
+    "basis": "Estimated (prestige adjusted by user; average of 2 same-conference prestige-3 peer(s))"
   },
   {
     "name": "UNLV",
     "conf": "Mountain West",
     "tier": "Mid",
     "prestige": 4,
-    "annualNilBudget": 525000,
-    "basis": "Estimated (prestige adjusted by user)"
+    "annualNilBudget": 650000,
+    "basis": "Estimated (prestige adjusted by user; average of 3 same-conference prestige-3 peer(s))"
   },
   {
     "name": "Bradley",
@@ -684,16 +684,16 @@
     "conf": "American",
     "tier": "Mid",
     "prestige": 3,
-    "annualNilBudget": 337500,
-    "basis": "Estimated (prestige adjusted by user)"
+    "annualNilBudget": 280000,
+    "basis": "Estimated (prestige adjusted by user; average of 2 same-conference prestige-2 peer(s))"
   },
   {
     "name": "College of the Holy Cross",
     "conf": "Patriot",
-    "tier": "Low",
+    "tier": "Mid",
     "prestige": 3,
-    "annualNilBudget": 77500,
-    "basis": "Estimated (prestige adjusted by user)"
+    "annualNilBudget": 280000,
+    "basis": "Estimated (prestige adjusted by user; average of 7 same-conference prestige-2 peer(s))"
   },
   {
     "name": "Davidson",
@@ -780,8 +780,8 @@
     "conf": "Ivy",
     "tier": "Mid",
     "prestige": 3,
-    "annualNilBudget": 337500,
-    "basis": "Estimated (prestige adjusted by user)"
+    "annualNilBudget": 280000,
+    "basis": "Estimated (prestige adjusted by user; average of 2 same-conference prestige-2 peer(s))"
   },
   {
     "name": "Princeton",
@@ -828,8 +828,8 @@
     "conf": "American",
     "tier": "Mid",
     "prestige": 3,
-    "annualNilBudget": 337500,
-    "basis": "Estimated (prestige adjusted by user)"
+    "annualNilBudget": 280000,
+    "basis": "Estimated (prestige adjusted by user; average of 2 same-conference prestige-2 peer(s))"
   },
   {
     "name": "UAB",
@@ -962,10 +962,10 @@
   {
     "name": "Canisius",
     "conf": "MAAC",
-    "tier": "Low",
+    "tier": "Mid",
     "prestige": 2,
-    "annualNilBudget": 20000,
-    "basis": "Estimated (prestige adjusted by user)"
+    "annualNilBudget": 150000,
+    "basis": "Estimated (prestige adjusted by user; average of 6 same-conference prestige-1 peer(s))"
   },
   {
     "name": "Central Michigan",
@@ -980,8 +980,8 @@
     "conf": "CAA",
     "tier": "Mid",
     "prestige": 2,
-    "annualNilBudget": 525000,
-    "basis": "Estimated (prestige adjusted by user)"
+    "annualNilBudget": 280000,
+    "basis": "Estimated (prestige adjusted by user; no higher-prestige peer in conference; matched nearest peer at prestige 2 ($280,000))"
   },
   {
     "name": "Chattanooga",
@@ -1037,7 +1037,7 @@
     "tier": "Mid",
     "prestige": 2,
     "annualNilBudget": 150000,
-    "basis": "Estimated (prestige adjusted by user)"
+    "basis": "Estimated (prestige adjusted by user; average of 5 same-conference prestige-1 peer(s))"
   },
   {
     "name": "Drake",
@@ -1132,8 +1132,8 @@
     "conf": "Atlantic 10",
     "tier": "Mid",
     "prestige": 2,
-    "annualNilBudget": 525000,
-    "basis": "Estimated (prestige adjusted by user)"
+    "annualNilBudget": 650000,
+    "basis": "Estimated (prestige adjusted by user; average of 5 same-conference prestige-3 peer(s))"
   },
   {
     "name": "George Washington",
@@ -1165,7 +1165,7 @@
     "tier": "Mid",
     "prestige": 2,
     "annualNilBudget": 150000,
-    "basis": "Estimated (prestige adjusted by user)"
+    "basis": "Estimated (prestige adjusted by user; average of 5 same-conference prestige-1 peer(s))"
   },
   {
     "name": "Hampton",
@@ -1180,8 +1180,8 @@
     "conf": "Ivy",
     "tier": "Mid",
     "prestige": 2,
-    "annualNilBudget": 525000,
-    "basis": "Estimated (prestige adjusted by user)"
+    "annualNilBudget": 650000,
+    "basis": "Estimated (prestige adjusted by user; average of 1 same-conference prestige-3 peer(s))"
   },
   {
     "name": "Hawaii",
@@ -1274,10 +1274,10 @@
   {
     "name": "Liberty",
     "conf": "Conference USA",
-    "tier": "Low",
+    "tier": "Mid",
     "prestige": 2,
-    "annualNilBudget": 135000,
-    "basis": "Estimated (prestige adjusted by user)"
+    "annualNilBudget": 650000,
+    "basis": "Estimated (prestige adjusted by user; average of 2 same-conference prestige-3 peer(s))"
   },
   {
     "name": "Long Beach State",
@@ -1484,8 +1484,8 @@
     "conf": "Horizon",
     "tier": "Mid",
     "prestige": 2,
-    "annualNilBudget": 525000,
-    "basis": "Estimated (prestige adjusted by user)"
+    "annualNilBudget": 280000,
+    "basis": "Estimated (prestige adjusted by user; no higher-prestige peer in conference; matched nearest peer at prestige 2 ($280,000))"
   },
   {
     "name": "Old Dominion",
@@ -1533,15 +1533,15 @@
     "tier": "Mid",
     "prestige": 2,
     "annualNilBudget": 150000,
-    "basis": "Estimated (prestige adjusted by user)"
+    "basis": "Estimated (prestige adjusted by user; average of 1 same-conference prestige-1 peer(s))"
   },
   {
     "name": "Richmond",
     "conf": "Atlantic 10",
     "tier": "Mid",
     "prestige": 2,
-    "annualNilBudget": 525000,
-    "basis": "Estimated (prestige adjusted by user)"
+    "annualNilBudget": 650000,
+    "basis": "Estimated (prestige adjusted by user; average of 5 same-conference prestige-3 peer(s))"
   },
   {
     "name": "Robert Morris",
@@ -1556,8 +1556,8 @@
     "conf": "Atlantic 10",
     "tier": "Mid",
     "prestige": 2,
-    "annualNilBudget": 525000,
-    "basis": "Estimated (prestige adjusted by user)"
+    "annualNilBudget": 650000,
+    "basis": "Estimated (prestige adjusted by user; average of 5 same-conference prestige-3 peer(s))"
   },
   {
     "name": "Saint Peter's",
@@ -1604,8 +1604,8 @@
     "conf": "American",
     "tier": "Mid",
     "prestige": 2,
-    "annualNilBudget": 525000,
-    "basis": "Estimated (prestige adjusted by user)"
+    "annualNilBudget": 650000,
+    "basis": "Estimated (prestige adjusted by user; average of 2 same-conference prestige-3 peer(s))"
   },
   {
     "name": "Southern Illinois",
@@ -1669,7 +1669,7 @@
     "tier": "Mid",
     "prestige": 2,
     "annualNilBudget": 150000,
-    "basis": "Estimated (prestige adjusted by user)"
+    "basis": "Estimated (prestige adjusted by user; average of 1 same-conference prestige-1 peer(s))"
   },
   {
     "name": "University at Buffalo",
@@ -1724,24 +1724,24 @@
     "conf": "Ivy",
     "tier": "Mid",
     "prestige": 2,
-    "annualNilBudget": 525000,
-    "basis": "Estimated (prestige adjusted by user)"
+    "annualNilBudget": 650000,
+    "basis": "Estimated (prestige adjusted by user; average of 1 same-conference prestige-3 peer(s))"
   },
   {
     "name": "Appalachian State",
     "conf": "Sun Belt",
-    "tier": "Low",
+    "tier": "Mid",
     "prestige": 1,
-    "annualNilBudget": 77500,
-    "basis": "Estimated (prestige adjusted by user)"
+    "annualNilBudget": 280000,
+    "basis": "Estimated (prestige adjusted by user; average of 10 same-conference prestige-2 peer(s))"
   },
   {
     "name": "Arkansas State",
     "conf": "Sun Belt",
-    "tier": "Low",
+    "tier": "Mid",
     "prestige": 1,
-    "annualNilBudget": 77500,
-    "basis": "Estimated (prestige adjusted by user)"
+    "annualNilBudget": 280000,
+    "basis": "Estimated (prestige adjusted by user; average of 10 same-conference prestige-2 peer(s))"
   },
   {
     "name": "Army",
@@ -1844,8 +1844,8 @@
     "conf": "Horizon",
     "tier": "Mid",
     "prestige": 1,
-    "annualNilBudget": 337500,
-    "basis": "Estimated (prestige adjusted by user)"
+    "annualNilBudget": 280000,
+    "basis": "Estimated (prestige adjusted by user; average of 3 same-conference prestige-2 peer(s))"
   },
   {
     "name": "College of William & Mary",
@@ -1914,10 +1914,10 @@
   {
     "name": "Florida Gulf Coast",
     "conf": "ASUN",
-    "tier": "Low",
+    "tier": "Mid",
     "prestige": 1,
-    "annualNilBudget": 77500,
-    "basis": "Estimated (prestige adjusted by user)"
+    "annualNilBudget": 280000,
+    "basis": "Estimated (prestige adjusted by user; average of 1 same-conference prestige-2 peer(s))"
   },
   {
     "name": "Gardner\u2013Webb",
@@ -1930,10 +1930,10 @@
   {
     "name": "Georgia Southern",
     "conf": "Sun Belt",
-    "tier": "Low",
+    "tier": "Mid",
     "prestige": 1,
-    "annualNilBudget": 77500,
-    "basis": "Estimated (prestige adjusted by user)"
+    "annualNilBudget": 280000,
+    "basis": "Estimated (prestige adjusted by user; average of 10 same-conference prestige-2 peer(s))"
   },
   {
     "name": "High Point",
@@ -2170,10 +2170,10 @@
   {
     "name": "Radford",
     "conf": "Big South",
-    "tier": "Low",
+    "tier": "Mid",
     "prestige": 1,
-    "annualNilBudget": 77500,
-    "basis": "Estimated (prestige adjusted by user)"
+    "annualNilBudget": 280000,
+    "basis": "Estimated (prestige adjusted by user; average of 2 same-conference prestige-2 peer(s))"
   },
   {
     "name": "Rider",
@@ -2194,10 +2194,10 @@
   {
     "name": "Sacramento State",
     "conf": "Big West",
-    "tier": "Low",
+    "tier": "Mid",
     "prestige": 1,
-    "annualNilBudget": 77500,
-    "basis": "Estimated (prestige adjusted by user)"
+    "annualNilBudget": 280000,
+    "basis": "Estimated (prestige adjusted by user; average of 3 same-conference prestige-2 peer(s))"
   },
   {
     "name": "Sacred Heart",
@@ -2234,10 +2234,10 @@
   {
     "name": "South Dakota",
     "conf": "Summit",
-    "tier": "Low",
+    "tier": "Mid",
     "prestige": 1,
-    "annualNilBudget": 77500,
-    "basis": "Estimated (prestige adjusted by user)"
+    "annualNilBudget": 280000,
+    "basis": "Estimated (prestige adjusted by user; average of 3 same-conference prestige-2 peer(s))"
   },
   {
     "name": "Southeast Missouri",
@@ -2258,10 +2258,10 @@
   {
     "name": "Southern Miss",
     "conf": "Sun Belt",
-    "tier": "Low",
+    "tier": "Mid",
     "prestige": 1,
-    "annualNilBudget": 77500,
-    "basis": "Estimated (prestige adjusted by user)"
+    "annualNilBudget": 280000,
+    "basis": "Estimated (prestige adjusted by user; average of 10 same-conference prestige-2 peer(s))"
   },
   {
     "name": "Southern Utah",
@@ -2332,8 +2332,8 @@
     "conf": "American",
     "tier": "Mid",
     "prestige": 1,
-    "annualNilBudget": 337500,
-    "basis": "Estimated (prestige adjusted by user)"
+    "annualNilBudget": 280000,
+    "basis": "Estimated (prestige adjusted by user; average of 2 same-conference prestige-2 peer(s))"
   },
   {
     "name": "UC Davis",
@@ -2346,10 +2346,10 @@
   {
     "name": "UC Irvine",
     "conf": "Big West",
-    "tier": "Low",
+    "tier": "Mid",
     "prestige": 1,
-    "annualNilBudget": 135000,
-    "basis": "Estimated (prestige adjusted by user)"
+    "annualNilBudget": 280000,
+    "basis": "Estimated (prestige adjusted by user; no higher-prestige peer in conference; matched nearest peer at prestige 2 ($280,000))"
   },
   {
     "name": "UC Riverside",
@@ -2362,10 +2362,10 @@
   {
     "name": "UC San Diego",
     "conf": "Big West",
-    "tier": "Low",
+    "tier": "Mid",
     "prestige": 1,
-    "annualNilBudget": 77500,
-    "basis": "Estimated (prestige adjusted by user)"
+    "annualNilBudget": 280000,
+    "basis": "Estimated (prestige adjusted by user; average of 3 same-conference prestige-2 peer(s))"
   },
   {
     "name": "UIC",
@@ -2564,8 +2564,8 @@
     "conf": "Southland",
     "tier": "Low",
     "prestige": 2,
-    "annualNilBudget": 20000,
-    "basis": "Estimated (prestige adjusted by user)"
+    "annualNilBudget": 30000,
+    "basis": "Estimated (prestige adjusted by user; average of 6 same-conference prestige-1 peer(s))"
   },
   {
     "name": "Lamar",
@@ -2588,8 +2588,8 @@
     "conf": "Southland",
     "tier": "Low",
     "prestige": 2,
-    "annualNilBudget": 135000,
-    "basis": "Estimated (prestige adjusted by user)"
+    "annualNilBudget": 70000,
+    "basis": "Estimated (prestige adjusted by user; no higher-prestige peer in conference; matched nearest peer at prestige 2 ($70,000))"
   },
   {
     "name": "Mississippi Valley State",
@@ -2636,8 +2636,8 @@
     "conf": "Southland",
     "tier": "Low",
     "prestige": 2,
-    "annualNilBudget": 135000,
-    "basis": "Estimated (prestige adjusted by user)"
+    "annualNilBudget": 70000,
+    "basis": "Estimated (prestige adjusted by user; no higher-prestige peer in conference; matched nearest peer at prestige 2 ($70,000))"
   },
   {
     "name": "Texas Southern",
@@ -2708,8 +2708,8 @@
     "conf": "America East",
     "tier": "Low",
     "prestige": 1,
-    "annualNilBudget": 77500,
-    "basis": "Estimated (prestige adjusted by user)"
+    "annualNilBudget": 70000,
+    "basis": "Estimated (prestige adjusted by user; average of 2 same-conference prestige-2 peer(s))"
   },
   {
     "name": "Central Arkansas",
@@ -2860,16 +2860,16 @@
     "conf": "Southland",
     "tier": "Low",
     "prestige": 1,
-    "annualNilBudget": 77500,
-    "basis": "Estimated (prestige adjusted by user)"
+    "annualNilBudget": 70000,
+    "basis": "Estimated (prestige adjusted by user; average of 1 same-conference prestige-2 peer(s))"
   },
   {
     "name": "Texas Rio Grande Valley",
     "conf": "Southland",
     "tier": "Low",
     "prestige": 1,
-    "annualNilBudget": 77500,
-    "basis": "Estimated (prestige adjusted by user)"
+    "annualNilBudget": 70000,
+    "basis": "Estimated (prestige adjusted by user; average of 1 same-conference prestige-2 peer(s))"
   },
   {
     "name": "Texas State",
