@@ -2593,6 +2593,42 @@ function nonConfOppAllowed(slate, gameId, oppId, teamConf) {
   return !slate.some((g) => !g.conf && g.id !== gameId && g.oppId === oppId);
 }
 
+// Real non-conference scheduling: a high major "buys" a game against a
+// smaller program for real money — the smaller side only banks 10% of it
+// for their own program budget, the rest reads as going to the athletic
+// department generally (covers travel/ops, not a windfall for the team).
+// Deterministic off each matchup's own prestige gap (no randomness) so the
+// number a coach previews while building the schedule is exactly what gets
+// applied once they confirm it — nothing changes between preview and lock.
+const GUARANTEE_TIER_RANK = { high: 3, mid: 2, low: 1 };
+const GUARANTEE_FEE_RANGES = { 1: [40_000, 120_000], 2: [150_000, 400_000] };
+const GUARANTEE_KEEP_PCT = 0.10;
+function guaranteeFeeFor(userTeam, oppTeam) {
+  if (!userTeam || !oppTeam) return null;
+  const uRank = GUARANTEE_TIER_RANK[nilTierFor(userTeam)];
+  const oRank = GUARANTEE_TIER_RANK[nilTierFor(oppTeam)];
+  const gap = Math.abs(uRank - oRank);
+  if (gap === 0) return null;
+  const [lo, hi] = GUARANTEE_FEE_RANGES[gap];
+  const prestigeGap = clamp(Math.abs((userTeam.prestige || 2) - (oppTeam.prestige || 2)) / 4, 0, 1);
+  const amount = Math.round(lo + (hi - lo) * prestigeGap);
+  return { amount, direction: uRank > oRank ? "pay" : "receive" };
+}
+// Stamps every non-conference game in `slate` with its guarantee fee (or
+// null for a same-tier matchup with no real payout either way) and totals
+// the net effect on the user's own program budget — a "pay" game costs the
+// full fee, a "receive" game only banks GUARANTEE_KEEP_PCT of it.
+function applyGuaranteeFees(slate, userTeam) {
+  let netDelta = 0;
+  const games = slate.map((g) => {
+    if (g.conf) return g;
+    const fee = guaranteeFeeFor(userTeam, TEAM_MAP[g.oppId]);
+    if (fee) netDelta += fee.direction === "pay" ? -fee.amount : Math.round(fee.amount * GUARANTEE_KEEP_PCT);
+    return { ...g, fee };
+  });
+  return { games, netDelta };
+}
+
 // A team's power MUST live on the same scale as `userTeamOverall` (the
 // minutes-weighted player-OVR average, ~38-80) so the user's simulated games
 // and the projected standings compare apples to apples. Player attributes are
@@ -5539,6 +5575,7 @@ function DynastyApp({ initial, onExit }) {
 
   const reputation = reputationOf(state.coach);
   const nilBudget = (state.nilBudgetById || baselineNilBudgetById())[state.teamId] ?? nilBudgetForTeam(team);
+  const programBudget = (state.programBudgetById || baselineProgramBudgetById())[state.teamId] ?? programBudgetForTeam(team);
   const leaders = useMemo(
     () => buildLeaderboard(state.year, state.teamId, state.roster, state.seasonSeed, record.w + record.l),
     [state.year, state.teamId, state.roster, state.seasonSeed, record]
@@ -5633,6 +5670,26 @@ function DynastyApp({ initial, onExit }) {
           onClose={() => {}}
         />
       </div>
+    );
+  }
+
+  // Forced schedule setup: blocks the entire app, same tier as firedFlow
+  // above, until this season's (or next season's, mid-offseason) non-
+  // conference slate is confirmed. Reads whichever draft actually exists —
+  // the offseason's scheduleDraft once one's been started, otherwise
+  // state.schedule directly (true for a brand-new dynasty and right after
+  // changeJob, neither of which have an offseason object yet).
+  if (state.needsScheduleSetup) {
+    const draftGames = state.offseason ? state.offseason.scheduleDraft : state.schedule;
+    return (
+      <ScheduleSetupModal
+        team={team}
+        year={state.offseason ? state.year + 1 : state.year}
+        games={draftGames}
+        programBudget={programBudget}
+        onEditGame={editScheduleSetupGame}
+        onConfirm={confirmScheduleSetup}
+      />
     );
   }
 
@@ -5825,6 +5882,11 @@ function DynastyApp({ initial, onExit }) {
         devPoints: DEV_POINTS_PER_OFFSEASON + assistantBonus(state.assistants?.development) + facilityDevBonus(state.facilitiesById?.[state.teamId]?.development),
         devSpent: {},
       },
+      // Gates the whole app behind ScheduleSetupModal (see the render guard
+      // near the top of DynastyApp) until next season's non-conference
+      // schedule is confirmed — before the coach touches recruiting or the
+      // transfer portal, same as a real AD locks the slate early.
+      needsScheduleSetup: true,
       seasonEndJobOffer: seasonEndOffer,
     }));
     setTab("offseason");
@@ -6043,22 +6105,45 @@ function DynastyApp({ initial, onExit }) {
     flash(closing ? "The transfer portal has closed — begin the next season." : `Offseason week ${nextWeek} of ${OFFSEASON_WEEKS}.`);
   }
 
-  function editDraftGame(gameId, changes) {
+  // Backs ScheduleSetupModal, wherever it's editing from: the offseason's
+  // next-season draft (normal season-to-season) when one exists, otherwise
+  // state.schedule directly (a brand-new dynasty, or right after changeJob —
+  // neither has an offseason object yet).
+  function editScheduleSetupGame(gameId, changes) {
     setState((s) => {
+      const usingDraft = !!s.offseason;
+      const slate = usingDraft ? s.offseason.scheduleDraft : s.schedule;
       let c = changes;
-      if ("oppId" in changes && !nonConfOppAllowed(s.offseason.scheduleDraft, gameId, changes.oppId, team.conf)) {
+      if ("oppId" in changes && !nonConfOppAllowed(slate, gameId, changes.oppId, team.conf)) {
         c = { ...changes };
         delete c.oppId;
       }
       if (Object.keys(c).length === 0) return s;
-      return {
-        ...s,
-        offseason: {
-          ...s.offseason,
-          scheduleDraft: s.offseason.scheduleDraft.map((g) => (g.id === gameId && !g.conf && !g.played ? { ...g, ...c } : g)),
-        },
-      };
+      const updated = slate.map((g) => (g.id === gameId && !g.conf && !g.played ? { ...g, ...c } : g));
+      return usingDraft
+        ? { ...s, offseason: { ...s.offseason, scheduleDraft: updated } }
+        : { ...s, schedule: updated };
     });
+  }
+
+  // Locks in the schedule a coach just built in ScheduleSetupModal: stamps
+  // every non-conference game with its guarantee-fee outcome (see
+  // applyGuaranteeFees) and applies the net dollar effect to this team's
+  // own program budget right here, once — not recomputed later, so what the
+  // modal previewed is exactly what happened.
+  function confirmScheduleSetup() {
+    setState((s) => {
+      const usingDraft = !!s.offseason;
+      const slate = usingDraft ? s.offseason.scheduleDraft : s.schedule;
+      const { games, netDelta } = applyGuaranteeFees(slate, team);
+      const programBudgetById = { ...(s.programBudgetById || baselineProgramBudgetById()) };
+      programBudgetById[s.teamId] = Math.round((programBudgetById[s.teamId] ?? programBudgetForTeam(team)) + netDelta);
+      const base = usingDraft
+        ? { ...s, offseason: { ...s.offseason, scheduleDraft: games } }
+        : { ...s, schedule: games };
+      return { ...base, programBudgetById, needsScheduleSetup: false };
+    });
+    flash("Schedule locked in for the season.");
   }
 
   function startPostseason() {
@@ -6964,6 +7049,7 @@ function DynastyApp({ initial, onExit }) {
       depthChart: newDepthChart,
       minutes: defaultMinutesFor(newDepthChart),
       schedule: genSchedule(newTeam, newYear),
+      needsScheduleSetup: true,
       recruitingBoard: seedInterest(genRecruitPool(newYear + 1), newTeam),
       incomingCommits: [],
       recruitTargets: [],
@@ -7002,25 +7088,6 @@ function DynastyApp({ initial, onExit }) {
     setJobPickerOpen(false);
     setTab("dashboard");
     flash(`New job accepted — you're now the head coach at ${newTeam.name}.`);
-  }
-
-  // Coach edits a non-conference matchup (opponent or home/away). Conference
-  // and already-played games are guarded in the UI, and defensively here.
-  function editGame(gameId, changes) {
-    setState((s) => {
-      let c = changes;
-      if ("oppId" in changes && !nonConfOppAllowed(s.schedule, gameId, changes.oppId, team.conf)) {
-        c = { ...changes };
-        delete c.oppId;
-      }
-      if (Object.keys(c).length === 0) return s;
-      return {
-        ...s,
-        schedule: s.schedule.map((g) =>
-          g.id === gameId && !g.conf && !g.played ? { ...g, ...c } : g
-        ),
-      };
-    });
   }
 
   const seasonOver = state.schedule.every((g) => g.played);
@@ -7182,7 +7249,6 @@ function DynastyApp({ initial, onExit }) {
               onConfirmNil={confirmNilAllocations}
               onResolveTransferRisk={resolveTransferRisk}
               onAdvanceWeek={advanceOffseasonWeek}
-              onEditGame={editDraftGame}
               onChangeJob={() => setJobPickerOpen(true)}
               onAdvanceYear={advanceYear}
               onViewTeam={setViewTeamId}
@@ -7191,7 +7257,7 @@ function DynastyApp({ initial, onExit }) {
               onDev={adjustPlayerAttr}
             />
           )}
-          {tab === "schedule" && <ScheduleTab schedule={state.schedule} teamConf={team.conf} rankById={rankById} rivalIds={rivalIds} onViewTeam={setViewTeamId} onEditGame={editGame} onViewBox={setBoxViewId} />}
+          {tab === "schedule" && <ScheduleTab schedule={state.schedule} teamConf={team.conf} rankById={rankById} rivalIds={rivalIds} onViewTeam={setViewTeamId} onViewBox={setBoxViewId} />}
           {tab === "standings" && <StandingsTab team={team} ranked={ranked} rankById={rankById} userRecord={record} onViewTeam={setViewTeamId} />}
           {tab === "rankings" && <RankingsTab ranked={ranked} userTeamId={state.teamId} onViewTeam={setViewTeamId} />}
           {tab === "leaderboard" && <LeaderboardTab leaders={leaders} userTeamId={state.teamId} year={state.year} onViewTeam={setViewTeamId} />}
@@ -9097,7 +9163,7 @@ function TransferRiskPanel({ transferRisks, roster, nilBudget, offseason, recrui
   );
 }
 
-function OffseasonTab({ stage, offseason, hsBoard, team, roster, nextYear, committedFreshmen, scholarshipInfo, rankById, onAction, onSign, onNilOffer, nilBudget, trajectory, coachRepScore, onPersuade, onSetPlayerNil, onConfirmNil, onResolveTransferRisk, onAdvanceWeek, onEditGame, onChangeJob, onAdvanceYear, onViewTeam, onViewPlayer, onCut, onDev }) {
+function OffseasonTab({ stage, offseason, hsBoard, team, roster, nextYear, committedFreshmen, scholarshipInfo, rankById, onAction, onSign, onNilOffer, nilBudget, trajectory, coachRepScore, onPersuade, onSetPlayerNil, onConfirmNil, onResolveTransferRisk, onAdvanceWeek, onChangeJob, onAdvanceYear, onViewTeam, onViewPlayer, onCut, onDev }) {
   if (!offseason) {
     return (
       <div>
@@ -9110,7 +9176,6 @@ function OffseasonTab({ stage, offseason, hsBoard, team, roster, nextYear, commi
     );
   }
 
-  const draftNonConf = (offseason.scheduleDraft || []).filter((g) => !g.conf);
   const committed = offseason.committedTransfers || [];
   const nilLocked = !!offseason.nilLocked;
   const draftDeclarations = offseason.draftDeclarations || [];
@@ -9248,24 +9313,8 @@ function OffseasonTab({ stage, offseason, hsBoard, team, roster, nextYear, commi
             emptyLabel="No transfers match those filters."
           />
 
-          <div style={{ fontSize: 12, color: C.wood, fontWeight: 600, letterSpacing: "0.06em", margin: "22px 0 8px" }}>SCHEDULE SETUP — {seasonLabel(nextYear)} NON-CONFERENCE</div>
-          <div style={{ fontSize: 11.5, color: C.dimmer, marginBottom: 10 }}>Set next season&apos;s non-conference slate now. Use Change to pick an opponent or flip home/away; your conference games are assigned automatically.</div>
-          <Panel style={{ overflow: "hidden" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13.5 }}>
-              <thead>
-                <tr style={{ borderBottom: `1px solid ${C.line}`, color: C.dim, fontSize: 11, textAlign: "left" }}>
-                  <th style={{ padding: "10px 14px" }}>Wk</th><th style={{ padding: "10px 14px" }}>Opponent</th><th style={{ padding: "10px 14px" }}>Site</th><th style={{ padding: "10px 14px" }}>Result</th><th style={{ padding: "10px 14px" }}></th>
-                </tr>
-              </thead>
-              <tbody>
-                {draftNonConf.map((g) => (
-                  <ScheduleRow key={g.id} g={g} teamConf={team.conf} rankById={rankById} isRival={false}
-                    takenOppIds={new Set(draftNonConf.map((d) => d.oppId))}
-                    onViewTeam={onViewTeam} onEditGame={onEditGame} onViewBox={null} />
-                ))}
-              </tbody>
-            </table>
-          </Panel>
+          <div style={{ fontSize: 12, color: C.wood, fontWeight: 600, letterSpacing: "0.06em", margin: "22px 0 8px" }}>{seasonLabel(nextYear)} SCHEDULE</div>
+          <div style={{ fontSize: 11.5, color: C.dimmer, marginBottom: 10 }}>Already locked in for the season — see the Schedule tab for the full slate, including any guarantee-game payouts.</div>
         </>
         );
       })()}
@@ -11568,6 +11617,12 @@ function ScheduleRow({ g, teamConf, rankById, isRival, onViewTeam, onEditGame, o
         <span style={{ color: C.dimmer, fontSize: 11, marginLeft: 6 }}>({opp.conf})</span>
         {g.conf && <span style={{ color: C.wood, fontSize: 10, marginLeft: 6, letterSpacing: "0.06em" }}>CONF</span>}
         {isRival && <span style={{ color: C.red, fontSize: 10, marginLeft: 6, letterSpacing: "0.06em", display: "inline-flex", alignItems: "center", gap: 3 }}><Swords size={11} /> RIVALRY</span>}
+        {g.fee && (
+          <span title={g.fee.direction === "pay" ? "Guarantee game — you paid the full fee to book this opponent." : "Guarantee game — you keep 10% of the fee; the rest goes to the Athletic Department."}
+            style={{ color: g.fee.direction === "pay" ? C.red : C.green, fontSize: 10.5, marginLeft: 6 }}>
+            {g.fee.direction === "pay" ? `PAID ${formatNil(g.fee.amount)}` : `+${formatNil(Math.round(g.fee.amount * GUARANTEE_KEEP_PCT))}`}
+          </span>
+        )}
       </td>
       <td style={td}>
         {editable ? (
@@ -11641,12 +11696,86 @@ function ScheduleTab({ schedule, teamConf, rankById, rivalIds, onViewTeam, onEdi
   return (
     <div>
       <div style={{ fontSize: 11.5, color: C.dimmer, marginBottom: 10 }}>
-        Non-conference games are yours to schedule — use <strong>Change</strong> to pick an opponent or flip home/away before you play them. Your conference slate is locked. Click any opponent to preview their roster.
+        This season&apos;s full schedule, locked in at the start of the season — see any guarantee-game payout next to a non-conference opponent. Click any opponent to preview their roster.
       </div>
       <div style={{ fontSize: 12, color: C.wood, fontWeight: 600, letterSpacing: "0.06em", marginBottom: 8 }}>NON-CONFERENCE</div>
       {table(nonConf, true)}
       <div style={{ fontSize: 12, color: C.wood, fontWeight: 600, letterSpacing: "0.06em", marginBottom: 8 }}>CONFERENCE</div>
       {table(conf, false)}
+    </div>
+  );
+}
+
+// Forced, full-page, non-dismissable schedule builder — the only way a
+// coach ever sets a non-conference slate now (see DynastyApp's
+// needsScheduleSetup gate, right below the fired-coach gate it mirrors).
+// Fires at the top of every season: a brand-new dynasty, every normal
+// season-to-season transition, and right after taking a new job. Once
+// confirmed the slate is locked for the whole season — no in-season
+// "Change" button exists anymore.
+function ScheduleSetupModal({ team, year, games, programBudget, onEditGame, onConfirm }) {
+  const nonConf = games.filter((g) => !g.conf);
+  const takenOppIds = new Set(nonConf.map((g) => g.oppId));
+  const preview = useMemo(() => applyGuaranteeFees(games, team), [games, team]);
+  const netDelta = preview.netDelta;
+  return (
+    <div style={{ minHeight: "100vh", background: C.bg, padding: "40px 20px", display: "flex", justifyContent: "center" }}>
+      <div style={{ width: "100%", maxWidth: 860 }}>
+        <div style={{ fontSize: 11, color: C.wood, letterSpacing: "0.08em", fontWeight: 600, marginBottom: 4 }}>{seasonLabel(year)} — SCHEDULE SETUP</div>
+        <h2 className="cbb-num" style={{ fontSize: 26, fontWeight: 700, margin: "0 0 10px" }}>Set your non-conference slate</h2>
+        <div style={{ fontSize: 13, color: C.dim, marginBottom: 20, maxWidth: 720 }}>
+          Pick all {nonConf.length} non-conference opponents before the season starts — your conference slate is fixed automatically. Once you confirm, this schedule is locked in for the whole season.
+          A real prestige gap against a non-conference opponent means a real guarantee-game payout: the higher-tier program pays the full fee to book the game, and the lower-tier program only banks {Math.round(GUARANTEE_KEEP_PCT * 100)}% of it for their own program budget — the rest goes to the Athletic Department generally, not the team.
+        </div>
+        <Panel style={{ padding: "14px 18px", marginBottom: 18, display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
+          <div style={{ fontSize: 12, color: C.dim }}>Program budget: <strong className="cbb-num" style={{ color: C.gold, fontSize: 15 }}>{formatNil(programBudget)}</strong></div>
+          <div style={{ fontSize: 12, color: C.dim }}>
+            Net from this schedule: <strong className="cbb-num" style={{ color: netDelta >= 0 ? C.green : C.red, fontSize: 15 }}>{netDelta >= 0 ? "+" : ""}{formatNil(netDelta)}</strong>
+          </div>
+        </Panel>
+        <Panel style={{ overflow: "hidden", marginBottom: 20 }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13.5 }}>
+            <thead>
+              <tr style={{ borderBottom: `1px solid ${C.line}`, color: C.dim, fontSize: 11, textAlign: "left" }}>
+                <th style={th}>Wk</th><th style={th}>Opponent</th><th style={th}>Site</th><th style={th}>Guarantee</th>
+              </tr>
+            </thead>
+            <tbody>
+              {preview.games.filter((g) => !g.conf).map((g) => {
+                const opp = TEAM_MAP[g.oppId];
+                const options = TEAMS.filter((t) => t.conf !== team.conf && (t.id === g.oppId || !takenOppIds.has(t.id))).sort((a, b) => a.name.localeCompare(b.name));
+                return (
+                  <tr key={g.id} className="cbb-row" style={{ borderBottom: `1px solid ${C.line}` }}>
+                    <td style={td}>{g.week}</td>
+                    <td style={td}>
+                      <select value={g.oppId} onChange={(e) => onEditGame(g.id, { oppId: e.target.value })}
+                        style={{ background: C.panelAlt, border: `1px solid ${C.line}`, color: C.cream, padding: "4px 6px", fontSize: 13, maxWidth: 240 }}>
+                        {options.map((t) => <option key={t.id} value={t.id}>{t.name} ({t.conf})</option>)}
+                      </select>
+                    </td>
+                    <td style={td}>
+                      <button onClick={() => onEditGame(g.id, { home: !g.home })} className="cbb-btn"
+                        style={{ background: C.panelAlt, border: `1px solid ${C.line}`, color: C.cream, padding: "3px 9px", fontSize: 12, cursor: "pointer" }}>
+                        {g.home ? "Home" : "Away"}
+                      </button>
+                    </td>
+                    <td style={td}>
+                      {g.fee ? (
+                        <span style={{ color: g.fee.direction === "pay" ? C.red : C.green, fontWeight: 600 }}>
+                          {g.fee.direction === "pay" ? `Pay ${formatNil(g.fee.amount)}` : `Get ${formatNil(g.fee.amount)} (keep ${formatNil(Math.round(g.fee.amount * GUARANTEE_KEEP_PCT))})`}
+                        </span>
+                      ) : <span style={{ color: C.dimmer }}>— (same tier as {opp.name.length > 14 ? "them" : opp.name})</span>}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </Panel>
+        <button onClick={onConfirm} className="cbb-btn" style={{ ...btnStyle(C.gold, "#221a00"), width: "100%", justifyContent: "center", fontSize: 15, padding: "13px 14px" }}>
+          <Check size={15} /> Confirm Schedule
+        </button>
+      </div>
     </div>
   );
 }
@@ -12248,6 +12377,10 @@ export default function CBBDynasty() {
       depthChart: initialDepthChart,
       minutes: defaultMinutesFor(initialDepthChart),
       schedule: genSchedule(team, year),
+      // Gates the very first render behind ScheduleSetupModal — even a
+      // brand-new dynasty has to set its non-conference slate before doing
+      // anything else, same as every later season.
+      needsScheduleSetup: true,
       recruitingBoard: seedInterest(genRecruitPool(year + 1), team), // board is always for the NEXT season's incoming class
       incomingCommits: [],
       recruitTargets: [],
