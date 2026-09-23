@@ -2205,11 +2205,12 @@ function actionCostFor(actionKey, recruit, team) {
 }
 
 // Weekly recruiting points by program tier: high-majors 100, mid-majors 75,
-// low-majors 50.
-function weeklyRecruitingBudget(team) {
-  if (team.prestige >= 4) return 100;
-  if (team.prestige === 3) return 75;
-  return 50;
+// low-majors 50 — plus whatever a hired Recruiting Coordinator adds or
+// costs (see assistantBonus), floored so a bad hire can dent but never
+// zero out the week.
+function weeklyRecruitingBudget(team, assistants = null) {
+  const base = team.prestige >= 4 ? 100 : team.prestige === 3 ? 75 : 50;
+  return Math.max(20, base + assistantBonus(assistants?.recruiting));
 }
 
 function canTakeAction(recruit, actionKey, pointsLeft, weekIndex = 0, team = null) {
@@ -4369,6 +4370,41 @@ function draftBoard(early, seniors) {
 }
 
 /* =========================================================================
+   ASSISTANT COACHES
+   A small, deliberately minimal staff system: two hireable roles, each
+   giving a small bounded bonus to one already-isolated number (weekly
+   recruiting points, offseason development points) rather than touching
+   any simulation math. No salaries or contracts yet — hiring is free and
+   instant, framed as a real quality-of-staff decision rather than a
+   negotiation. `state.assistants` is `{ recruiting: Assistant|null,
+   development: Assistant|null }`; an Assistant is `{ id, name, rating }`.
+   A new job (changeJob) or a new dynasty starts with an empty staff, same
+   as a real coach doesn't bring their old school's assistants with them.
+   ========================================================================= */
+const ASSISTANT_ROLES = {
+  recruiting: { label: "Recruiting Coordinator", blurb: "Boosts weekly recruiting points." },
+  development: { label: "Development Coach", blurb: "Boosts offseason development points." },
+};
+// One rating point of "quality" is worth this many points/week or points/
+// offseason on top of the base — a 90-rated coordinator adds real value, a
+// 30-rated one is a genuine downgrade from having no coordinator at all.
+function assistantBonus(assistant) {
+  if (!assistant) return 0;
+  return Math.round((assistant.rating - 50) / 5);
+}
+// Three fresh candidates for a role, skewed toward the hiring program's own
+// prestige the same way nilBudgetForTeam skews toward conference tier —
+// a blue blood attracts a deeper pool of good assistants than a rebuild.
+function generateAssistantCandidates(team) {
+  const base = clamp(40 + (team?.prestige || 2) * 8, 40, 82);
+  return Array.from({ length: 3 }, () => ({
+    id: `asst-${Math.random().toString(36).slice(2, 10)}`,
+    name: fullName(),
+    rating: clamp(Math.round(base + (Math.random() - 0.5) * 30), 25, 99),
+  }));
+}
+
+/* =========================================================================
    COACH CAREER + REPUTATION
    ========================================================================= */
 const EMPTY_COACH = { wins: 0, losses: 0, seasons: 0, tourneyApps: 0, confTourneyTitles: 0, confRegSeasonTitles: 0, finalFours: 0, natTitles: 0, coyAwards: 0, jobSecurity: 60, repPenalty: 0 };
@@ -5547,7 +5583,7 @@ function DynastyApp({ initial, onExit }) {
     const newWeekIndex = schedule.filter((g) => g.played).length + 1;
     const weeksElapsed = Math.max(0, newWeekIndex - state.recruitingWeekIndex);
     const recruitingBoard = weeksElapsed > 0 ? advanceRecruitingWeeks(state.recruitingBoard, state.recruitingWeekIndex, weeksElapsed, TOTAL_SEASON_WEEKS) : state.recruitingBoard;
-    const recruitingPoints = weeksElapsed > 0 ? weeklyRecruitingBudget(team) : state.recruitingPoints;
+    const recruitingPoints = weeksElapsed > 0 ? weeklyRecruitingBudget(team, state.assistants) : state.recruitingPoints;
 
     // Head-to-head record vs conference rivals persists across seasons.
     let rivalryLedger = state.rivalryLedger || {};
@@ -5617,7 +5653,7 @@ function DynastyApp({ initial, onExit }) {
       const newWeekIndex = games.filter((g) => g.played).length + 1;
       const weeksElapsed = Math.max(0, newWeekIndex - s.recruitingWeekIndex);
       const recruitingBoard = weeksElapsed > 0 ? advanceRecruitingWeeks(s.recruitingBoard, s.recruitingWeekIndex, weeksElapsed, TOTAL_SEASON_WEEKS) : s.recruitingBoard;
-      const recruitingPoints = weeksElapsed > 0 ? weeklyRecruitingBudget(team) : s.recruitingPoints;
+      const recruitingPoints = weeksElapsed > 0 ? weeklyRecruitingBudget(team, s.assistants) : s.recruitingPoints;
       return { ...s, roster, schedule: games, recruitingBoard, recruitingPoints, recruitingWeekIndex: newWeekIndex };
     });
     flash(`Simulated the rest of the season.${sigWins ? ` ${sigWins} signature win${sigWins > 1 ? "s" : ""}.` : ""}`);
@@ -5655,7 +5691,7 @@ function DynastyApp({ initial, onExit }) {
       const newWeekIndex = games.filter((g) => g.played).length + 1;
       const weeksElapsed = Math.max(0, newWeekIndex - s.recruitingWeekIndex);
       const recruitingBoard = weeksElapsed > 0 ? advanceRecruitingWeeks(s.recruitingBoard, s.recruitingWeekIndex, weeksElapsed, TOTAL_SEASON_WEEKS) : s.recruitingBoard;
-      const recruitingPoints = weeksElapsed > 0 ? weeklyRecruitingBudget(team) : s.recruitingPoints;
+      const recruitingPoints = weeksElapsed > 0 ? weeklyRecruitingBudget(team, s.assistants) : s.recruitingPoints;
       return { ...s, roster, schedule: games, recruitingBoard, recruitingPoints, recruitingWeekIndex: newWeekIndex };
     });
     flash(played ? label : "No games left to sim in that window.");
@@ -5686,10 +5722,10 @@ function DynastyApp({ initial, onExit }) {
         draftDeclarations: null,
         transferRisks: null,
         nilLocked: false,
-        points: weeklyRecruitingBudget(team),
+        points: weeklyRecruitingBudget(team, state.assistants),
         scheduleDraft: genSchedule(team, nextYear),
         done: false,
-        devPoints: DEV_POINTS_PER_OFFSEASON,
+        devPoints: DEV_POINTS_PER_OFFSEASON + assistantBonus(state.assistants?.development),
         devSpent: {},
       },
       seasonEndJobOffer: seasonEndOffer,
@@ -5902,7 +5938,7 @@ function DynastyApp({ initial, onExit }) {
     const board = tickRecruitingWeek(os.transferBoard, nextWeek, OFFSEASON_WEEKS + 1);
     setState((s) => ({
       ...s,
-      offseason: { ...s.offseason, week: nextWeek, transferBoard: board, points: weeklyRecruitingBudget(team), done: closing },
+      offseason: { ...s.offseason, week: nextWeek, transferBoard: board, points: weeklyRecruitingBudget(team, s.assistants), done: closing },
     }));
     flash(closing ? "The transfer portal has closed — begin the next season." : `Offseason week ${nextWeek} of ${OFFSEASON_WEEKS}.`);
   }
@@ -6671,7 +6707,7 @@ function DynastyApp({ initial, onExit }) {
       recruitingBoard: seedInterest(genRecruitPool(newYear + 1), team),
       incomingCommits: [],
       recruitTargets: [],
-      recruitingPoints: weeklyRecruitingBudget(team),
+      recruitingPoints: weeklyRecruitingBudget(team, state.assistants),
       recruitingWeekIndex: 1,
       strengths: newStrengths,
       programErasById: nextProgramErasById,
@@ -6710,6 +6746,16 @@ function DynastyApp({ initial, onExit }) {
         flash(`${team.name} has parted ways with you after missing expectations. Find a new job.`);
       }, 300);
     }
+  }
+
+  function hireAssistant(role, candidate) {
+    setState((s) => ({ ...s, assistants: { ...(s.assistants || {}), [role]: candidate } }));
+    flash(`Hired ${candidate.name} as ${ASSISTANT_ROLES[role].label} (${candidate.rating} rated).`);
+  }
+  function fireAssistant(role) {
+    const current = state.assistants?.[role];
+    setState((s) => ({ ...s, assistants: { ...(s.assistants || {}), [role]: null } }));
+    if (current) flash(`Let go of ${current.name}, your ${ASSISTANT_ROLES[role].label}.`);
   }
 
   function changeJob(newTeam) {
@@ -6800,6 +6846,9 @@ function DynastyApp({ initial, onExit }) {
       postseason: null,
       offseason: null,
       coach,
+      // A new job means a fresh staff — assistants don't follow a coach to
+      // their new school, same as the roster itself stays behind.
+      assistants: null,
       expectation: seasonExpectation(newTeam.prestige),
       rivalryLedger: {},
       awardsHistory: [
@@ -6951,7 +7000,7 @@ function DynastyApp({ initial, onExit }) {
               targets={state.recruitTargets || []}
               onToggleTarget={toggleTarget}
               points={state.recruitingPoints}
-              budget={weeklyRecruitingBudget(team)}
+              budget={weeklyRecruitingBudget(team, state.assistants)}
               weekIndex={state.recruitingWeekIndex}
               totalWeeks={TOTAL_SEASON_WEEKS}
               onAction={doRecruitAction}
@@ -7015,7 +7064,7 @@ function DynastyApp({ initial, onExit }) {
           {tab === "standings" && <StandingsTab team={team} ranked={ranked} rankById={rankById} userRecord={record} onViewTeam={setViewTeamId} />}
           {tab === "rankings" && <RankingsTab ranked={ranked} userTeamId={state.teamId} onViewTeam={setViewTeamId} />}
           {tab === "leaderboard" && <LeaderboardTab leaders={leaders} userTeamId={state.teamId} year={state.year} onViewTeam={setViewTeamId} />}
-          {tab === "program" && <ProgramTab state={state} team={team} record={record} reputation={reputation} rivalIds={rivalIds} rankById={rankById} onRetire={() => setConfirmRetire(true)} />}
+          {tab === "program" && <ProgramTab state={state} team={team} record={record} reputation={reputation} rivalIds={rivalIds} rankById={rankById} onRetire={() => setConfirmRetire(true)} onHireAssistant={hireAssistant} onFireAssistant={fireAssistant} />}
           {tab === "postseason" && (
             <PostseasonTab
               postseason={state.postseason}
@@ -9030,7 +9079,7 @@ function OffseasonTab({ stage, offseason, hsBoard, team, roster, nextYear, commi
         return (
         <>
           <div style={{ fontSize: 12, color: C.wood, fontWeight: 600, letterSpacing: "0.06em", margin: "22px 0 8px" }}>PLAYER DEVELOPMENT</div>
-          <div style={{ fontSize: 11.5, color: C.dimmer, marginBottom: 10, maxWidth: 720 }}>Spend {DEV_POINTS_PER_OFFSEASON} development points improving your roster&apos;s attributes for next season. Real players keep these gains permanently on top of their production. Graduating seniors, and anyone leaving via the draft or the portal, won&apos;t be back, so they&apos;re not shown here.</div>
+          <div style={{ fontSize: 11.5, color: C.dimmer, marginBottom: 10, maxWidth: 720 }}>Spend your development points improving your roster&apos;s attributes for next season. Real players keep these gains permanently on top of their production. Graduating seniors, and anyone leaving via the draft or the portal, won&apos;t be back, so they&apos;re not shown here.</div>
           <ProgressionPanel roster={activeRoster} devPoints={offseason.devPoints ?? 0} devSpent={offseason.devSpent} onDev={onDev} onViewPlayer={onViewPlayer} />
 
           <div style={{ fontSize: 12, color: C.wood, fontWeight: 600, letterSpacing: "0.06em", margin: "22px 0 8px" }}>ROSTER &amp; CUTS</div>
@@ -9141,6 +9190,35 @@ function SettingsModal({ settings, onChange, onClose }) {
             color: s.autosave ? C.cream : C.dim, fontWeight: 600 }}>
           {s.autosave ? <Check size={14} /> : <X size={14} />} {s.autosave ? "Autosave on" : "Autosave off"}
         </button>
+      </div>
+    </Modal>
+  );
+}
+
+// Three freshly generated candidates for one assistant role — hiring is
+// instant and free (no salary/contract system yet), so this is purely a
+// "which one" decision. `rating` maps straight to assistantBonus.
+function AssistantHireModal({ role, candidates, onHire, onClose }) {
+  const info = ASSISTANT_ROLES[role];
+  return (
+    <Modal title={`Hire ${info.label}`} subtitle={info.blurb} onClose={onClose} maxWidth={520}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {candidates.map((c) => {
+          const bonus = assistantBonus(c);
+          return (
+            <Panel key={c.id} style={{ padding: "12px 16px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+              <div>
+                <div style={{ fontWeight: 700, fontSize: 14, color: C.cream }}>{c.name}</div>
+                <div style={{ fontSize: 11.5, color: C.dim, marginTop: 2 }}>
+                  {c.rating} rating · {bonus >= 0 ? "+" : ""}{bonus} {role === "recruiting" ? "recruiting pts/wk" : "dev pts/offseason"}
+                </div>
+              </div>
+              <button onClick={() => onHire(c)} className="cbb-btn" style={{ ...btnStyle(C.wood), fontSize: 12.5 }}>
+                Hire
+              </button>
+            </Panel>
+          );
+        })}
       </div>
     </Modal>
   );
@@ -10953,7 +11031,9 @@ function RecordCategoryList({ label, rows, statKey, yearField }) {
   );
 }
 
-function ProgramTab({ state, team, record, reputation, rivalIds, rankById, onRetire }) {
+function ProgramTab({ state, team, record, reputation, rivalIds, rankById, onRetire, onHireAssistant, onFireAssistant }) {
+  const [hiringRole, setHiringRole] = useState(null);
+  const [candidates, setCandidates] = useState([]);
   const coach = state.coach || EMPTY_COACH;
   const careerW = coach.wins, careerL = coach.losses;
   const winPct = careerW + careerL > 0 ? (careerW / (careerW + careerL)).toFixed(3).replace(/^0/, "") : "—";
@@ -11020,6 +11100,56 @@ function ProgramTab({ state, team, record, reputation, rivalIds, rankById, onRet
           {reputationTier(reputation)} — {reputation} reputation. Win games, make deep tournament runs, and cut down nets to unlock jobs at blue-blood programs.
         </div>
       </Panel>
+
+      {(onHireAssistant || onFireAssistant) && (
+        <Panel style={{ padding: 20 }}>
+          <div style={{ fontSize: 11, color: C.dim, letterSpacing: "0.08em", marginBottom: 12, display: "flex", alignItems: "center", gap: 6 }}><Users size={13} color={C.gold} /> COACHING STAFF</div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 14 }}>
+            {Object.entries(ASSISTANT_ROLES).map(([role, info]) => {
+              const current = state.assistants?.[role];
+              return (
+                <div key={role} style={{ border: `1px solid ${C.line}`, padding: "12px 16px" }}>
+                  <div style={{ fontSize: 11, color: C.dim, letterSpacing: "0.06em", marginBottom: 4 }}>{info.label.toUpperCase()}</div>
+                  {current ? (
+                    <>
+                      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between" }}>
+                        <span style={{ fontWeight: 700, fontSize: 14, color: C.cream }}>{current.name}</span>
+                        <span className="cbb-num" style={{ fontSize: 13, fontWeight: 700, color: C.gold }}>{current.rating} RTG</span>
+                      </div>
+                      <div style={{ fontSize: 11, color: C.dim, marginTop: 3 }}>
+                        {assistantBonus(current) >= 0 ? "+" : ""}{assistantBonus(current)} {role === "recruiting" ? "recruiting pts/wk" : "dev pts/offseason"}
+                      </div>
+                    </>
+                  ) : (
+                    <div style={{ fontSize: 12.5, color: C.dimmer, marginBottom: 4 }}>Vacant — {info.blurb}</div>
+                  )}
+                  <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                    <button onClick={() => { setHiringRole(role); setCandidates(generateAssistantCandidates(team)); }} className="cbb-btn"
+                      style={{ fontSize: 11.5, padding: "5px 10px", border: `1px solid ${C.wood}`, background: "transparent", color: C.gold, cursor: "pointer", fontWeight: 600 }}>
+                      {current ? "Replace" : "Hire"}
+                    </button>
+                    {current && onFireAssistant && (
+                      <button onClick={() => onFireAssistant(role)} className="cbb-btn"
+                        style={{ fontSize: 11.5, padding: "5px 10px", border: `1px solid ${C.line}`, background: "transparent", color: C.dim, cursor: "pointer" }}>
+                        Let Go
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </Panel>
+      )}
+
+      {hiringRole && (
+        <AssistantHireModal
+          role={hiringRole}
+          candidates={candidates}
+          onHire={(candidate) => { onHireAssistant(hiringRole, candidate); setHiringRole(null); }}
+          onClose={() => setHiringRole(null)}
+        />
+      )}
 
       <Panel style={{ padding: 20 }}>
         <div style={{ fontSize: 11, color: C.dim, letterSpacing: "0.08em", marginBottom: 12, display: "flex", alignItems: "center", gap: 6 }}><Medal size={13} color={C.gold} /> RECORD BOOK — UNDER COACH {(coach.name || "YOU").toUpperCase()}</div>
@@ -11924,6 +12054,7 @@ export default function CBBDynasty() {
       postseasonBanUntilYear: null,
       riskItAttempts: 0,
       settings: { ...DEFAULT_SETTINGS },
+      assistants: null,
     };
     setPickingTeamFor(null);
     setSession(state);
