@@ -6223,6 +6223,25 @@ function DynastyApp({ initial, onExit }) {
     }
   }
 
+  // One-click reset: within each position group, reorder by who's actually
+  // best AT that position (overallAtPos, not their generic overall) and
+  // hand out the standard best-first minute split. Never moves anyone to a
+  // different group — it only re-ranks who's already slotted where, so it
+  // can't empty out a position the way a full cross-position reassignment
+  // could.
+  function autoOptimizeDepthChart() {
+    setState((s) => {
+      const byId = new Map(s.roster.map((p) => [p.id, p]));
+      const dc = {};
+      POSITIONS.forEach((pos) => {
+        dc[pos] = [...(s.depthChart[pos] || [])]
+          .filter((id) => byId.has(id))
+          .sort((a, b) => overallAtPos(byId.get(b), pos) - overallAtPos(byId.get(a), pos));
+      });
+      return { ...s, depthChart: dc, minutes: defaultMinutesFor(dc) };
+    });
+  }
+
   function moveInDepthChart(pos, index, dir) {
     setState((s) => {
       const arr = [...s.depthChart[pos]];
@@ -6841,7 +6860,7 @@ function DynastyApp({ initial, onExit }) {
               onViewPlayer={setPlayerViewId} />
           )}
           {tab === "roster" && <RosterTab roster={state.roster} onViewPlayer={setPlayerViewId} onChangePosition={changePlayerPosition} />}
-          {tab === "depth" && <DepthChartTab roster={state.roster} depthChart={state.depthChart} minutes={state.minutes} onMove={moveInDepthChart} onAssign={assignPosition} onRemove={removeFromDepth} onCommitMinutes={commitPositionMinutes} onAutoFillPosition={autoFillPosition} />}
+          {tab === "depth" && <DepthChartTab roster={state.roster} depthChart={state.depthChart} minutes={state.minutes} onMove={moveInDepthChart} onAssign={assignPosition} onRemove={removeFromDepth} onCommitMinutes={commitPositionMinutes} onAutoFillPosition={autoFillPosition} onAutoOptimize={autoOptimizeDepthChart} />}
           {tab === "recruiting" && (
             <RecruitingTab
               board={state.recruitingBoard}
@@ -7775,13 +7794,21 @@ function PositionMinutesPanel({ pos, roster, depthChart, minutes, onMove, onAssi
   );
 }
 
-function DepthChartTab({ roster, depthChart, minutes, onMove, onAssign, onRemove, onCommitMinutes, onAutoFillPosition }) {
+function DepthChartTab({ roster, depthChart, minutes, onMove, onAssign, onRemove, onCommitMinutes, onAutoFillPosition, onAutoOptimize }) {
   const assignedIds = new Set(POSITIONS.flatMap((p) => depthChart[p]));
   const bench = roster.filter((p) => !assignedIds.has(p.id));
   return (
     <div>
-      <div style={{ fontSize: 11.5, color: C.dimmer, marginBottom: 12, maxWidth: 760 }}>
-        Slot any player at any position — a point guard can back up at the two, three, even the four or five. Playing someone out of position lowers their effective rating (shown in red), since their skills don&apos;t fit that role. Type a number or nudge it with +/−, then hit <strong>Confirm Minutes</strong> to lock in a position group — each has 40 to give out across regulation, and the button disables itself if you go over. Past 34 minutes a player starts losing effectiveness late in games from fatigue (shown in orange) — and heavier minutes on a less durable player raise their injury risk.
+      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 14, marginBottom: 12 }}>
+        <div style={{ fontSize: 11.5, color: C.dimmer, maxWidth: 700 }}>
+          Slot any player at any position — a point guard can back up at the two, three, even the four or five. Playing someone out of position lowers their effective rating (shown in red), since their skills don&apos;t fit that role. Type a number or nudge it with +/−, then hit <strong>Confirm Minutes</strong> to lock in a position group — each has 40 to give out across regulation, and the button disables itself if you go over. Past 34 minutes a player starts losing effectiveness late in games from fatigue (shown in orange) — and heavier minutes on a less durable player raise their injury risk.
+        </div>
+        {typeof onAutoOptimize === "function" && (
+          <button onClick={onAutoOptimize} className="cbb-btn" title="Re-rank each position group by who's actually best there, and reset minutes to the standard best-first split."
+            style={{ flexShrink: 0, fontSize: 12, padding: "8px 12px", border: `1px solid ${C.wood}`, background: "transparent", color: C.gold, cursor: "pointer", display: "flex", alignItems: "center", gap: 6, fontWeight: 600 }}>
+            <Zap size={13} /> Auto-Optimize Lineup
+          </button>
+        )}
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(250px, 1fr))", gap: 14 }}>
         {POSITIONS.map((pos) => (
