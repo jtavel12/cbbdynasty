@@ -9505,13 +9505,6 @@ function VisitExperience({ recruit, actionKey, team, onClose, onFinish }) {
   // duration of this one visit — so replaying visits across a long dynasty
   // doesn't always show the exact same three beats in the exact same order.
   const moments = useMemo(() => script.momentPools.map((pool) => pick(pool)), [script]);
-  // Every visit has exactly one stop that just doesn't go your way — but
-  // WHICH stop is picked fresh per visit, and it backfires no matter which
-  // option you pick there. Tying it to chance rather than to a specific
-  // "wrong" choice is deliberate: a fixed gotcha is something a player
-  // learns and routes around after the first time, which defeats the
-  // point — this way there's no tell and no way to play around it.
-  const unluckyStep = useMemo(() => randInt(0, moments.length - 1), [moments]);
   const [step, setStep] = useState(0);          // which moment we're on
   const [picked, setPicked] = useState(null);   // outcome of the current moment, pre-continue
   const [log, setLog] = useState([]);           // [{ prompt, choice, gain, blurb }]
@@ -9522,10 +9515,6 @@ function VisitExperience({ recruit, actionKey, team, onClose, onFinish }) {
   const moment = !done ? moments[step] : null;
 
   function choose(opt) {
-    if (step === unluckyStep) {
-      setPicked({ choice: opt.label, gain: -2, blurb: "Something about this one just doesn't land — hard to say why." });
-      return;
-    }
     const base = rand(script.perMoment[0], script.perMoment[1]);
     const expected = (script.perMoment[0] + script.perMoment[1]) / 2;
     const gain = rollVisitGain(opt.tone, base);
