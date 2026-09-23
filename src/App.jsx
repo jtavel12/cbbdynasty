@@ -2291,10 +2291,12 @@ function signChance(recruit) {
 
 // A sign attempt is only allowed when the recruit is better than a coin flip
 // (>50% odds), a real NIL offer meeting their (never-shown) floor is on the
-// table, and each recruit can be attempted at most once per week and at most
-// twice overall. Returns why an attempt is (dis)allowed for UI + handlers.
+// table, the coach has the points on hand, and each recruit can be attempted
+// at most once per week and at most twice overall. Returns why an attempt is
+// (dis)allowed for UI + handlers.
 const MAX_SIGN_ATTEMPTS = 2;
-function signAttemptStatus(recruit, weekIndex) {
+const SIGN_ATTEMPT_COST = 20;
+function signAttemptStatus(recruit, weekIndex, pointsLeft = Infinity) {
   const chance = signChance(recruit);
   const attempts = recruit.signAttempts || 0;
   if (!recruit.offerExtended) return { ok: false, reason: "offer", chance, attempts };
@@ -2303,6 +2305,7 @@ function signAttemptStatus(recruit, weekIndex) {
   if (attempts >= MAX_SIGN_ATTEMPTS) return { ok: false, reason: "max", chance, attempts };
   if (recruit.signAttemptWeek === weekIndex) return { ok: false, reason: "week", chance, attempts };
   if (chance <= 0.5) return { ok: false, reason: "odds", chance, attempts };
+  if (pointsLeft < SIGN_ATTEMPT_COST) return { ok: false, reason: "points", chance, attempts };
   return { ok: true, reason: null, chance, attempts };
 }
 
@@ -5081,7 +5084,7 @@ function Panel({ children, style, className, ...rest }) {
 const PLAY_GUIDE_SECTIONS = [
   {
     Icon: Search, title: "Recruiting",
-    body: "Spend weekly points on Calls, Home Visits, Official Visits, and Scholarship Offers to build interest, then Attempt to Sign once a prospect is above 50%. NIL money is a separate, powerful lever — pledge it to close a recruit who's on the fence. Scout a recruit (10 points) to reveal their real production before you commit resources.",
+    body: "Spend weekly points on Calls, Home Visits, Official Visits, and Scholarship Offers to build interest, then Attempt to Sign (20 points) once a prospect is above 50%. NIL money is a separate, powerful lever — pledge it to close a recruit who's on the fence. Scout a recruit (10 points) to reveal their real production before you commit resources.",
   },
   {
     Icon: Swords, title: "Transfer Portal",
@@ -5893,13 +5896,14 @@ function DynastyApp({ initial, onExit }) {
     // isOversigned below) is what actually makes that reckoning happen,
     // rather than blocking the sign here.
     const week = os.week;
-    const status = signAttemptStatus(recruit, week);
+    const status = signAttemptStatus(recruit, week, os.points);
     if (!status.ok) {
       if (status.reason === "offer") flash("Extend a scholarship offer before you can sign a transfer.");
       else if (status.reason === "nil") flash(`${recruit.name} won't sign without a real NIL offer closer to their ask — pledge more.`);
       else if (status.reason === "odds") flash(`${recruit.name} must be above 50% to sign — you're at ${Math.round(status.chance * 100)}%. Keep working them.`);
       else if (status.reason === "max") flash(`You've used both sign attempts on ${recruit.name} this cycle.`);
       else if (status.reason === "week") flash(`You can only make one sign attempt per week — try ${recruit.name} again next week.`);
+      else if (status.reason === "points") flash(`Attempting to sign ${recruit.name} costs ${SIGN_ATTEMPT_COST} points — you don't have enough left this week.`);
       return;
     }
     const chance = status.chance;
@@ -5912,6 +5916,7 @@ function DynastyApp({ initial, onExit }) {
         poachedPlayers: poach ? [...(s.poachedPlayers || []), poach] : (s.poachedPlayers || []),
         offseason: {
           ...s.offseason,
+          points: s.offseason.points - SIGN_ATTEMPT_COST,
           transferBoard: s.offseason.transferBoard.map((r) => (r.id === recruit.id ? { ...r, committedTo: s.teamId, signAttempts: attempts, signAttemptWeek: week } : r)),
           committedTransfers: [...s.offseason.committedTransfers, recruit.id],
         },
@@ -5923,6 +5928,7 @@ function DynastyApp({ initial, onExit }) {
         ...s,
         offseason: {
           ...s.offseason,
+          points: s.offseason.points - SIGN_ATTEMPT_COST,
           transferBoard: s.offseason.transferBoard.map((r) => (r.id === recruit.id ? { ...r, rivalPressure: clamp(r.rivalPressure + 10, 0, 95), signAttempts: attempts, signAttemptWeek: week } : r)),
         },
       }));
@@ -6307,13 +6313,14 @@ function DynastyApp({ initial, onExit }) {
     // count during the season; the forced OversignedModal at the start of
     // the offseason is what actually makes them reckon with it.
     const week = state.recruitingWeekIndex;
-    const status = signAttemptStatus(recruit, week);
+    const status = signAttemptStatus(recruit, week, state.recruitingPoints);
     if (!status.ok) {
       if (status.reason === "offer") flash("Extend a scholarship offer before you can sign them.");
       else if (status.reason === "nil") flash(`${recruit.name} won't sign without a real NIL offer closer to their ask — pledge more.`);
       else if (status.reason === "odds") flash(`${recruit.name} must be above 50% to sign — you're at ${Math.round(status.chance * 100)}%. Keep working them.`);
       else if (status.reason === "max") flash(`You've used both sign attempts on ${recruit.name} this cycle.`);
       else if (status.reason === "week") flash(`You can only make one sign attempt per week — try ${recruit.name} again next week.`);
+      else if (status.reason === "points") flash(`Attempting to sign ${recruit.name} costs ${SIGN_ATTEMPT_COST} points — you don't have enough left this week.`);
       return;
     }
     const chance = status.chance;
@@ -6324,6 +6331,7 @@ function DynastyApp({ initial, onExit }) {
       const nilSpend = recruit.nilOffer || 0;
       setState((s) => ({
         ...s,
+        recruitingPoints: s.recruitingPoints - SIGN_ATTEMPT_COST,
         recruitingBoard: s.recruitingBoard.map((r) => (r.id === recruit.id ? { ...r, committedTo: s.teamId, signAttempts: attempts, signAttemptWeek: week } : r)),
         incomingCommits: [...s.incomingCommits, recruit.id],
         poachedPlayers: poach ? [...(s.poachedPlayers || []), poach] : (s.poachedPlayers || []),
@@ -6333,6 +6341,7 @@ function DynastyApp({ initial, onExit }) {
       const left = MAX_SIGN_ATTEMPTS - attempts;
       setState((s) => ({
         ...s,
+        recruitingPoints: s.recruitingPoints - SIGN_ATTEMPT_COST,
         recruitingBoard: s.recruitingBoard.map((r) => (r.id === recruit.id ? { ...r, rivalPressure: clamp(r.rivalPressure + 10, 0, 95), signAttempts: attempts, signAttemptWeek: week } : r)),
       }));
       flash(`${recruit.name} isn't ready to commit yet. (${Math.round(chance * 100)}% odds — ${left} attempt${left === 1 ? "" : "s"} left)`);
@@ -7022,6 +7031,8 @@ function DynastyApp({ initial, onExit }) {
               roster={state.roster}
               scholarshipInfo={scholarshipInfo}
               committedFreshmen={state.incomingCommits.length}
+              targets={state.recruitTargets || []}
+              onToggleTarget={toggleTarget}
               onAction={doTransferAction}
               onSign={attemptSignTransfer}
               onNilOffer={doNilOfferTransfer}
@@ -8108,6 +8119,12 @@ function RecruitBoard({ board, otherBoard, committedIds, targets, onToggleTarget
   const [openId, setOpenId] = useState(null);
   const needSet = new Set(needs || []);
   const targetSet = new Set(targets || []);
+  // `targets` is a single flat list shared across both the HS board and the
+  // transfer board (so a star made on one still shows if the coach happens
+  // to check the other), but the count badge and Compare button should only
+  // ever reflect prospects actually sitting on THIS board — otherwise a star
+  // from the other board inflates the count here with nothing to show for it.
+  const boardTargetCount = board.reduce((n, r) => n + (targetSet.has(r.id) ? 1 : 0), 0);
 
   // Celebrate a recruit the moment they join committedIds (a sign or a won
   // transfer), rather than leaving the state change to read as a plain
@@ -8148,6 +8165,7 @@ function RecruitBoard({ board, otherBoard, committedIds, targets, onToggleTarget
     if (r.committedTo && !mine) return false; // signed elsewhere — off the board
     if (view === "targets" && !targetSet.has(r.id)) return false;
     if (view === "committed" && !mine) return false;
+    if (view === "nilOffers" && (mine || !((r.nilOffer || 0) > 0))) return false;
     if (posFilter !== "ALL" && r.pos !== posFilter) return false;
     if (starFilter && (r.stars || 0) < starFilter) return false;
     if (stateFilter !== "ALL" && r.state !== stateFilter) return false;
@@ -8178,6 +8196,10 @@ function RecruitBoard({ board, otherBoard, committedIds, targets, onToggleTarget
   // computed fresh every render instead.
   const nilPending = [...board, ...(otherBoard || [])].reduce((sum, r) =>
     sum + ((r.committedTo === team.id || !r.committedTo) ? (r.nilOffer || 0) : 0), 0);
+  // Prospects with a live, un-signed NIL pledge on the table — the coach's
+  // outstanding financial commitments, at a glance, separate from who's
+  // merely starred as a target.
+  const nilOfferCount = board.filter((r) => !committedIds.includes(r.id) && (r.nilOffer || 0) > 0).length;
 
   const chip = (label, active, onClick) => (
     <button onClick={onClick} className="cbb-btn"
@@ -8190,12 +8212,13 @@ function RecruitBoard({ board, otherBoard, committedIds, targets, onToggleTarget
     <div>
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12, alignItems: "center" }}>
         {chip("All", view === "all", () => setView("all"))}
-        {canTarget && chip(`Targets (${targetSet.size})`, view === "targets", () => setView("targets"))}
+        {canTarget && chip(`Targets (${boardTargetCount})`, view === "targets", () => setView("targets"))}
         {chip(`Committed (${committedIds.length})`, view === "committed", () => setView("committed"))}
-        {canTarget && targetSet.size >= 2 && (
+        {chip(`NIL Offers (${nilOfferCount})`, view === "nilOffers", () => setView("nilOffers"))}
+        {canTarget && boardTargetCount >= 2 && (
           <button onClick={() => setCompareOpen(true)} className="cbb-btn"
             style={{ fontSize: 12, padding: "6px 12px", border: `1px solid ${C.wood}`, background: "transparent", color: C.gold, cursor: "pointer", display: "flex", alignItems: "center", gap: 5 }}>
-            <ListOrdered size={12} /> Compare ({targetSet.size})
+            <ListOrdered size={12} /> Compare ({boardTargetCount})
           </button>
         )}
         <input
@@ -8339,7 +8362,7 @@ function RecruitBoard({ board, otherBoard, committedIds, targets, onToggleTarget
                     );
                   })}
                   {(() => {
-                    const status = signAttemptStatus(r, weekIndex);
+                    const status = signAttemptStatus(r, weekIndex, points);
                     const left = MAX_SIGN_ATTEMPTS - (r.signAttempts || 0);
                     let label;
                     if (status.reason === "offer") label = "Offer required to sign";
@@ -8347,10 +8370,11 @@ function RecruitBoard({ board, otherBoard, committedIds, targets, onToggleTarget
                     else if (status.reason === "max") label = "No sign attempts left";
                     else if (status.reason === "week") label = `Already tried this week (${left} left)`;
                     else if (status.reason === "odds") label = `Need >50% to sign (${Math.round(chance * 100)}%)`;
-                    else label = `Attempt to Sign (${Math.round(chance * 100)}%) · ${left} left`;
+                    else if (status.reason === "points") label = `Need ${SIGN_ATTEMPT_COST}pt to attempt (have ${points})`;
+                    else label = `Attempt to Sign (${Math.round(chance * 100)}%) · ${SIGN_ATTEMPT_COST}pt · ${left} left`;
                     return (
                       <button onClick={() => onSign(r)} disabled={!status.ok} className="cbb-btn"
-                        title={status.ok ? undefined : "You can attempt to sign once a recruit is above 50%, has a real NIL offer on the table, once per week, up to twice overall."}
+                        title={status.ok ? undefined : `You can attempt to sign once a recruit is above 50%, has a real NIL offer on the table, costs ${SIGN_ATTEMPT_COST} points, once per week, up to twice overall.`}
                         style={{ ...btnStyle(status.ok ? C.wood : C.line), fontSize: 12, padding: "7px 12px", cursor: status.ok ? "pointer" : "not-allowed" }}>
                         {label}
                       </button>
@@ -8669,7 +8693,7 @@ function CutsPanel({ roster, scholarshipInfo, onCut, onViewPlayer }) {
 /* ---------- Offseason ---------- */
 // Dedicated Transfer Portal tab — only mounted during the offseason. Works the
 // same portal board as the Offseason tab so either entry point stays in sync.
-function TransferPortalTab({ offseason, hsBoard, team, roster, scholarshipInfo, committedFreshmen, onAction, onSign, onNilOffer, nilBudget, onAdvanceWeek }) {
+function TransferPortalTab({ offseason, hsBoard, team, roster, scholarshipInfo, committedFreshmen, targets, onToggleTarget, onAction, onSign, onNilOffer, nilBudget, onAdvanceWeek }) {
   const committed = offseason.committedTransfers || [];
   const committedNil = committedRosterNil(roster || [], offseason, null);
   const nilAvailable = nilAvailableAmount(nilBudget, roster || [], offseason, hsBoard, team.id, null);
@@ -8707,6 +8731,8 @@ function TransferPortalTab({ offseason, hsBoard, team, roster, scholarshipInfo, 
         board={offseason.transferBoard}
         otherBoard={hsBoard}
         committedIds={committed}
+        targets={targets}
+        onToggleTarget={onToggleTarget}
         points={offseason.points}
         weekIndex={offseason.week}
         totalWeeks={OFFSEASON_WEEKS}
@@ -9872,6 +9898,16 @@ function visitOutcomeBlurb(tone, gain, expected) {
   return tone === "bold" ? "Too much, too soon — it falls flat." : "Doesn't move the needle much.";
 }
 
+// The shared visit scripts were written for HS recruiting and include a
+// couple of freshman-specific lines ("guarantee he starts as a freshman")
+// that don't make sense for a transfer — every transfer is at least a
+// sophomore by definition. Swap the wording contextually instead of
+// forking an entire second copy of the script just for one line.
+function visitLabelFor(label, recruit) {
+  if (!recruit?.isTransfer) return label;
+  return label.replace(/\bas a freshman\b/i, "right away");
+}
+
 function VisitExperience({ recruit, actionKey, team, onClose, onFinish }) {
   const script = VISIT_SCRIPTS[actionKey] || VISIT_SCRIPTS.VISIT;
   const { Icon } = script;
@@ -9892,7 +9928,7 @@ function VisitExperience({ recruit, actionKey, team, onClose, onFinish }) {
     const base = rand(script.perMoment[0], script.perMoment[1]);
     const expected = (script.perMoment[0] + script.perMoment[1]) / 2;
     const gain = rollVisitGain(opt.tone, base);
-    setPicked({ choice: opt.label, gain, blurb: visitOutcomeBlurb(opt.tone, gain, expected) });
+    setPicked({ choice: visitLabelFor(opt.label, recruit), gain, blurb: visitOutcomeBlurb(opt.tone, gain, expected) });
   }
   function next() {
     if (!picked) return;
@@ -9937,7 +9973,7 @@ function VisitExperience({ recruit, actionKey, team, onClose, onFinish }) {
               {moment.options.map((opt, i) => (
                 <button key={i} onClick={() => choose(opt)} className="cbb-btn"
                   style={{ textAlign: "left", padding: "12px 14px", border: `1px solid ${C.line}`, background: "transparent", color: C.cream, fontSize: 13.5, cursor: "pointer" }}>
-                  {opt.label}
+                  {visitLabelFor(opt.label, recruit)}
                 </button>
               ))}
             </div>
