@@ -10819,6 +10819,22 @@ const RECORD_BOOK_STATS = [
   { key: "ast", label: "Assists" },
 ];
 
+// Career milestones a player's own counting stats can clear to earn a spot
+// in the program's Hall of Fame — separate from the top-5 record book lists
+// above, since a legendary career should stay recognized even once three
+// better ones have since passed it on the leaderboard.
+const HOF_THRESHOLDS = [
+  { key: "pts", min: 1500, label: "1,500+ career points" },
+  { key: "reb", min: 800, label: "800+ career rebounds" },
+  { key: "ast", min: 500, label: "500+ career assists" },
+  { key: "tpm", min: 200, label: "200+ made threes" },
+  { key: "stl", min: 150, label: "150+ career steals" },
+  { key: "blk", min: 100, label: "100+ career blocks" },
+];
+function hofHonors(career) {
+  return HOF_THRESHOLDS.filter((t) => (career[t.key] || 0) >= t.min);
+}
+
 function RecordCategoryList({ label, rows, statKey, yearField }) {
   return (
     <div style={{ marginBottom: 14 }}>
@@ -10929,6 +10945,35 @@ function ProgramTab({ state, team, record, reputation, rivalIds, rankById, onRet
           </div>
         )}
       </Panel>
+
+      {(() => {
+        const inductees = (state.programRecords?.careers || [])
+          .map((c) => ({ career: c, honors: hofHonors(c) }))
+          .filter((x) => x.honors.length > 0)
+          .sort((a, b) => (b.career.pts || 0) - (a.career.pts || 0));
+        if (!inductees.length) return null;
+        return (
+          <Panel style={{ padding: 20 }}>
+            <div style={{ fontSize: 11, color: C.dim, letterSpacing: "0.08em", marginBottom: 12, display: "flex", alignItems: "center", gap: 6 }}>
+              <Award size={13} color={C.gold} /> PROGRAM HALL OF FAME — UNDER COACH {(coach.name || "YOU").toUpperCase()}
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 14 }}>
+              {inductees.map(({ career: c, honors }) => (
+                <div key={c.id + c.endYear} style={{ border: `1px solid ${C.line}`, padding: "10px 14px" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                    <span style={{ fontWeight: 700, fontSize: 13.5, color: C.cream }}>{c.name}</span>
+                    <span style={{ fontSize: 10.5, color: C.dim }}>{c.pos} · through {seasonLabel(c.endYear)}</span>
+                  </div>
+                  <div style={{ fontSize: 11, color: C.gold, marginTop: 4 }}>{honors.map((h) => h.label).join(" · ")}</div>
+                  <div className="cbb-num" style={{ fontSize: 11, color: C.dimmer, marginTop: 4 }}>
+                    {c.pts} pts · {c.reb} reb · {c.ast} ast
+                  </div>
+                </div>
+              ))}
+            </div>
+          </Panel>
+        );
+      })()}
 
       <Panel style={{ padding: 20 }}>
         <div style={{ fontSize: 11, color: C.dim, letterSpacing: "0.08em", marginBottom: 12, display: "flex", alignItems: "center", gap: 6 }}><Flame size={13} color={C.wood} /> SIGNATURE WINS · {seasonLabel(state.year)}</div>
