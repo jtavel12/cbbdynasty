@@ -10,7 +10,7 @@ import {
   ShieldCheck, X, Check, TrendingUp, TrendingDown, Award, Crown,
   Medal, HeartPulse, Swords, Flame, GraduationCap, Landmark, Lock,
   Clock, Gauge, Zap, Minus, Timer, DollarSign, AlertTriangle, Newspaper,
-  Settings as SettingsIcon
+  Settings as SettingsIcon, BookOpen, Building2
 } from "lucide-react";
 
 /* =========================================================================
@@ -5327,6 +5327,7 @@ const TABS = [
   { id: "postseason", label: "Postseason", icon: Crown },
   { id: "offseason", label: "Offseason", icon: GraduationCap },
   { id: "program", label: "Program", icon: Landmark },
+  { id: "history", label: "History", icon: BookOpen },
 ];
 
 function DynastyApp({ initial, onExit }) {
@@ -7076,6 +7077,7 @@ function DynastyApp({ initial, onExit }) {
           {tab === "rankings" && <RankingsTab ranked={ranked} userTeamId={state.teamId} onViewTeam={setViewTeamId} />}
           {tab === "leaderboard" && <LeaderboardTab leaders={leaders} userTeamId={state.teamId} year={state.year} onViewTeam={setViewTeamId} />}
           {tab === "program" && <ProgramTab state={state} team={team} record={record} reputation={reputation} rivalIds={rivalIds} rankById={rankById} onRetire={() => setConfirmRetire(true)} onHireAssistant={hireAssistant} onFireAssistant={fireAssistant} />}
+          {tab === "history" && <HistoryTab state={state} rivalIds={rivalIds} />}
           {tab === "postseason" && (
             <PostseasonTab
               postseason={state.postseason}
@@ -11073,11 +11075,6 @@ function ProgramTab({ state, team, record, reputation, rivalIds, rankById, onRet
   const coach = state.coach || EMPTY_COACH;
   const careerW = coach.wins, careerL = coach.losses;
   const winPct = careerW + careerL > 0 ? (careerW / (careerW + careerL)).toFixed(3).replace(/^0/, "") : "—";
-  const sigWins = state.schedule.filter((g) => g.played && g.result.win && g.result.oppRank && g.result.oppRank <= 25);
-  const awardsHistory = state.awardsHistory || [];
-  const draftHistory = state.draftHistory || [];
-  const ledger = state.rivalryLedger || {};
-  const rivals = [...rivalIds].map((id) => ({ id, name: TEAM_MAP[id]?.name, rec: ledger[id] })).filter((r) => r.name);
   const prestige = Math.round(team.prestige || 2);
   const trend = state.prestigeTrendById?.[state.teamId] ?? 0;
   const TrendIcon = trend > 0 ? TrendingUp : trend < 0 ? TrendingDown : Minus;
@@ -11120,18 +11117,6 @@ function ProgramTab({ state, team, record, reputation, rivalIds, rankById, onRet
           const banner = programHistoryBanner(team.id);
           return banner ? <div style={{ fontSize: 11.5, color: C.gold, marginTop: 8, paddingTop: 8, borderTop: `1px solid ${C.line}` }}>{banner} — real program history</div> : null;
         })()}
-      </Panel>
-
-      <Panel style={{ padding: 20 }}>
-        <div style={{ fontSize: 11, color: C.dim, letterSpacing: "0.08em", marginBottom: 12, display: "flex", alignItems: "center", gap: 6 }}><Trophy size={13} color={C.gold} /> TROPHY CASE</div>
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-          <TrophyBadge count={coach.natTitles} label="National Titles" gold />
-          <TrophyBadge count={coach.finalFours} label="Final Fours" />
-          <TrophyBadge count={coach.confRegSeasonTitles || 0} label="Regular Season Titles" />
-          <TrophyBadge count={coach.confTourneyTitles} label="Conf. Tournament Titles" />
-          <TrophyBadge count={coach.tourneyApps} label="NCAA Appearances" />
-          <TrophyBadge count={coach.coyAwards || 0} label="Coach of the Year" gold />
-        </div>
         <div style={{ fontSize: 11.5, color: C.dimmer, marginTop: 12 }}>
           {reputationTier(reputation)} — {reputation} reputation. Win games, make deep tournament runs, and cut down nets to unlock jobs at blue-blood programs.
         </div>
@@ -11186,6 +11171,38 @@ function ProgramTab({ state, team, record, reputation, rivalIds, rankById, onRet
           onClose={() => setHiringRole(null)}
         />
       )}
+
+    </div>
+  );
+}
+
+// Everything about the program's PAST rather than its current state: titles
+// and trophies, the record book, Hall of Fame, this season's signature wins,
+// the rivalry ledger, every season this coach has ever run (across every
+// job), player honors, and the NBA draft pipeline. Split out of ProgramTab
+// so that tab can stay focused on the coach's current standing (trajectory,
+// staff, budget) without scrolling past a growing wall of history.
+function HistoryTab({ state, rivalIds }) {
+  const coach = state.coach || EMPTY_COACH;
+  const sigWins = state.schedule.filter((g) => g.played && g.result.win && g.result.oppRank && g.result.oppRank <= 25);
+  const awardsHistory = state.awardsHistory || [];
+  const draftHistory = state.draftHistory || [];
+  const ledger = state.rivalryLedger || {};
+  const rivals = [...rivalIds].map((id) => ({ id, name: TEAM_MAP[id]?.name, rec: ledger[id] })).filter((r) => r.name);
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 20, maxWidth: 940 }}>
+      <Panel style={{ padding: 20 }}>
+        <div style={{ fontSize: 11, color: C.dim, letterSpacing: "0.08em", marginBottom: 12, display: "flex", alignItems: "center", gap: 6 }}><Trophy size={13} color={C.gold} /> TROPHY CASE</div>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <TrophyBadge count={coach.natTitles} label="National Titles" gold />
+          <TrophyBadge count={coach.finalFours} label="Final Fours" />
+          <TrophyBadge count={coach.confRegSeasonTitles || 0} label="Regular Season Titles" />
+          <TrophyBadge count={coach.confTourneyTitles} label="Conf. Tournament Titles" />
+          <TrophyBadge count={coach.tourneyApps} label="NCAA Appearances" />
+          <TrophyBadge count={coach.coyAwards || 0} label="Coach of the Year" gold />
+        </div>
+      </Panel>
 
       <Panel style={{ padding: 20 }}>
         <div style={{ fontSize: 11, color: C.dim, letterSpacing: "0.08em", marginBottom: 12, display: "flex", alignItems: "center", gap: 6 }}><Medal size={13} color={C.gold} /> RECORD BOOK — UNDER COACH {(coach.name || "YOU").toUpperCase()}</div>
