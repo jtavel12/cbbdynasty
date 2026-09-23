@@ -2981,8 +2981,8 @@ function baselineNilBudgetById() {
 }
 
 // $2.1M / $450K / $8,200-style compact formatting for budgets and offers.
-// A budget can now run negative (see advanceProgramBudgets) so the sign is
-// pulled out and reapplied around the magnitude rather than falling through
+// Negative values (a schedule's net guarantee-fee outcome, say) pull the
+// sign out and reapply it around the magnitude rather than falling through
 // to something like "$-500K".
 function formatNil(n) {
   const raw = Math.round(n || 0);
@@ -4501,16 +4501,14 @@ function baselineProgramBudgetById() {
 }
 // `growthRatioById` is NIL's own actual per-team growth ratio this season
 // (from advanceNilBudgets) — program budget mirrors it exactly, uncapped,
-// plus a little more from the Arena & Fan Experience facility on top. No
-// floor either — overspend on staff or facilities and the program carries
-// that deficit into the next season same as any real athletic department.
+// plus a little more from the Arena & Fan Experience facility on top.
 function advanceProgramBudgets(prevById, growthRatioById, facilitiesById) {
   const next = {};
   for (const t of TEAMS) {
     const prev = prevById[t.id] ?? programBudgetForTeam(t);
     const rate = (growthRatioById && growthRatioById[t.id]) || 0;
     const arenaLevel = facilitiesById?.[t.id]?.arena || 0;
-    next[t.id] = Math.round(prev * (1 + rate + arenaLevel * 0.01));
+    next[t.id] = Math.round(Math.max(0, prev * (1 + rate + arenaLevel * 0.01)));
   }
   return next;
 }
@@ -6937,7 +6935,7 @@ function DynastyApp({ initial, onExit }) {
     const assistantSalaries = Object.values(state.assistants || {}).reduce(
       (sum, a) => sum + assistantSalaryFor(a, team), 0
     );
-    nextProgramBudgetById[state.teamId] = (nextProgramBudgetById[state.teamId] ?? 0) - coachSalary - assistantSalaries;
+    nextProgramBudgetById[state.teamId] = Math.max(0, (nextProgramBudgetById[state.teamId] ?? 0) - coachSalary - assistantSalaries);
 
     // The schedule the coach just confirmed via ScheduleSetupModal (right
     // before hitting "Begin Season" — see the seasonScheduleReview gate in
@@ -6946,7 +6944,7 @@ function DynastyApp({ initial, onExit }) {
     // function applies.
     const rawNextSchedule = (os && os.scheduleDraft) ? os.scheduleDraft : genSchedule(team, newYear);
     const { games: nextSchedule, netDelta: scheduleFeeDelta } = applyGuaranteeFees(rawNextSchedule, team);
-    nextProgramBudgetById[state.teamId] = (nextProgramBudgetById[state.teamId] ?? 0) + scheduleFeeDelta;
+    nextProgramBudgetById[state.teamId] = Math.max(0, (nextProgramBudgetById[state.teamId] ?? 0) + scheduleFeeDelta);
 
     // Prestige movement since last season, for trend indicators.
     const prevP = state.prestigeById || baselinePrestigeById();
@@ -7125,7 +7123,7 @@ function DynastyApp({ initial, onExit }) {
     const leavingAssistantSalaries = Object.values(state.assistants || {}).reduce(
       (sum, a) => sum + assistantSalaryFor(a, team), 0
     );
-    nextProgramBudgetById[state.teamId] = (nextProgramBudgetById[state.teamId] ?? 0) - leavingCoachSalary - leavingAssistantSalaries;
+    nextProgramBudgetById[state.teamId] = Math.max(0, (nextProgramBudgetById[state.teamId] ?? 0) - leavingCoachSalary - leavingAssistantSalaries);
 
     // Record book: the whole roster you're leaving behind had their stint
     // under you end right here, same as if they'd graduated.
@@ -11480,7 +11478,7 @@ function ProgramTab({ state, team, record, reputation, rivalIds, rankById, onRet
         <Panel style={{ padding: 20 }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 14, flexWrap: "wrap", marginBottom: 12 }}>
             <div style={{ fontSize: 11, color: C.dim, letterSpacing: "0.08em", display: "flex", alignItems: "center", gap: 6 }}><Building2 size={13} color={C.gold} /> FACILITIES</div>
-            <div style={{ fontSize: 12, color: C.dim }}>Program budget: <strong className="cbb-num" style={{ color: programBudget < 0 ? C.red : C.gold, fontSize: 14 }}>{formatNil(programBudget)}</strong></div>
+            <div style={{ fontSize: 12, color: C.dim }}>Program budget: <strong className="cbb-num" style={{ color: C.gold, fontSize: 14 }}>{formatNil(programBudget)}</strong></div>
           </div>
           <div style={{ fontSize: 11.5, color: C.dimmer, marginBottom: 14 }}>
             Athletic-department capital, not player pay — seeded at half your NIL budget and growing at the same rate every season (faster with a stronger Arena), with no ceiling. Your coaching salary and any assistants you hire come out of it too, along with these upgrades.
@@ -11862,7 +11860,7 @@ function ScheduleSetupModal({ team, year, games, programBudget, onEditGame, onCo
           A real prestige gap against a non-conference opponent means a real guarantee-game payout: the higher-tier program pays the full fee to book the game, and the lower-tier program only banks {Math.round(GUARANTEE_KEEP_PCT * 100)}% of it for their own program budget — the rest goes to the Athletic Department generally, not the team.
         </div>
         <Panel style={{ padding: "14px 18px", marginBottom: 18, display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
-          <div style={{ fontSize: 12, color: C.dim }}>Program budget: <strong className="cbb-num" style={{ color: programBudget < 0 ? C.red : C.gold, fontSize: 15 }}>{formatNil(programBudget)}</strong></div>
+          <div style={{ fontSize: 12, color: C.dim }}>Program budget: <strong className="cbb-num" style={{ color: C.gold, fontSize: 15 }}>{formatNil(programBudget)}</strong></div>
           <div style={{ fontSize: 12, color: C.dim }}>
             Net from this schedule: <strong className="cbb-num" style={{ color: netDelta >= 0 ? C.green : C.red, fontSize: 15 }}>{netDelta >= 0 ? "+" : ""}{formatNil(netDelta)}</strong>
           </div>
