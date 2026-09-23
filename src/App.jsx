@@ -9,7 +9,8 @@ import {
   Save, RotateCcw, ChevronUp, ChevronDown, Play, FastForward, Star,
   ShieldCheck, X, Check, TrendingUp, TrendingDown, Award, Crown,
   Medal, HeartPulse, Swords, Flame, GraduationCap, Landmark, Lock,
-  Clock, Gauge, Zap, Minus, Timer, DollarSign, AlertTriangle, Newspaper
+  Clock, Gauge, Zap, Minus, Timer, DollarSign, AlertTriangle, Newspaper,
+  Settings as SettingsIcon
 } from "lucide-react";
 
 /* =========================================================================
@@ -66,9 +67,13 @@ const POS_WEIGHTS = {
 const CLASS_ORDER = ["FR", "SO", "JR", "SR"];
 
 /* =========================================================================
-   REAL D1 PROGRAM SEED LIST  (names/conferences only — placeholder ratings;
-   real rosters & box scores get wired in once a licensed data source is
-   connected, see note in the Data tab)
+   REAL D1 PROGRAM SEED LIST — names, conferences, and a starting prestige
+   used as the base for every generated (non-real-data) team rating. Real
+   rosters, box scores, and team efficiency ratings are layered on top of
+   this list at runtime from the Torvik/CBBD data pipelines (see
+   REAL_NIL_BUDGET_BY_ID, realPlayersFor, realSeasonFor) where a match
+   exists; this list itself never gets replaced, since every team needs an
+   id/conf/prestige/colors entry regardless of real-data coverage.
    ========================================================================= */
 const TEAMS = [
   { id: 'albany', name: 'Albany', abbr: 'ALBA', conf: 'America East', prestige: 2, primary: '#8a1538', secondary: '#a99165' },
@@ -3943,16 +3948,31 @@ function tickInjuries(roster) {
   });
 }
 
+// Player-facing settings, persisted on state.settings. Existing saves from
+// before this field existed read as undefined, so every read site falls
+// back to DEFAULT_SETTINGS (via `state.settings || DEFAULT_SETTINGS`)
+// rather than requiring a migration.
+const DEFAULT_SETTINGS = {
+  injuryFrequency: "normal", // "low" | "normal" | "high"
+  autosave: true,
+};
+const INJURY_FREQUENCY_MULT = { low: 0.55, normal: 1, high: 1.7 };
+
 // Per-game injury risk for one player: scales up with minutes load (heavy
 // workload, more wear) and down with durability (a tougher player shrugs off
 // the same workload). Bench guys at a handful of minutes are very unlikely to
 // go down; a fragile player logging 38+ minutes a night is a real risk.
-function injuryRiskFor(minutes, durability) {
+// `freqMult` is the settings-driven injury-frequency multiplier (default 1,
+// i.e. "normal") — only the actual per-game roll in maybeInjure passes
+// anything else; UI-facing risk displays intentionally stay at baseline so
+// the risk badge always reads the same regardless of difficulty setting.
+function injuryRiskFor(minutes, durability, freqMult = 1) {
   const m = clamp(Number(minutes) || 0, 0, 45);
   const d = clamp(durability ?? 70, 40, 99);
   const loadFactor = Math.pow(m / 30, 1.6);
   const durFactor = clamp(1.6 - d / 70, 0.35, 1.8);
-  return clamp(0.012 * loadFactor * durFactor, 0, 0.09);
+  const base = clamp(0.012 * loadFactor * durFactor, 0, 0.09);
+  return clamp(base * freqMult, 0, 0.16);
 }
 
 // Named injury types, tiered by how long they sideline a player. Weight is
@@ -3998,12 +4018,12 @@ function injuryLengthFor(type, gamesRemaining) {
 // updated roster and (if anyone went down) the new injury. Multiple players
 // can theoretically go down in the same game, but only the headline injury is
 // reported in the flash message.
-function maybeInjure(roster, rotationMinutes, gamesRemaining = 1) {
+function maybeInjure(roster, rotationMinutes, gamesRemaining = 1, freqMult = 1) {
   const hits = [];
   for (const { id, minutes } of rotationMinutes) {
     const p = roster.find((x) => x.id === id);
     if (!p || isHurt(p)) continue;
-    if (Math.random() < injuryRiskFor(minutes, p.durability)) hits.push(p);
+    if (Math.random() < injuryRiskFor(minutes, p.durability, freqMult)) hits.push(p);
   }
   if (!hits.length) return { roster, injured: null };
   const hitInfo = new Map(hits.map((p) => {
@@ -5207,10 +5227,12 @@ function DynastyApp({ initial, onExit }) {
   const [livePlay, setLivePlay] = useState(null);
   const [visit, setVisit] = useState(null); // { recruit, actionKey } for the interactive visit modal
   const [riskIt, setRiskIt] = useState(null); // { recruit, source } for the Risk It confirmation modal
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const saveTimer = useRef(null);
 
   useEffect(() => {
     if (saveTimer.current) clearTimeout(saveTimer.current);
+    if ((state.settings || DEFAULT_SETTINGS).autosave === false) return;
     saveTimer.current = setTimeout(() => { saveDynasty(state); }, 600);
     return () => clearTimeout(saveTimer.current);
   }, [state]);
@@ -5434,7 +5456,7 @@ function DynastyApp({ initial, onExit }) {
       const lead = result.liveInjuries[0];
       inj = { injured: { id: lead.id, name: lead.name, type: lead.type, games: lead.gamesOut, seasonEnding: lead.seasonEnding, extra: result.liveInjuries.length - 1 } };
     } else {
-      inj = maybeInjure(roster, rotationMinutesOf(state.depthChart, roster, state.minutes), gamesRemaining);
+      inj = maybeInjure(roster, rotationMinutesOf(state.depthChart, roster, state.minutes), gamesRemaining, INJURY_FREQUENCY_MULT[state.settings?.injuryFrequency || "normal"]);
       roster = inj.roster;
     }
     const box = boxArray(result.boxByPlayer, state.roster);
@@ -5506,7 +5528,7 @@ function DynastyApp({ initial, onExit }) {
       });
       roster = tickInjuries(roster);
       const gamesRemaining = Math.max(1, games.filter((x) => !x.played).length - 1);
-      roster = maybeInjure(roster, rotationMinutesOf(state.depthChart, roster, state.minutes), gamesRemaining).roster;
+      roster = maybeInjure(roster, rotationMinutesOf(state.depthChart, roster, state.minutes), gamesRemaining, INJURY_FREQUENCY_MULT[state.settings?.injuryFrequency || "normal"]).roster;
       const box = boxArray(result.boxByPlayer, roster);
       g.played = true;
       g.result = { win: result.win, myScore: result.myScore, oppScore: result.oppScore, oppRank, box };
@@ -5544,7 +5566,7 @@ function DynastyApp({ initial, onExit }) {
       });
       roster = tickInjuries(roster);
       const gamesRemaining = Math.max(1, games.filter((x) => !x.played).length - 1);
-      roster = maybeInjure(roster, rotationMinutesOf(state.depthChart, roster, state.minutes), gamesRemaining).roster;
+      roster = maybeInjure(roster, rotationMinutesOf(state.depthChart, roster, state.minutes), gamesRemaining, INJURY_FREQUENCY_MULT[state.settings?.injuryFrequency || "normal"]).roster;
       const box = boxArray(result.boxByPlayer, roster);
       g.played = true;
       g.result = { win: result.win, myScore: result.myScore, oppScore: result.oppScore, oppRank, box };
@@ -6776,6 +6798,10 @@ function DynastyApp({ initial, onExit }) {
             style={{ display: "flex", alignItems: "center", gap: 8, background: "transparent", border: `1px solid ${C.line}`, color: C.dim, padding: "8px 10px", cursor: "pointer", fontSize: 12.5 }}>
             <Save size={13} /> <span className="cbb-rail-label">Save Dynasty</span>
           </button>
+          <button onClick={() => setSettingsOpen(true)} title="Settings" className="cbb-btn cbb-nav-btn"
+            style={{ display: "flex", alignItems: "center", gap: 8, background: "transparent", border: `1px solid ${C.line}`, color: C.dim, padding: "8px 10px", cursor: "pointer", fontSize: 12.5 }}>
+            <SettingsIcon size={13} /> <span className="cbb-rail-label">Settings</span>
+          </button>
           <button onClick={() => setConfirmExit(true)} title="New Dynasty" className="cbb-btn cbb-nav-btn"
             style={{ display: "flex", alignItems: "center", gap: 8, background: "transparent", border: `1px solid ${C.line}`, color: C.dim, padding: "8px 10px", cursor: "pointer", fontSize: 12.5 }}>
             <RotateCcw size={13} /> <span className="cbb-rail-label">New Dynasty</span>
@@ -6954,6 +6980,13 @@ function DynastyApp({ initial, onExit }) {
             setState((s) => ({ ...s, seasonEndJobOffer: null }));
             flash(`You're staying at ${team.name}.`);
           }}
+        />
+      )}
+      {settingsOpen && (
+        <SettingsModal
+          settings={state.settings}
+          onChange={(next) => setState((st) => ({ ...st, settings: next }))}
+          onClose={() => setSettingsOpen(false)}
         />
       )}
       {confirmExit && (
@@ -8853,6 +8886,47 @@ function Modal({ title, subtitle, onClose, children, maxWidth = 760 }) {
         <div style={{ padding: 20 }}>{children}</div>
       </div>
     </div>
+  );
+}
+
+// Player-facing preferences: injury frequency and autosave. Both apply
+// immediately (onChange merges the patch into state.settings) and persist
+// with the dynasty save like everything else — there's no separate "save
+// settings" step.
+function SettingsModal({ settings, onChange, onClose }) {
+  const s = settings || DEFAULT_SETTINGS;
+  function set(patch) { onChange({ ...s, ...patch }); }
+  const segStyle = (active) => ({
+    flex: 1, textAlign: "center", justifyContent: "center", padding: "9px 10px", fontSize: 12.5, cursor: "pointer",
+    border: `1px solid ${active ? C.wood : C.line}`,
+    background: active ? C.panelAlt : "transparent",
+    color: active ? C.cream : C.dim, fontWeight: 600,
+  });
+  return (
+    <Modal title="Settings" subtitle="Applies immediately and saves with this dynasty." onClose={onClose} maxWidth={440}>
+      <div style={{ marginBottom: 22 }}>
+        <div style={{ fontSize: 12, color: C.wood, fontWeight: 600, letterSpacing: "0.06em", marginBottom: 8 }}>INJURY FREQUENCY</div>
+        <div style={{ fontSize: 11.5, color: C.dimmer, marginBottom: 10 }}>How often players go down with injuries during games.</div>
+        <div style={{ display: "flex", gap: 8 }}>
+          {[["low", "Low"], ["normal", "Normal"], ["high", "High"]].map(([key, label]) => (
+            <button key={key} onClick={() => set({ injuryFrequency: key })} className="cbb-btn" style={segStyle(s.injuryFrequency === key)}>
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div>
+        <div style={{ fontSize: 12, color: C.wood, fontWeight: 600, letterSpacing: "0.06em", marginBottom: 8 }}>AUTOSAVE</div>
+        <div style={{ fontSize: 11.5, color: C.dimmer, marginBottom: 10 }}>Automatically save this dynasty after every action. Turn off to only save manually with the sidebar&apos;s Save Dynasty button.</div>
+        <button onClick={() => set({ autosave: !s.autosave })} className="cbb-btn"
+          style={{ padding: "9px 14px", fontSize: 12.5, cursor: "pointer", display: "flex", alignItems: "center", gap: 8,
+            border: `1px solid ${s.autosave ? C.wood : C.line}`,
+            background: s.autosave ? C.panelAlt : "transparent",
+            color: s.autosave ? C.cream : C.dim, fontWeight: 600 }}>
+          {s.autosave ? <Check size={14} /> : <X size={14} />} {s.autosave ? "Autosave on" : "Autosave off"}
+        </button>
+      </div>
+    </Modal>
   );
 }
 
@@ -11579,6 +11653,7 @@ export default function CBBDynasty() {
       scholarshipPenaltyUntilYear: null,
       postseasonBanUntilYear: null,
       riskItAttempts: 0,
+      settings: { ...DEFAULT_SETTINGS },
     };
     setPickingTeamFor(null);
     setSession(state);
