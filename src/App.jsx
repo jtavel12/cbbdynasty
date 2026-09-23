@@ -2515,7 +2515,7 @@ const TOTAL_SEASON_WEEKS = NONCONF_GAMES + CONF_GAMES;
 const OFFSEASON_WEEKS = 4;
 // Offseason player development: a fixed pool of points to distribute across the
 // whole roster, capped so no single attribute on a player gains more than this.
-const DEV_POINTS_PER_OFFSEASON = 50;
+const DEV_POINTS_PER_OFFSEASON = 20;
 const DEV_MAX_PER_ATTR = 5;
 
 // Conference games are the real, "correct" slate — every conference mate,
