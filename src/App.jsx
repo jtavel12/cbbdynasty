@@ -4355,6 +4355,24 @@ function buyoutPenalty(hireYear, seasonJustLeaving) {
   const tenure = seasonJustLeaving - hireYear + 1;
   return clamp((3 - tenure) * 4, 0, 12);
 }
+// How many years are left on the same implied 3-year term buyoutPenalty
+// grades against — surfaced in the UI so "leaving mid-contract" isn't an
+// invisible number under the hood; the math intentionally mirrors
+// buyoutPenalty's own tenure calc so the displayed figure always matches
+// the reputation hit a job change would actually apply.
+function contractYearsLeft(hireYear, currentYear) {
+  if (hireYear == null) return 3;
+  const tenure = currentYear - hireYear + 1;
+  return clamp(3 - tenure, 0, 3);
+}
+// A flavor dollar figure for what walking away mid-contract "costs" the
+// program, scaled off its own NIL budget so a blue blood's buyout reads far
+// larger than a mid-major's. Cosmetic only — the real mechanical cost is
+// the reputation hit from buyoutPenalty, applied on every job change
+// regardless of whether this number is ever shown.
+function impliedBuyoutDollars(yearsLeft, nilBudget) {
+  return Math.round((nilBudget || 0) * 0.06 * yearsLeft);
+}
 const JOB_REP_REQ = { 5: 120, 4: 70, 3: 35, 2: 12, 1: 0 };
 
 /* =========================================================================
@@ -6958,6 +6976,8 @@ function DynastyApp({ initial, onExit }) {
           nextYear={state.year + 1}
           reputation={reputation}
           coachesById={state.coachesById}
+          contractYearsLeft={contractYearsLeft(state.coach?.hireYear, state.year)}
+          buyout={impliedBuyoutDollars(contractYearsLeft(state.coach?.hireYear, state.year), (state.nilBudgetById || baselineNilBudgetById())[state.teamId] ?? nilBudgetForTeam(team))}
           onPick={changeJob}
           onClose={() => setJobPickerOpen(false)}
         />
@@ -7174,6 +7194,9 @@ function DashboardTab({ state, team, record, nextGame, stage, onSim, onPlay, onS
 
       {expectation && (() => {
         const hs = hotSeatTier(jobSecurity);
+        const yearsLeft = contractYearsLeft(state.coach?.hireYear, state.year);
+        const nilBudget = (state.nilBudgetById || baselineNilBudgetById())[state.teamId] ?? nilBudgetForTeam(team);
+        const buyout = impliedBuyoutDollars(yearsLeft, nilBudget);
         return (
           <Panel style={{ padding: "16px 20px", borderLeft: `3px solid ${hs.color}` }}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 14, flexWrap: "wrap" }}>
@@ -7188,6 +7211,15 @@ function DashboardTab({ state, team, record, nextGame, stage, onSim, onPlay, onS
                 </div>
                 <div style={{ height: 8, background: C.bg, border: `1px solid ${C.line}` }}>
                   <div style={{ height: "100%", width: `${jobSecurity}%`, background: hs.color }} />
+                </div>
+              </div>
+              <div style={{ minWidth: 150 }}>
+                <div style={{ fontSize: 11, color: C.dim, letterSpacing: "0.08em", marginBottom: 5 }}>CONTRACT</div>
+                <div style={{ fontSize: 13, color: C.cream, fontWeight: 600 }}>
+                  {yearsLeft > 0 ? `Year ${3 - yearsLeft} of 3` : "Final year"}
+                </div>
+                <div style={{ fontSize: 10.5, color: C.dim, marginTop: 2 }}>
+                  {yearsLeft > 0 ? `${formatNil(buyout)} buyout to leave early` : "No buyout left to honor"}
                 </div>
               </div>
             </div>
@@ -10364,7 +10396,7 @@ function PoachOfferModal({ offer, currentTeamName, flavorText, onAccept, onDecli
 // and be left nominally coaching a job they no longer have), and surfaces a
 // second, clearly separated path — retire this career and start an entirely
 // new dynasty — behind its own confirm step, since it deletes the save.
-function JobChangeModal({ currentTeamId, nextYear, reputation = 0, coachesById, firedFlow = false, onPick, onRestart, onClose }) {
+function JobChangeModal({ currentTeamId, nextYear, reputation = 0, coachesById, firedFlow = false, contractYearsLeft: yearsLeft = 0, buyout = 0, onPick, onRestart, onClose }) {
   const [q, setQ] = useState("");
   const [confirmingRestart, setConfirmingRestart] = useState(false);
   const filtered = TEAMS
@@ -10417,6 +10449,14 @@ function JobChangeModal({ currentTeamId, nextYear, reputation = 0, coachesById, 
               </div>
             </div>
           )}
+        </Panel>
+      )}
+      {!firedFlow && yearsLeft > 0 && (
+        <Panel style={{ padding: "10px 14px", marginBottom: 16, borderLeft: `3px solid ${C.wood}` }}>
+          <div style={{ fontSize: 12, color: C.dim }}>
+            You&apos;re {3 - yearsLeft} year{3 - yearsLeft === 1 ? "" : "s"} into an implied 3-year deal at {currentTeamName}.
+            Leaving now costs reputation and reads as a <strong style={{ color: C.gold }}>{formatNil(buyout)}</strong> buyout on the way out.
+          </div>
         </Panel>
       )}
       {!noOffers && (
