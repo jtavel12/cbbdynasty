@@ -2484,7 +2484,7 @@
     "conf": "SWAC",
     "tier": "Low",
     "prestige": 2,
-    "annualNilBudget": 70000,
+    "annualNilBudget": 75000,
     "basis": "Estimated"
   },
   {
@@ -2492,7 +2492,7 @@
     "conf": "America East",
     "tier": "Low",
     "prestige": 2,
-    "annualNilBudget": 70000,
+    "annualNilBudget": 75000,
     "basis": "Estimated"
   },
   {
@@ -2500,7 +2500,7 @@
     "conf": "SWAC",
     "tier": "Low",
     "prestige": 2,
-    "annualNilBudget": 70000,
+    "annualNilBudget": 75000,
     "basis": "Estimated"
   },
   {
@@ -2508,7 +2508,7 @@
     "conf": "UAC",
     "tier": "Low",
     "prestige": 2,
-    "annualNilBudget": 70000,
+    "annualNilBudget": 75000,
     "basis": "Estimated"
   },
   {
@@ -2532,7 +2532,7 @@
     "conf": "MEAC",
     "tier": "Low",
     "prestige": 2,
-    "annualNilBudget": 70000,
+    "annualNilBudget": 75000,
     "basis": "Estimated"
   },
   {
@@ -2540,7 +2540,7 @@
     "conf": "UAC",
     "tier": "Low",
     "prestige": 2,
-    "annualNilBudget": 70000,
+    "annualNilBudget": 75000,
     "basis": "Estimated"
   },
   {
@@ -2556,7 +2556,7 @@
     "conf": "MEAC",
     "tier": "Low",
     "prestige": 2,
-    "annualNilBudget": 70000,
+    "annualNilBudget": 75000,
     "basis": "Estimated"
   },
   {
@@ -2564,7 +2564,7 @@
     "conf": "Southland",
     "tier": "Low",
     "prestige": 2,
-    "annualNilBudget": 30000,
+    "annualNilBudget": 75000,
     "basis": "Estimated (prestige adjusted by user; average of 6 same-conference prestige-1 peer(s))"
   },
   {
@@ -2572,7 +2572,7 @@
     "conf": "Southland",
     "tier": "Low",
     "prestige": 2,
-    "annualNilBudget": 70000,
+    "annualNilBudget": 75000,
     "basis": "Estimated"
   },
   {
@@ -2580,7 +2580,7 @@
     "conf": "UAC",
     "tier": "Low",
     "prestige": 2,
-    "annualNilBudget": 70000,
+    "annualNilBudget": 75000,
     "basis": "Estimated"
   },
   {
@@ -2588,7 +2588,7 @@
     "conf": "Southland",
     "tier": "Low",
     "prestige": 2,
-    "annualNilBudget": 70000,
+    "annualNilBudget": 75000,
     "basis": "Estimated (prestige adjusted by user; no higher-prestige peer in conference; matched nearest peer at prestige 2 ($70,000))"
   },
   {
@@ -2596,7 +2596,7 @@
     "conf": "SWAC",
     "tier": "Low",
     "prestige": 2,
-    "annualNilBudget": 70000,
+    "annualNilBudget": 75000,
     "basis": "Estimated"
   },
   {
@@ -2604,7 +2604,7 @@
     "conf": "MEAC",
     "tier": "Low",
     "prestige": 2,
-    "annualNilBudget": 70000,
+    "annualNilBudget": 75000,
     "basis": "Estimated"
   },
   {
@@ -2612,7 +2612,7 @@
     "conf": "MEAC",
     "tier": "Low",
     "prestige": 2,
-    "annualNilBudget": 70000,
+    "annualNilBudget": 75000,
     "basis": "Estimated"
   },
   {
@@ -2620,7 +2620,7 @@
     "conf": "MEAC",
     "tier": "Low",
     "prestige": 2,
-    "annualNilBudget": 70000,
+    "annualNilBudget": 75000,
     "basis": "Estimated"
   },
   {
@@ -2628,7 +2628,7 @@
     "conf": "SWAC",
     "tier": "Low",
     "prestige": 2,
-    "annualNilBudget": 70000,
+    "annualNilBudget": 75000,
     "basis": "Estimated"
   },
   {
@@ -2636,7 +2636,7 @@
     "conf": "Southland",
     "tier": "Low",
     "prestige": 2,
-    "annualNilBudget": 70000,
+    "annualNilBudget": 75000,
     "basis": "Estimated (prestige adjusted by user; no higher-prestige peer in conference; matched nearest peer at prestige 2 ($70,000))"
   },
   {
@@ -2644,7 +2644,7 @@
     "conf": "SWAC",
     "tier": "Low",
     "prestige": 2,
-    "annualNilBudget": 70000,
+    "annualNilBudget": 75000,
     "basis": "Estimated"
   },
   {
@@ -2652,7 +2652,7 @@
     "conf": "America East",
     "tier": "Low",
     "prestige": 2,
-    "annualNilBudget": 70000,
+    "annualNilBudget": 75000,
     "basis": "Estimated"
   },
   {
@@ -2668,7 +2668,7 @@
     "conf": "UAC",
     "tier": "Low",
     "prestige": 1,
-    "annualNilBudget": 30000,
+    "annualNilBudget": 75000,
     "basis": "Estimated"
   },
   {
@@ -2676,7 +2676,7 @@
     "conf": "SWAC",
     "tier": "Low",
     "prestige": 1,
-    "annualNilBudget": 30000,
+    "annualNilBudget": 75000,
     "basis": "Estimated"
   },
   {
@@ -2684,7 +2684,7 @@
     "conf": "SWAC",
     "tier": "Low",
     "prestige": 1,
-    "annualNilBudget": 30000,
+    "annualNilBudget": 75000,
     "basis": "Estimated"
   },
   {
@@ -2692,7 +2692,7 @@
     "conf": "SWAC",
     "tier": "Low",
     "prestige": 1,
-    "annualNilBudget": 30000,
+    "annualNilBudget": 75000,
     "basis": "Estimated"
   },
   {
@@ -2700,7 +2700,7 @@
     "conf": "America East",
     "tier": "Low",
     "prestige": 1,
-    "annualNilBudget": 30000,
+    "annualNilBudget": 75000,
     "basis": "Estimated"
   },
   {
@@ -2708,7 +2708,7 @@
     "conf": "America East",
     "tier": "Low",
     "prestige": 1,
-    "annualNilBudget": 70000,
+    "annualNilBudget": 75000,
     "basis": "Estimated (prestige adjusted by user; average of 2 same-conference prestige-2 peer(s))"
   },
   {
@@ -2716,7 +2716,7 @@
     "conf": "UAC",
     "tier": "Low",
     "prestige": 1,
-    "annualNilBudget": 30000,
+    "annualNilBudget": 75000,
     "basis": "Estimated"
   },
   {
@@ -2724,7 +2724,7 @@
     "conf": "MEAC",
     "tier": "Low",
     "prestige": 1,
-    "annualNilBudget": 30000,
+    "annualNilBudget": 75000,
     "basis": "Estimated"
   },
   {
@@ -2732,7 +2732,7 @@
     "conf": "Southland",
     "tier": "Low",
     "prestige": 1,
-    "annualNilBudget": 30000,
+    "annualNilBudget": 75000,
     "basis": "Estimated"
   },
   {
@@ -2740,7 +2740,7 @@
     "conf": "SWAC",
     "tier": "Low",
     "prestige": 1,
-    "annualNilBudget": 30000,
+    "annualNilBudget": 75000,
     "basis": "Estimated"
   },
   {
@@ -2748,7 +2748,7 @@
     "conf": "SWAC",
     "tier": "Low",
     "prestige": 1,
-    "annualNilBudget": 30000,
+    "annualNilBudget": 75000,
     "basis": "Estimated"
   },
   {
@@ -2756,7 +2756,7 @@
     "conf": "Southland",
     "tier": "Low",
     "prestige": 1,
-    "annualNilBudget": 30000,
+    "annualNilBudget": 75000,
     "basis": "Estimated"
   },
   {
@@ -2764,7 +2764,7 @@
     "conf": "Southland",
     "tier": "Low",
     "prestige": 1,
-    "annualNilBudget": 30000,
+    "annualNilBudget": 75000,
     "basis": "Estimated"
   },
   {
@@ -2772,7 +2772,7 @@
     "conf": "SWAC",
     "tier": "Low",
     "prestige": 1,
-    "annualNilBudget": 30000,
+    "annualNilBudget": 75000,
     "basis": "Estimated"
   },
   {
@@ -2780,7 +2780,7 @@
     "conf": "MEAC",
     "tier": "Low",
     "prestige": 1,
-    "annualNilBudget": 30000,
+    "annualNilBudget": 75000,
     "basis": "Estimated"
   },
   {
@@ -2788,7 +2788,7 @@
     "conf": "MEAC",
     "tier": "Low",
     "prestige": 1,
-    "annualNilBudget": 30000,
+    "annualNilBudget": 75000,
     "basis": "Estimated"
   },
   {
@@ -2796,7 +2796,7 @@
     "conf": "America East",
     "tier": "Low",
     "prestige": 1,
-    "annualNilBudget": 30000,
+    "annualNilBudget": 75000,
     "basis": "Estimated"
   },
   {
@@ -2804,7 +2804,7 @@
     "conf": "America East",
     "tier": "Low",
     "prestige": 1,
-    "annualNilBudget": 30000,
+    "annualNilBudget": 75000,
     "basis": "Estimated"
   },
   {
@@ -2812,7 +2812,7 @@
     "conf": "Southland",
     "tier": "Low",
     "prestige": 1,
-    "annualNilBudget": 30000,
+    "annualNilBudget": 75000,
     "basis": "Estimated"
   },
   {
@@ -2820,7 +2820,7 @@
     "conf": "UAC",
     "tier": "Low",
     "prestige": 1,
-    "annualNilBudget": 30000,
+    "annualNilBudget": 75000,
     "basis": "Estimated"
   },
   {
@@ -2828,7 +2828,7 @@
     "conf": "Southland",
     "tier": "Low",
     "prestige": 1,
-    "annualNilBudget": 30000,
+    "annualNilBudget": 75000,
     "basis": "Estimated"
   },
   {
@@ -2836,7 +2836,7 @@
     "conf": "SWAC",
     "tier": "Low",
     "prestige": 1,
-    "annualNilBudget": 30000,
+    "annualNilBudget": 75000,
     "basis": "Estimated"
   },
   {
@@ -2844,7 +2844,7 @@
     "conf": "Southland",
     "tier": "Low",
     "prestige": 1,
-    "annualNilBudget": 30000,
+    "annualNilBudget": 75000,
     "basis": "Estimated"
   },
   {
@@ -2852,7 +2852,7 @@
     "conf": "UAC",
     "tier": "Low",
     "prestige": 1,
-    "annualNilBudget": 30000,
+    "annualNilBudget": 75000,
     "basis": "Estimated"
   },
   {
@@ -2860,7 +2860,7 @@
     "conf": "Southland",
     "tier": "Low",
     "prestige": 1,
-    "annualNilBudget": 70000,
+    "annualNilBudget": 75000,
     "basis": "Estimated (prestige adjusted by user; average of 1 same-conference prestige-2 peer(s))"
   },
   {
@@ -2868,7 +2868,7 @@
     "conf": "Southland",
     "tier": "Low",
     "prestige": 1,
-    "annualNilBudget": 70000,
+    "annualNilBudget": 75000,
     "basis": "Estimated (prestige adjusted by user; average of 1 same-conference prestige-2 peer(s))"
   },
   {
@@ -2884,7 +2884,7 @@
     "conf": "America East",
     "tier": "Low",
     "prestige": 1,
-    "annualNilBudget": 30000,
+    "annualNilBudget": 75000,
     "basis": "Estimated"
   },
   {
@@ -2892,7 +2892,7 @@
     "conf": "America East",
     "tier": "Low",
     "prestige": 1,
-    "annualNilBudget": 30000,
+    "annualNilBudget": 75000,
     "basis": "Estimated"
   },
   {
@@ -2900,7 +2900,7 @@
     "conf": "America East",
     "tier": "Low",
     "prestige": 1,
-    "annualNilBudget": 30000,
+    "annualNilBudget": 75000,
     "basis": "Estimated"
   },
   {
@@ -2908,7 +2908,7 @@
     "conf": "UAC",
     "tier": "Low",
     "prestige": 1,
-    "annualNilBudget": 30000,
+    "annualNilBudget": 75000,
     "basis": "Estimated"
   },
   {
@@ -2916,7 +2916,7 @@
     "conf": "UAC",
     "tier": "Low",
     "prestige": 1,
-    "annualNilBudget": 30000,
+    "annualNilBudget": 75000,
     "basis": "Estimated"
   }
 ]

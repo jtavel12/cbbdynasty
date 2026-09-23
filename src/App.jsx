@@ -2910,7 +2910,7 @@ const MID_MAJOR_CONFS = new Set([
 const NIL_TIER_RANGES = {
   high: [800_000, 4_000_000],
   mid: [150_000, 900_000],
-  low: [20_000, 250_000],
+  low: [75_000, 250_000],
 };
 // Hard per-tier NIL budget ceilings — high major $20M, mid major $5M, low
 // major $500K. No team's budget, including real starting data and any
