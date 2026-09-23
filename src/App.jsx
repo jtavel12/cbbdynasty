@@ -10142,13 +10142,6 @@ function VisitExperience({ recruit, actionKey, team, onClose, onFinish }) {
   const [step, setStep] = useState(0);          // which moment we're on
   const [picked, setPicked] = useState(null);   // outcome of the current moment, pre-continue
   const [log, setLog] = useState([]);           // [{ prompt, choice, gain, blurb }]
-  // Every stop, independently, has exactly one of its 3 options (picked
-  // fresh each stop, never the same slot twice in a row on purpose) secretly
-  // primed to backfire. The coach never knows which before clicking, so
-  // across one 3-stop visit the number of bad stops is genuinely random —
-  // 0, 1, 2, or 3 — each option a true 1-in-3 shot independent of the
-  // others, not a guaranteed exactly-one-per-visit like before.
-  const negativeIndex = useMemo(() => randInt(0, 2), [step]);
   const cost = actionCostFor(actionKey, recruit, team);
   const miles = recruitDistanceMiles(recruit, team);
   const total = log.reduce((a, e) => a + e.gain, 0);
@@ -10159,7 +10152,10 @@ function VisitExperience({ recruit, actionKey, team, onClose, onFinish }) {
     const base = rand(script.perMoment[0], script.perMoment[1]);
     const expected = (script.perMoment[0] + script.perMoment[1]) / 2;
     const rawGain = rollVisitGain(opt.tone, base);
-    const backfired = i === negativeIndex;
+    // Every stop is an independent 1-in-3 shot at backfiring, regardless of
+    // which option is picked — over a 3-stop visit that means 0, 1, 2, or 3
+    // bad stops are all genuinely possible, not a guaranteed exactly-one.
+    const backfired = Math.random() < 1 / 3;
     const gain = backfired ? -rawGain : rawGain;
     const blurb = backfired ? "Something about this one just doesn't land — hard to say why." : visitOutcomeBlurb(opt.tone, gain, expected);
     setPicked({ choice: visitLabelFor(opt.label, recruit), gain, blurb });
