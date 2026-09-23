@@ -4772,6 +4772,25 @@ function rivalTeamIds(teamId) {
   return new Set(mates.slice(0, 2).map((x) => x.id));
 }
 
+// A one-line "bulletin board material" flavor quote shown ahead of a
+// rivalry game — purely cosmetic, seeded off the same seasonRngFor a CPU
+// team's schedule already uses, so the same matchup always shows the same
+// line for a given seed/week instead of flickering on every re-render.
+const BULLETIN_BOARD_LINES = [
+  "Beat writers are calling this one personal.",
+  "“They’ve owned this series too long,” one senior said in practice this week.",
+  "The staff has had this game circled on the calendar since preseason.",
+  "Fans have been counting down to this one since the final buzzer last time.",
+  "Nobody in that locker room wants to be the team that lost this one at home.",
+  "Last year’s box score has been taped up in the locker room all week.",
+  "This matchup always finds an extra gear nobody sees coming.",
+  "Both benches have a few extra words saved up for this one.",
+];
+function bulletinBoardLine(seasonSeed, oppId, year, week) {
+  const rng = seasonRngFor(seasonSeed ?? 0, `bb:${oppId}:${week}`, year);
+  return pick(BULLETIN_BOARD_LINES, rng);
+}
+
 // Positions with at most one returning (non-senior) player — where next year's
 // class is thinnest.
 function positionNeeds(roster) {
@@ -6875,6 +6894,7 @@ function DynastyApp({ initial, onExit }) {
               jobSecurity={state.coach?.jobSecurity ?? 60}
               rankById={rankById}
               headlines={headlines}
+              rivalIds={rivalIds}
               onViewPlayer={setPlayerViewId} />
           )}
           {tab === "roster" && <RosterTab roster={state.roster} onViewPlayer={setPlayerViewId} onChangePosition={changePlayerPosition} />}
@@ -7132,7 +7152,7 @@ function DynastyApp({ initial, onExit }) {
 }
 
 /* ---------- Dashboard ---------- */
-function DashboardTab({ state, team, record, nextGame, stage, onSim, onPlay, onSimToConf, onSimSeason, onEnterPostseason, onEnterOffseason, onGoTab, onAdvanceYear, reputation, bracketology, expectation, jobSecurity, rankById, headlines, onViewPlayer }) {
+function DashboardTab({ state, team, record, nextGame, stage, onSim, onPlay, onSimToConf, onSimSeason, onEnterPostseason, onEnterOffseason, onGoTab, onAdvanceYear, reputation, bracketology, expectation, jobSecurity, rankById, headlines, rivalIds, onViewPlayer }) {
   const overall = Math.round(userTeamOverall(state.roster, state.depthChart, state.minutes));
   const topPlayer = [...state.roster].sort((a, b) => b.overall - a.overall)[0];
   const injured = state.roster.filter(isHurt);
@@ -7273,6 +7293,11 @@ function DashboardTab({ state, team, record, nextGame, stage, onSim, onPlay, onS
                 <div style={{ fontSize: 12, color: C.dim, marginTop: 4 }}>
                   Week {nextGame.week} · {TEAM_MAP[nextGame.oppId].conf} · {nextGame.conf ? "Conference" : "Non-conference"}
                 </div>
+                {rivalIds && rivalIds.has(nextGame.oppId) && (
+                  <div style={{ fontSize: 11.5, color: C.wood, marginTop: 6, fontStyle: "italic", display: "flex", alignItems: "center", gap: 5 }}>
+                    <Flame size={11} /> Rivalry week — {bulletinBoardLine(state.seasonSeed, nextGame.oppId, state.year, nextGame.week)}
+                  </div>
+                )}
               </div>
               <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
                 <button onClick={onPlay} className="cbb-btn" style={btnStyle(C.gold, "#221a00")}><Gauge size={13} /> Play Game</button>
