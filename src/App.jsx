@@ -3957,6 +3957,12 @@ const DEFAULT_SETTINGS = {
   autosave: true,
 };
 const INJURY_FREQUENCY_MULT = { low: 0.55, normal: 1, high: 1.7 };
+// A weekly, re-chosen-every-game practice plan: easing off practice trims
+// injury risk for the coming game at no other cost, framed as a real
+// load-management decision rather than a permanent settings toggle. Reset
+// to "normal" every time commitGameResult applies a result, so the coach
+// has to actively choose "light" again each week rather than set-and-forget.
+const PRACTICE_MODE_INJURY_MULT = { normal: 1, light: 0.7 };
 
 // Per-game injury risk for one player: scales up with minutes load (heavy
 // workload, more wear) and down with durability (a tougher player shrugs off
@@ -5493,7 +5499,8 @@ function DynastyApp({ initial, onExit }) {
       const lead = result.liveInjuries[0];
       inj = { injured: { id: lead.id, name: lead.name, type: lead.type, games: lead.gamesOut, seasonEnding: lead.seasonEnding, extra: result.liveInjuries.length - 1 } };
     } else {
-      inj = maybeInjure(roster, rotationMinutesOf(state.depthChart, roster, state.minutes), gamesRemaining, INJURY_FREQUENCY_MULT[state.settings?.injuryFrequency || "normal"]);
+      const freqMult = INJURY_FREQUENCY_MULT[state.settings?.injuryFrequency || "normal"] * PRACTICE_MODE_INJURY_MULT[state.practiceMode || "normal"];
+      inj = maybeInjure(roster, rotationMinutesOf(state.depthChart, roster, state.minutes), gamesRemaining, freqMult);
       roster = inj.roster;
     }
     const box = boxArray(result.boxByPlayer, state.roster);
@@ -5515,7 +5522,7 @@ function DynastyApp({ initial, onExit }) {
       rivalryLedger = { ...rivalryLedger, [nextGame.oppId]: { w: prev.w + (result.win ? 1 : 0), l: prev.l + (result.win ? 0 : 1) } };
     }
 
-    setState((s) => ({ ...s, roster, schedule, recruitingBoard, recruitingPoints, recruitingWeekIndex: newWeekIndex, rivalryLedger }));
+    setState((s) => ({ ...s, roster, schedule, recruitingBoard, recruitingPoints, recruitingWeekIndex: newWeekIndex, rivalryLedger, practiceMode: "normal" }));
     setBoxViewId(thisGameId);
 
     const sig = result.win && oppRank && oppRank <= 25;
@@ -5543,7 +5550,8 @@ function DynastyApp({ initial, onExit }) {
     const oppPower = teamPowerRating(opp, state.strengths, state.year);
     const mom = momentumMod(currentStreak(state.schedule));
     const gamesRemaining = Math.max(1, state.schedule.filter((g) => !g.played).length - 1);
-    setLivePlay({ teamId: state.teamId, opp, oppId: nextGame.oppId, oppPower, oppRank: rankById[nextGame.oppId] || null, home: nextGame.home, momentum: mom, roster: state.roster, dc: state.depthChart, powerBaseline, gamesRemaining, year: state.year });
+    const injuryMult = INJURY_FREQUENCY_MULT[state.settings?.injuryFrequency || "normal"] * PRACTICE_MODE_INJURY_MULT[state.practiceMode || "normal"];
+    setLivePlay({ teamId: state.teamId, opp, oppId: nextGame.oppId, oppPower, oppRank: rankById[nextGame.oppId] || null, home: nextGame.home, momentum: mom, roster: state.roster, dc: state.depthChart, powerBaseline, gamesRemaining, year: state.year, injuryMult });
   }
 
   function simToEndOfSeason() {
@@ -6021,6 +6029,7 @@ function DynastyApp({ initial, onExit }) {
       oppRank: rankById[oppId] || null, home: true, momentum: mom,
       roster: state.roster, dc: state.depthChart, powerBaseline, gamesRemaining: 1,
       isPostseason: true, loc, year: state.year,
+      injuryMult: INJURY_FREQUENCY_MULT[state.settings?.injuryFrequency || "normal"],
     });
   }
 
@@ -6895,6 +6904,7 @@ function DynastyApp({ initial, onExit }) {
               rankById={rankById}
               headlines={headlines}
               rivalIds={rivalIds}
+              onSetPracticeMode={(mode) => setState((s) => ({ ...s, practiceMode: mode }))}
               onViewPlayer={setPlayerViewId} />
           )}
           {tab === "roster" && <RosterTab roster={state.roster} onViewPlayer={setPlayerViewId} onChangePosition={changePlayerPosition} />}
@@ -7152,7 +7162,7 @@ function DynastyApp({ initial, onExit }) {
 }
 
 /* ---------- Dashboard ---------- */
-function DashboardTab({ state, team, record, nextGame, stage, onSim, onPlay, onSimToConf, onSimSeason, onEnterPostseason, onEnterOffseason, onGoTab, onAdvanceYear, reputation, bracketology, expectation, jobSecurity, rankById, headlines, rivalIds, onViewPlayer }) {
+function DashboardTab({ state, team, record, nextGame, stage, onSim, onPlay, onSimToConf, onSimSeason, onEnterPostseason, onEnterOffseason, onGoTab, onAdvanceYear, reputation, bracketology, expectation, jobSecurity, rankById, headlines, rivalIds, onSetPracticeMode, onViewPlayer }) {
   const overall = Math.round(userTeamOverall(state.roster, state.depthChart, state.minutes));
   const topPlayer = [...state.roster].sort((a, b) => b.overall - a.overall)[0];
   const injured = state.roster.filter(isHurt);
@@ -7308,6 +7318,23 @@ function DashboardTab({ state, team, record, nextGame, stage, onSim, onPlay, onS
                 <button onClick={onSimSeason} className="cbb-btn" style={btnStyle(C.panelAlt, C.cream)}><FastForward size={13} /> Sim Rest of Season</button>
               </div>
             </div>
+            {typeof onSetPracticeMode === "function" && (
+              <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 14, paddingTop: 14, borderTop: `1px solid ${C.line}` }}>
+                <span style={{ fontSize: 11, color: C.dim, letterSpacing: "0.06em" }}>THIS WEEK&apos;S PRACTICE</span>
+                {[["normal", "Normal reps"], ["light", "Ease off (lower injury risk)"]].map(([key, label]) => {
+                  const active = (state.practiceMode || "normal") === key;
+                  return (
+                    <button key={key} onClick={() => onSetPracticeMode(key)} className="cbb-btn"
+                      style={{ fontSize: 11.5, padding: "5px 10px", cursor: "pointer",
+                        border: `1px solid ${active ? C.wood : C.line}`,
+                        background: active ? C.panelAlt : "transparent",
+                        color: active ? C.cream : C.dim, fontWeight: 600 }}>
+                      {label}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
           </>
         )}
         {stage === "prePostseason" && (
@@ -9449,7 +9476,7 @@ function stepLive(g, ctx, forcedAction = null) {
     const after = before + minDelta;
     boxMinutes[id] = after;
     if (gameInjuries.some((h) => h.id === id)) return;
-    const riskDelta = Math.max(0, injuryRiskFor(after, pl.durability) - injuryRiskFor(before, pl.durability));
+    const riskDelta = Math.max(0, injuryRiskFor(after, pl.durability, ctx.injuryMult) - injuryRiskFor(before, pl.durability, ctx.injuryMult));
     if (Math.random() < riskDelta) {
       const type = pickInjuryType(pl.durability);
       const gamesOut = injuryLengthFor(type, ctx.gamesRemaining);
@@ -9946,7 +9973,8 @@ function LiveGame({ ctxInit, onFinish, onClose, onScoutOpponent }) {
   const ctx = useMemo(() => ({
     roster: ctxInit.roster, dc: ctxInit.dc, oppName: ctxInit.opp.name,
     oppPower: ctxInit.oppPower, myPower, tend, gamesRemaining: ctxInit.gamesRemaining ?? 1, recommended, ...oppTeamState,
-  }), [ctxInit.roster, ctxInit.dc, ctxInit.opp.name, ctxInit.oppPower, myPower, tend, ctxInit.gamesRemaining, recommended, oppTeamState]);
+    injuryMult: ctxInit.injuryMult ?? 1,
+  }), [ctxInit.roster, ctxInit.dc, ctxInit.opp.name, ctxInit.oppPower, myPower, tend, ctxInit.gamesRemaining, recommended, oppTeamState, ctxInit.injuryMult]);
   const gctx = useMemo(() => ({ ...ctx, T: totalPoss }), [ctx, totalPoss]);
 
   // Put `inId` on the floor at `pos` in `outId`'s place, starting the very
