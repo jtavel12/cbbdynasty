@@ -2981,11 +2981,16 @@ function baselineNilBudgetById() {
 }
 
 // $2.1M / $450K / $8,200-style compact formatting for budgets and offers.
+// A budget can now run negative (see advanceProgramBudgets) so the sign is
+// pulled out and reapplied around the magnitude rather than falling through
+// to something like "$-500K".
 function formatNil(n) {
-  const v = Math.round(n || 0);
-  if (v >= 1_000_000) return `$${(v / 1_000_000).toFixed(v >= 10_000_000 ? 0 : 1)}M`;
-  if (v >= 1_000) return `$${Math.round(v / 1_000)}K`;
-  return `$${v.toLocaleString()}`;
+  const raw = Math.round(n || 0);
+  const sign = raw < 0 ? "-" : "";
+  const v = Math.abs(raw);
+  if (v >= 1_000_000) return `${sign}$${(v / 1_000_000).toFixed(v >= 10_000_000 ? 0 : 1)}M`;
+  if (v >= 1_000) return `${sign}$${Math.round(v / 1_000)}K`;
+  return `${sign}$${v.toLocaleString()}`;
 }
 
 /* =========================================================================
@@ -4433,9 +4438,10 @@ function draftBoard(early, seniors) {
    A small, deliberately minimal staff system: two hireable roles, each
    giving a small bounded bonus to one already-isolated number (weekly
    recruiting points, offseason development points) rather than touching
-   any simulation math. No salaries or contracts yet — hiring is free and
-   instant, framed as a real quality-of-staff decision rather than a
-   negotiation. `state.assistants` is `{ recruiting: Assistant|null,
+   any simulation math. Hiring itself is instant and free — the actual cost
+   is an annual salary (see assistantSalaryFor), billed out of the program
+   budget alongside the head coach's every season. `state.assistants` is
+   `{ recruiting: Assistant|null,
    development: Assistant|null }`; an Assistant is `{ id, name, rating }`.
    A new job (changeJob) or a new dynasty starts with an empty staff, same
    as a real coach doesn't bring their old school's assistants with them.
@@ -4450,6 +4456,16 @@ const ASSISTANT_ROLES = {
 function assistantBonus(assistant) {
   if (!assistant) return 0;
   return Math.round((assistant.rating - 50) / 5);
+}
+// An assistant's own annual salary — paid out of the program budget right
+// alongside the head coach's (see coachSalaryFor), scaled by the program's
+// tier and how good a name that assistant actually is.
+const ASSISTANT_SALARY_BASE = { high: 250_000, mid: 100_000, low: 40_000 };
+function assistantSalaryFor(assistant, team) {
+  if (!assistant) return 0;
+  const base = ASSISTANT_SALARY_BASE[nilTierFor(team)];
+  const ratingMult = clamp(0.5 + (assistant.rating || 50) / 100, 0.5, 1.5);
+  return Math.round(base * ratingMult);
 }
 // Three fresh candidates for a role, skewed toward the hiring program's own
 // prestige the same way nilBudgetForTeam skews toward conference tier —
@@ -4485,14 +4501,16 @@ function baselineProgramBudgetById() {
 }
 // `growthRatioById` is NIL's own actual per-team growth ratio this season
 // (from advanceNilBudgets) — program budget mirrors it exactly, uncapped,
-// plus a little more from the Arena & Fan Experience facility on top.
+// plus a little more from the Arena & Fan Experience facility on top. No
+// floor either — overspend on staff or facilities and the program carries
+// that deficit into the next season same as any real athletic department.
 function advanceProgramBudgets(prevById, growthRatioById, facilitiesById) {
   const next = {};
   for (const t of TEAMS) {
     const prev = prevById[t.id] ?? programBudgetForTeam(t);
     const rate = (growthRatioById && growthRatioById[t.id]) || 0;
     const arenaLevel = facilitiesById?.[t.id]?.arena || 0;
-    next[t.id] = Math.round(Math.max(0, prev * (1 + rate + arenaLevel * 0.01)));
+    next[t.id] = Math.round(prev * (1 + rate + arenaLevel * 0.01));
   }
   return next;
 }
@@ -5925,6 +5943,12 @@ function DynastyApp({ initial, onExit }) {
     setState((s) => {
       const os = s.offseason;
       if (!os || os.nilLocked) return s;
+      // Mirrors the oversigned-roster gate: a roster still over its own NIL
+      // budget can't be locked in for the year until the coach trims it back
+      // under (see trimPlayerNil) — the button itself stays disabled too,
+      // this is just the same guard enforced at the state layer.
+      const budget = (s.nilBudgetById || baselineNilBudgetById())[s.teamId] ?? 0;
+      if (committedRosterNil(s.roster, os, null) > budget) return s;
       const draftDeclarations = decideEarlyDeclarations(s.roster);
       const transferRisks = computeTransferRisks(s.roster, s.minutes, team, new Set(draftDeclarations.map((d) => d.id)));
       return { ...s, offseason: { ...os, nilLocked: true, draftDeclarations, transferRisks } };
@@ -6024,7 +6048,32 @@ function DynastyApp({ initial, onExit }) {
       if (!player) return s;
       const budget = (s.nilBudgetById || baselineNilBudgetById())[s.teamId] ?? 0;
       const available = nilAvailableAmount(budget, s.roster, s.offseason, s.recruitingBoard, s.teamId, playerId);
-      const nil = clamp(Math.round(Number(amount) || 0), 0, available);
+      // The ceiling is whichever is higher of "room actually available" or
+      // "what this player is already on" — otherwise a roster that starts
+      // (or arrives) over budget purely from OTHER players' figures would
+      // force this player's own edit down to $0 the moment it's touched,
+      // even if the coach only meant to lower it slightly. Matches the max
+      // RosterNilPanel's NilAmountInput already shows the coach.
+      const ceiling = Math.max(player.nil || 0, available);
+      const nil = clamp(Math.round(Number(amount) || 0), 0, ceiling);
+      return { ...s, roster: s.roster.map((p) => p.id === playerId ? { ...p, nil } : p) };
+    });
+  }
+
+  // A one-click way to bring an over-budget roster back in line, the same
+  // role "Cut" plays for an oversigned roster: knocks exactly the current
+  // overage off one chosen player's NIL (floored at $0), so the coach picks
+  // who eats the cut rather than the whole roster silently getting rescaled.
+  function trimPlayerNil(playerId) {
+    setState((s) => {
+      const os = s.offseason;
+      if (!os || os.nilLocked) return s;
+      const budget = (s.nilBudgetById || baselineNilBudgetById())[s.teamId] ?? 0;
+      const overage = committedRosterNil(s.roster, os, null) - budget;
+      if (overage <= 0) return s;
+      const player = s.roster.find((p) => p.id === playerId);
+      if (!player) return s;
+      const nil = Math.max(0, Math.round((player.nil || 0) - overage));
       return { ...s, roster: s.roster.map((p) => p.id === playerId ? { ...p, nil } : p) };
     });
   }
@@ -6882,10 +6931,13 @@ function DynastyApp({ initial, onExit }) {
     const nextProgramBudgetById = advanceProgramBudgets(
       state.programBudgetById || baselineProgramBudgetById(), growthRatioById, state.facilitiesById
     );
-    // Coach salary comes out of the program budget once per season — never
-    // NIL, that's player money.
+    // Coach and assistant staff salaries come out of the program budget once
+    // per season — never NIL, that's player money.
     const coachSalary = coachSalaryFor(team, reputation);
-    nextProgramBudgetById[state.teamId] = Math.max(0, (nextProgramBudgetById[state.teamId] ?? 0) - coachSalary);
+    const assistantSalaries = Object.values(state.assistants || {}).reduce(
+      (sum, a) => sum + assistantSalaryFor(a, team), 0
+    );
+    nextProgramBudgetById[state.teamId] = (nextProgramBudgetById[state.teamId] ?? 0) - coachSalary - assistantSalaries;
 
     // The schedule the coach just confirmed via ScheduleSetupModal (right
     // before hitting "Begin Season" — see the seasonScheduleReview gate in
@@ -6894,7 +6946,7 @@ function DynastyApp({ initial, onExit }) {
     // function applies.
     const rawNextSchedule = (os && os.scheduleDraft) ? os.scheduleDraft : genSchedule(team, newYear);
     const { games: nextSchedule, netDelta: scheduleFeeDelta } = applyGuaranteeFees(rawNextSchedule, team);
-    nextProgramBudgetById[state.teamId] = Math.max(0, (nextProgramBudgetById[state.teamId] ?? 0) + scheduleFeeDelta);
+    nextProgramBudgetById[state.teamId] = (nextProgramBudgetById[state.teamId] ?? 0) + scheduleFeeDelta;
 
     // Prestige movement since last season, for trend indicators.
     const prevP = state.prestigeById || baselinePrestigeById();
@@ -7067,10 +7119,13 @@ function DynastyApp({ initial, onExit }) {
     const nextProgramBudgetById = advanceProgramBudgets(
       state.programBudgetById || baselineProgramBudgetById(), growthRatioById, state.facilitiesById
     );
-    // The old job's final season still owes its coach a salary before the
-    // move — out of THAT program's budget, not the new one's.
+    // The old job's final season still owes its coach and staff a salary
+    // before the move — out of THAT program's budget, not the new one's.
     const leavingCoachSalary = coachSalaryFor(team, reputation);
-    nextProgramBudgetById[state.teamId] = Math.max(0, (nextProgramBudgetById[state.teamId] ?? 0) - leavingCoachSalary);
+    const leavingAssistantSalaries = Object.values(state.assistants || {}).reduce(
+      (sum, a) => sum + assistantSalaryFor(a, team), 0
+    );
+    nextProgramBudgetById[state.teamId] = (nextProgramBudgetById[state.teamId] ?? 0) - leavingCoachSalary - leavingAssistantSalaries;
 
     // Record book: the whole roster you're leaving behind had their stint
     // under you end right here, same as if they'd graduated.
@@ -7290,6 +7345,7 @@ function DynastyApp({ initial, onExit }) {
               coachRepScore={clamp(reputation / 150, 0, 1)}
               onPersuade={persuadePlayer}
               onSetPlayerNil={setPlayerNil}
+              onTrimNil={trimPlayerNil}
               onConfirmNil={confirmNilAllocations}
               onResolveTransferRisk={resolveTransferRisk}
               onAdvanceWeek={advanceOffseasonWeek}
@@ -9108,7 +9164,7 @@ function NilAmountInput({ value, min = 0, max, onCommit, disabled, width = 110, 
   );
 }
 
-function RosterNilPanel({ roster, nilBudget, offseason, recruitingBoard, teamId, onSetNil, onViewPlayer, locked }) {
+function RosterNilPanel({ roster, nilBudget, offseason, recruitingBoard, teamId, onSetNil, onTrimNil, overBudget, onViewPlayer, locked }) {
   const editable = roster.filter((p) => !p.generatedWalkOn).sort((a, b) => b.overall - a.overall);
   return (
     <Panel style={{ overflow: "hidden" }}>
@@ -9116,7 +9172,7 @@ function RosterNilPanel({ roster, nilBudget, offseason, recruitingBoard, teamId,
       <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13.5 }}>
         <thead>
           <tr style={{ borderBottom: `1px solid ${C.line}`, color: C.dim, fontSize: 11, textAlign: "left" }}>
-            <th style={th}>Player</th><th style={th}>Pos</th><th style={th}>Class</th><th style={th}>OVR</th><th style={th}>NIL</th>
+            <th style={th}>Player</th><th style={th}>Pos</th><th style={th}>Class</th><th style={th}>OVR</th><th style={th}>NIL</th><th style={th}></th>
           </tr>
         </thead>
         <tbody>
@@ -9136,6 +9192,14 @@ function RosterNilPanel({ roster, nilBudget, offseason, recruitingBoard, teamId,
                   disabled={p.class === "SR" || locked}
                   onCommit={(amount) => onSetNil(p.id, amount)}
                 />
+              </td>
+              <td style={td}>
+                {overBudget > 0 && p.class !== "SR" && onTrimNil && (p.nil || 0) > 0 && (
+                  <button className="cbb-btn" onClick={() => onTrimNil(p.id)}
+                    style={{ fontSize: 11.5, background: "transparent", border: `1px solid ${C.red}`, color: C.red, padding: "3px 12px", cursor: "pointer" }}>
+                    Trim
+                  </button>
+                )}
               </td>
             </tr>
           ))}
@@ -9217,7 +9281,7 @@ function TransferRiskPanel({ transferRisks, roster, nilBudget, offseason, recrui
   );
 }
 
-function OffseasonTab({ stage, offseason, hsBoard, team, roster, nextYear, committedFreshmen, scholarshipInfo, rankById, onAction, onSign, onNilOffer, nilBudget, trajectory, coachRepScore, onPersuade, onSetPlayerNil, onConfirmNil, onResolveTransferRisk, onAdvanceWeek, onChangeJob, onAdvanceYear, onViewTeam, onViewPlayer, onCut, onDev }) {
+function OffseasonTab({ stage, offseason, hsBoard, team, roster, nextYear, committedFreshmen, scholarshipInfo, rankById, onAction, onSign, onNilOffer, nilBudget, trajectory, coachRepScore, onPersuade, onSetPlayerNil, onTrimNil, onConfirmNil, onResolveTransferRisk, onAdvanceWeek, onChangeJob, onAdvanceYear, onViewTeam, onViewPlayer, onCut, onDev }) {
   if (!offseason) {
     return (
       <div>
@@ -9241,6 +9305,10 @@ function OffseasonTab({ stage, offseason, hsBoard, team, roster, nextYear, commi
   const recruitingNilPending = [...offseason.transferBoard, ...(hsBoard || [])].reduce((sum, r) =>
     sum + ((r.committedTo === team.id || !r.committedTo) ? (r.nilOffer || 0) : 0), 0);
   const committedNil = committedRosterNil(roster, offseason, null);
+  // Only the roster's own NIL counts against this gate — pending recruiting
+  // offers are already separately capped by nilAvailableAmount wherever
+  // they're made, so they can't be the cause of a roster-side overage.
+  const nilOverBudget = !nilLocked && Math.max(0, committedNil - (nilBudget || 0));
 
   return (
     <div>
@@ -9266,7 +9334,7 @@ function OffseasonTab({ stage, offseason, hsBoard, team, roster, nextYear, commi
 
       <div style={{ display: "flex", gap: 18, flexWrap: "wrap", marginBottom: 14, fontSize: 13, color: C.dim }}>
         <div>Open scholarships: <strong style={{ color: (scholarshipInfo?.open ?? 0) > 0 ? C.gold : C.red }}>{scholarshipInfo?.open ?? 0}</strong> / {scholarshipInfo?.limit ?? SCHOLARSHIP_LIMIT}</div>
-        <div>NIL committed: <strong style={{ color: C.gold }}>{formatNil(committedNil + recruitingNilPending)}</strong> / {formatNil(nilBudget)} <span style={{ color: C.dimmer }}>({formatNil(recruitingNilPending)} pending offers)</span></div>
+        <div>NIL committed: <strong style={{ color: nilOverBudget > 0 ? C.red : C.gold }}>{formatNil(committedNil + recruitingNilPending)}</strong> / {formatNil(nilBudget)} <span style={{ color: C.dimmer }}>({formatNil(recruitingNilPending)} pending offers)</span></div>
         <div>Portal points this week: <strong style={{ color: C.gold }}>{offseason.points}</strong></div>
         <div>Transfers committed: <strong style={{ color: C.cream }}>{committed.length}</strong></div>
         <div>HS signees this cycle: <strong style={{ color: C.cream }}>{committedFreshmen}</strong></div>
@@ -9281,17 +9349,20 @@ function OffseasonTab({ stage, offseason, hsBoard, team, roster, nextYear, commi
           : "Set every real player's NIL first, one row per name. Only once you confirm it below does the game reveal who's actually declaring for the draft or unhappy enough to transfer — reading their real market ask against whatever you just paid them, not a stale preseason number."}
       </div>
       <div style={{ marginBottom: nilLocked ? 18 : 10 }}>
-        <RosterNilPanel roster={roster} nilBudget={nilBudget} offseason={offseason} recruitingBoard={hsBoard} teamId={team.id} onSetNil={onSetPlayerNil} onViewPlayer={onViewPlayer} locked={nilLocked} />
+        <RosterNilPanel roster={roster} nilBudget={nilBudget} offseason={offseason} recruitingBoard={hsBoard} teamId={team.id} onSetNil={onSetPlayerNil} onTrimNil={onTrimNil} overBudget={nilOverBudget} onViewPlayer={onViewPlayer} locked={nilLocked} />
       </div>
 
       {!nilLocked ? (
         <div style={{ marginBottom: 18 }}>
-          <button onClick={onConfirmNil} className="cbb-btn"
-            style={{ ...btnStyle(C.gold, "#221a00"), fontSize: 13, padding: "10px 16px" }}>
+          <button onClick={onConfirmNil} disabled={nilOverBudget > 0} className="cbb-btn"
+            title={nilOverBudget > 0 ? `${formatNil(nilOverBudget)} over budget — trim a player's NIL first` : undefined}
+            style={{ ...btnStyle(nilOverBudget > 0 ? C.line : C.gold, nilOverBudget > 0 ? C.dimmer : "#221a00"), fontSize: 13, padding: "10px 16px", cursor: nilOverBudget > 0 ? "not-allowed" : "pointer" }}>
             <Check size={14} /> Confirm NIL Allocations
           </button>
-          <div style={{ fontSize: 11, color: C.dimmer, marginTop: 6 }}>
-            This locks the roster's NIL for the year and reveals draft declarations and transfer risk below — you won't be able to edit these figures again this offseason, but you'll still be able to offer a specific flagged player more (or let them walk) once they show up.
+          <div style={{ fontSize: 11, color: nilOverBudget > 0 ? C.red : C.dimmer, marginTop: 6 }}>
+            {nilOverBudget > 0
+              ? `Roster is ${formatNil(nilOverBudget)} over this year's NIL budget — trim a player's figure below to bring it back in line before you can lock this in.`
+              : "This locks the roster's NIL for the year and reveals draft declarations and transfer risk below — you won't be able to edit these figures again this offseason, but you'll still be able to offer a specific flagged player more (or let them walk) once they show up."}
           </div>
         </div>
       ) : (
@@ -11370,6 +11441,9 @@ function ProgramTab({ state, team, record, reputation, rivalIds, rankById, onRet
                       <div style={{ fontSize: 11, color: C.dim, marginTop: 3 }}>
                         {assistantBonus(current) >= 0 ? "+" : ""}{assistantBonus(current)} {role === "recruiting" ? "recruiting pts/wk" : "dev pts/offseason"}
                       </div>
+                      <div style={{ fontSize: 11, color: C.dimmer, marginTop: 2 }}>
+                        {formatNil(assistantSalaryFor(current, team))}/yr from program budget
+                      </div>
                     </>
                   ) : (
                     <div style={{ fontSize: 12.5, color: C.dimmer, marginBottom: 4 }}>Vacant — {info.blurb}</div>
@@ -11406,10 +11480,10 @@ function ProgramTab({ state, team, record, reputation, rivalIds, rankById, onRet
         <Panel style={{ padding: 20 }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 14, flexWrap: "wrap", marginBottom: 12 }}>
             <div style={{ fontSize: 11, color: C.dim, letterSpacing: "0.08em", display: "flex", alignItems: "center", gap: 6 }}><Building2 size={13} color={C.gold} /> FACILITIES</div>
-            <div style={{ fontSize: 12, color: C.dim }}>Program budget: <strong className="cbb-num" style={{ color: C.gold, fontSize: 14 }}>{formatNil(programBudget)}</strong></div>
+            <div style={{ fontSize: 12, color: C.dim }}>Program budget: <strong className="cbb-num" style={{ color: programBudget < 0 ? C.red : C.gold, fontSize: 14 }}>{formatNil(programBudget)}</strong></div>
           </div>
           <div style={{ fontSize: 11.5, color: C.dimmer, marginBottom: 14 }}>
-            Athletic-department capital, not player pay — seeded at half your NIL budget and growing at the same rate every season (faster with a stronger Arena), with no ceiling. Your coaching salary comes out of it too, along with these upgrades.
+            Athletic-department capital, not player pay — seeded at half your NIL budget and growing at the same rate every season (faster with a stronger Arena), with no ceiling. Your coaching salary and any assistants you hire come out of it too, along with these upgrades.
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 14 }}>
             {Object.entries(FACILITIES).map(([key, info]) => {
@@ -11788,7 +11862,7 @@ function ScheduleSetupModal({ team, year, games, programBudget, onEditGame, onCo
           A real prestige gap against a non-conference opponent means a real guarantee-game payout: the higher-tier program pays the full fee to book the game, and the lower-tier program only banks {Math.round(GUARANTEE_KEEP_PCT * 100)}% of it for their own program budget — the rest goes to the Athletic Department generally, not the team.
         </div>
         <Panel style={{ padding: "14px 18px", marginBottom: 18, display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
-          <div style={{ fontSize: 12, color: C.dim }}>Program budget: <strong className="cbb-num" style={{ color: C.gold, fontSize: 15 }}>{formatNil(programBudget)}</strong></div>
+          <div style={{ fontSize: 12, color: C.dim }}>Program budget: <strong className="cbb-num" style={{ color: programBudget < 0 ? C.red : C.gold, fontSize: 15 }}>{formatNil(programBudget)}</strong></div>
           <div style={{ fontSize: 12, color: C.dim }}>
             Net from this schedule: <strong className="cbb-num" style={{ color: netDelta >= 0 ? C.green : C.red, fontSize: 15 }}>{netDelta >= 0 ? "+" : ""}{formatNil(netDelta)}</strong>
           </div>
