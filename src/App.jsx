@@ -2681,14 +2681,19 @@ function guaranteeFeeFor(userTeam, oppTeam) {
 // Stamps every non-conference game in `slate` with its guarantee fee (or
 // null for a same-tier matchup with no real payout either way) and totals
 // the net effect on the user's own program budget — a "pay" game costs the
-// full fee, a "receive" game only banks GUARANTEE_KEEP_PCT of it.
+// full fee, a "receive" game only banks GUARANTEE_KEEP_PCT of it. A real
+// guarantee game is never a free choice of site: the higher-tier program
+// pays to host, and the lower-tier program travels for the payday — so
+// `home` gets forced to match `direction` here, the single place both the
+// live preview and the final saved schedule both flow through.
 function applyGuaranteeFees(slate, userTeam) {
   let netDelta = 0;
   const games = slate.map((g) => {
     if (g.conf) return g;
     const fee = guaranteeFeeFor(userTeam, TEAM_MAP[g.oppId]);
-    if (fee) netDelta += fee.direction === "pay" ? -fee.amount : Math.round(fee.amount * GUARANTEE_KEEP_PCT);
-    return { ...g, fee };
+    if (!fee) return { ...g, fee };
+    netDelta += fee.direction === "pay" ? -fee.amount : Math.round(fee.amount * GUARANTEE_KEEP_PCT);
+    return { ...g, fee, home: fee.direction === "pay" };
   });
   return { games, netDelta };
 }
@@ -4554,15 +4559,21 @@ function baselineProgramBudgetById() {
   return out;
 }
 // `growthRatioById` is NIL's own actual per-team growth ratio this season
-// (from advanceNilBudgets) — program budget mirrors it exactly, uncapped,
-// plus a little more from the Arena & Fan Experience facility on top.
+// (from advanceNilBudgets) — the program's fresh seasonal budget mirrors it
+// exactly, uncapped, plus a little more from the Arena & Fan Experience
+// facility on top. That fresh amount is ADDED to whatever's still sitting
+// in the account from last year, never multiplied onto it — a program that
+// spent everything down to $0 still gets a full new season's budget rather
+// than 0 * (1 + rate) staying $0 forever, and unspent money genuinely
+// carries over instead of just being the base a growth rate gets applied to.
 function advanceProgramBudgets(prevById, growthRatioById, facilitiesById) {
   const next = {};
   for (const t of TEAMS) {
-    const prev = prevById[t.id] ?? programBudgetForTeam(t);
+    const leftover = Math.max(0, prevById[t.id] ?? 0);
     const rate = (growthRatioById && growthRatioById[t.id]) || 0;
     const arenaLevel = facilitiesById?.[t.id]?.arena || 0;
-    next[t.id] = Math.round(Math.max(0, prev * (1 + rate + arenaLevel * 0.01)));
+    const seasonalBudget = Math.round(programBudgetForTeam(t) * Math.max(0, 1 + rate + arenaLevel * 0.01));
+    next[t.id] = leftover + seasonalBudget;
   }
   return next;
 }
@@ -11581,7 +11592,7 @@ function ProgramTab({ state, team, record, reputation, rivalIds, rankById, onRet
             <div style={{ fontSize: 12, color: C.dim }}>Program budget: <strong className="cbb-num" style={{ color: C.gold, fontSize: 14 }}>{formatNil(programBudget)}</strong></div>
           </div>
           <div style={{ fontSize: 11.5, color: C.dimmer, marginBottom: 14 }}>
-            Athletic-department capital, not player pay — seeded at half your NIL budget and growing at the same rate every season (faster with a stronger Arena), with no ceiling. Your coaching salary and any assistants you hire come out of it too, along with these upgrades.
+            Athletic-department capital, not player pay — a fresh seasonal budget worth half your NIL budget gets added on top every year (faster with a stronger Arena), on top of whatever you didn't spend last season, with no ceiling. Your coaching salary and any assistants you hire come out of it too, along with these upgrades.
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 14 }}>
             {Object.entries(FACILITIES).map(([key, info]) => {
@@ -11970,7 +11981,7 @@ function ScheduleSetupModal({ team, year, games, programBudget, onEditGame, onCo
         </h2>
         <div style={{ fontSize: 13, color: C.dim, marginBottom: 20, maxWidth: 720 }}>
           Pick all {nonConf.length} non-conference opponents before the season starts — your conference slate is fixed automatically. Once you confirm, this schedule is locked in for the whole season.
-          A real prestige gap against a non-conference opponent means a real guarantee-game payout: the higher-tier program pays the full fee to book the game, and the lower-tier program only banks {Math.round(GUARANTEE_KEEP_PCT * 100)}% of it for their own program budget — the rest goes to the Athletic Department generally, not the team.
+          A real prestige gap against a non-conference opponent means a real guarantee-game payout: the higher-tier program pays the full fee to book the game and hosts it, and the lower-tier program travels for the payday, banking {Math.round(GUARANTEE_KEEP_PCT * 100)}% of the fee for their own program budget — the rest goes to the Athletic Department generally, not the team. Site isn't a free choice for these games; it follows who's paying.
         </div>
         <Panel style={{ padding: "14px 18px", marginBottom: 18, display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
           <div style={{ fontSize: 12, color: C.dim }}>Program budget: <strong className="cbb-num" style={{ color: C.gold, fontSize: 15 }}>{formatNil(programBudget)}</strong></div>
@@ -11999,10 +12010,16 @@ function ScheduleSetupModal({ team, year, games, programBudget, onEditGame, onCo
                       </select>
                     </td>
                     <td style={td}>
-                      <button onClick={() => onEditGame(g.id, { home: !g.home })} className="cbb-btn"
-                        style={{ background: C.panelAlt, border: `1px solid ${C.line}`, color: C.cream, padding: "3px 9px", fontSize: 12, cursor: "pointer" }}>
-                        {g.home ? "Home" : "Away"}
-                      </button>
+                      {g.fee ? (
+                        <span title="Guarantee games aren't a free choice of site — the higher-tier program always hosts." style={{ color: C.dimmer, fontSize: 12, padding: "3px 9px", display: "inline-block" }}>
+                          {g.home ? "Home" : "Away"}
+                        </span>
+                      ) : (
+                        <button onClick={() => onEditGame(g.id, { home: !g.home })} className="cbb-btn"
+                          style={{ background: C.panelAlt, border: `1px solid ${C.line}`, color: C.cream, padding: "3px 9px", fontSize: 12, cursor: "pointer" }}>
+                          {g.home ? "Home" : "Away"}
+                        </button>
+                      )}
                     </td>
                     <td style={td}>
                       {g.fee ? (
