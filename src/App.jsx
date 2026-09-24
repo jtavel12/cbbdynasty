@@ -10120,10 +10120,10 @@ function PlanButton({ active, scouted, onClick, children }) {
 }
 
 // Content for the interactive recruiting trip. Each moment offers three pitch
-// approaches keyed by tone: "bold" swings for the fences (high variance),
-// "balanced" is a dependable middle, "safe" is steady but modest. The best
-// choice isn't fixed — a bold pitch can land huge or fall flat — so visits
-// reward reading the room rather than mashing one button.
+// approaches (labeled "bold"/"balanced"/"safe" purely for flavor) — the
+// actual interest swing is one of the script's fixed `outcomes`, rolled at
+// random with equal odds independent of which option gets clicked, so no
+// button is secretly the "right" one to mash.
 //
 // Each script's `momentPools` is one pool of alternative moments per beat of
 // the visit (opening, middle, closing) — VisitExperience draws one moment
@@ -10134,7 +10134,10 @@ const VISIT_SCRIPTS = {
     label: "Official Visit",
     Icon: Users,
     intro: "You've got them on campus for the weekend. Every stop is a chance to sell the program.",
-    perMoment: [2.5, 4.5], // half the interest per stop of what a visit used to earn — recruiting's harder now
+    // Fixed interest swing per stop, picked uniformly at random and
+    // independent of which option (or tone) gets clicked — one bad
+    // outcome, two good ones, never a continuous roll.
+    outcomes: [-2, 2, 10],
     momentPools: [
       [
         { prompt: "First impression — how do you show off the program?", options: [
@@ -10208,7 +10211,7 @@ const VISIT_SCRIPTS = {
     label: "Home Visit",
     Icon: Landmark,
     intro: "You're in his living room with the family. This one is personal.",
-    perMoment: [2, 3], // half the interest per stop of what a home visit used to earn
+    outcomes: [-1, 1, 5],
     momentPools: [
       [
         { prompt: "You sit down with the family. How do you open?", options: [
@@ -10265,21 +10268,13 @@ const VISIT_SCRIPTS = {
   },
 };
 
-// Roll the interest earned from one pitch choice. Bold swings wide, safe is
-// tight, balanced sits between — all scaled off the per-moment base band.
-function rollVisitGain(tone, base) {
-  let mult;
-  if (tone === "bold") mult = rand(0.45, 1.75);
-  else if (tone === "safe") mult = rand(0.8, 1.05);
-  else mult = rand(0.9, 1.3);
-  return Math.max(1, Math.round(base * mult * INTEREST_GAIN_MULT));
-}
-function visitOutcomeBlurb(tone, gain, expected) {
-  const ratio = gain / expected;
-  if (ratio >= 1.25) return tone === "bold" ? "It lands perfectly — he's fired up." : "Goes over great.";
-  if (ratio >= 0.9) return "Solid — he's nodding along.";
-  if (ratio >= 0.6) return "Politely received, nothing more.";
-  return tone === "bold" ? "Too much, too soon — it falls flat." : "Doesn't move the needle much.";
+// One of the script's three fixed outcomes, blurbed by tier rather than by
+// which tone was picked — the number itself no longer depends on bold vs.
+// safe, so the reaction text shouldn't pretend it does either.
+function visitOutcomeBlurb(gain, outcomes) {
+  if (gain < 0) return "Something about this one just doesn't land — hard to say why.";
+  if (gain === Math.max(...outcomes)) return "It lands perfectly — he's fired up.";
+  return "Solid — he's nodding along.";
 }
 
 // The shared visit scripts were written for HS recruiting and include a
@@ -10309,15 +10304,13 @@ function VisitExperience({ recruit, actionKey, team, onClose, onFinish }) {
   const moment = !done ? moments[step] : null;
 
   function choose(opt, i) {
-    const base = rand(script.perMoment[0], script.perMoment[1]);
-    const expected = (script.perMoment[0] + script.perMoment[1]) / 2;
-    const rawGain = rollVisitGain(opt.tone, base);
-    // Every stop is an independent 1-in-3 shot at backfiring, regardless of
-    // which option is picked — over a 3-stop visit that means 0, 1, 2, or 3
-    // bad stops are all genuinely possible, not a guaranteed exactly-one.
-    const backfired = Math.random() < 1 / 3;
-    const gain = backfired ? -rawGain : rawGain;
-    const blurb = backfired ? "Something about this one just doesn't land — hard to say why." : visitOutcomeBlurb(opt.tone, gain, expected);
+    // Every stop is an independent, equal 1-in-3 roll across the script's
+    // fixed outcomes — regardless of which option (or tone) gets clicked —
+    // so over a 3-stop visit anywhere from 0 to 3 bad stops is genuinely
+    // possible, not a guaranteed exactly-one, and the swing itself is
+    // always one of the same fixed numbers rather than a continuous range.
+    const gain = pick(script.outcomes);
+    const blurb = visitOutcomeBlurb(gain, script.outcomes);
     setPicked({ choice: visitLabelFor(opt.label, recruit), gain, blurb });
   }
   function next() {
