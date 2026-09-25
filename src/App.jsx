@@ -4366,7 +4366,7 @@ function computeAwards(state, rankById, ranked, powerById) {
    ========================================================================= */
 // Hard eligibility floor to declare early for the NBA draft, by class. A player
 // below the floor for their class cannot leave early at all.
-const EARLY_DEPARTURE_MIN = { FR: 75, SO: 80, JR: 83 };
+const EARLY_DEPARTURE_MIN = { FR: 85, SO: 88, JR: 90 };
 
 // Real draft-stock read, 0 (marginal early-entry) to 1 (lottery-lock talent).
 // This is the dominant input to persuasion difficulty below — nothing (no
@@ -4488,10 +4488,98 @@ function decideEarlyDeclarations(roster) {
   return out;
 }
 
-function draftBoard(early, seniors) {
-  return [...early, ...seniors.filter((p) => p.overall >= 80)]
-    .sort((a, b) => b.overall - a.overall)
-    .map((p, i) => ({ name: p.name, pos: p.pos, overall: p.overall, class: p.class, pick: i + 1, early: p.class !== "SR" }));
+/* =========================================================================
+   NBA DRAFT
+   A real, league-wide 60-pick draft (2 rounds x 30), not just an ordinal
+   list of the user's own outgoing players. The user's declared/qualifying
+   players are merged into a generated field of ~75 other draft-eligible
+   prospects from around the country (real school names off the TEAMS pool,
+   generated names — there's no persistent named CPU roster to draw real
+   players from, so this follows the same "real data preferred, generated
+   fallback" pattern used for NIL/coaches elsewhere), then the WHOLE field is
+   ranked by overall to hand out picks 1-60. A user player can miss the cut
+   and go undrafted, exactly like real fringe prospects do.
+   ========================================================================= */
+const DRAFT_PROSPECT_POS = ["PG", "SG", "SF", "PF", "C"];
+const DRAFT_TOTAL_PICKS = 60;
+const DRAFT_POOL_SIZE = 75;
+
+// A smooth, piecewise-declining overall curve across the generated pool —
+// steep through the lottery, flatter through the rest of round 1, flatter
+// still through round 2, tailing off into the undrafted fringe. Noise gets
+// layered on top per-prospect so the pool doesn't feel like a sorted list.
+function curveOverallForRank(rank) {
+  if (rank <= 14) return 96 - (rank - 1) * (12 / 13);
+  if (rank <= 30) return 84 - (rank - 14) * (9 / 16);
+  if (rank <= 60) return 75 - (rank - 30) * (13 / 30);
+  return 62 - (rank - 60) * (10 / 15);
+}
+function weightedDraftClass(rng) {
+  const r = rng();
+  if (r < 0.45) return "FR";
+  if (r < 0.75) return "SO";
+  if (r < 0.95) return "JR";
+  return "SR";
+}
+// Weighted toward blue-bloods (prestige^2) without making it impossible for
+// a mid- or low-major prospect to show up — real drafts get the occasional
+// gem from outside the usual programs.
+function weightedDraftSchool(rng, excludeTeamId) {
+  const pool = TEAMS.filter((t) => t.id !== excludeTeamId);
+  const weights = pool.map((t) => t.prestige * t.prestige);
+  const total = weights.reduce((a, b) => a + b, 0);
+  let r = rng() * total;
+  for (let i = 0; i < pool.length; i++) {
+    r -= weights[i];
+    if (r <= 0) return pool[i];
+  }
+  return pool[pool.length - 1];
+}
+function generatedDraftPool(rng, excludeTeamId) {
+  const pool = [];
+  for (let i = 1; i <= DRAFT_POOL_SIZE; i++) {
+    const base = curveOverallForRank(i);
+    const overall = clamp(Math.round(base + (rng() - 0.5) * 8), 45, 99);
+    const school = weightedDraftSchool(rng, excludeTeamId);
+    pool.push({
+      name: fullName(rng), pos: pick(DRAFT_PROSPECT_POS, rng), class: weightedDraftClass(rng),
+      overall, school: school.name, isUser: false,
+    });
+  }
+  return pool;
+}
+// Merges the user's own declared/eligible players into the generated
+// national field and hands out real pick numbers 1-60 (round 1 vs. round 2)
+// by overall across the WHOLE combined field, not just the user's own guys.
+function nbaDraftBoard(userProspects, year, seasonSeed, teamId) {
+  const rng = seasonRngFor(seasonSeed, "nba-draft", year);
+  const pool = generatedDraftPool(rng, teamId);
+  const userEntries = userProspects.map((p) => ({
+    id: p.id, name: p.name, pos: p.pos, class: p.class, overall: p.overall,
+    school: TEAM_MAP[teamId]?.name, isUser: true,
+  }));
+  const combined = [...userEntries, ...pool].sort((a, b) => b.overall - a.overall);
+  const picks = combined.slice(0, DRAFT_TOTAL_PICKS).map((entry, i) => ({
+    ...entry, pick: i + 1, round: i < 30 ? 1 : 2,
+  }));
+  const undrafted = combined.slice(DRAFT_TOTAL_PICKS);
+  return { picks, undraftedUserIds: new Set(undrafted.filter((e) => e.isUser).map((e) => e.id)) };
+}
+// The user-facing wrapper: resolves which of the team's own early
+// departures + qualifying seniors actually get drafted (and where), while
+// also handing back the full 60-pick national board to show off.
+function draftBoard(early, seniors, year, seasonSeed, teamId) {
+  const eligible = [...early, ...seniors.filter((p) => p.overall >= 80)];
+  const userProspects = eligible.map((p) => ({ id: p.id, name: p.name, pos: p.pos, class: p.class, overall: p.overall }));
+  const { picks: fullBoard, undraftedUserIds } = nbaDraftBoard(userProspects, year, seasonSeed, teamId);
+  const userPicked = fullBoard
+    .filter((e) => e.isUser)
+    .map((e) => ({ name: e.name, pos: e.pos, overall: e.overall, class: e.class, pick: e.pick, round: e.round, early: e.class !== "SR" }));
+  const userUndrafted = userProspects
+    .filter((p) => undraftedUserIds.has(p.id))
+    .map((p) => ({ name: p.name, pos: p.pos, overall: p.overall, class: p.class, pick: null, round: null, early: p.class !== "SR" }));
+  const picks = [...userPicked, ...userUndrafted].sort((a, b) => (a.pick ?? 999) - (b.pick ?? 999));
+  return { picks, fullBoard };
 }
 
 /* =========================================================================
@@ -6926,7 +7014,7 @@ function DynastyApp({ initial, onExit }) {
     const leavingIds = new Set(declarations.filter((d) => !d.kept).map((d) => d.id));
     const early = state.roster.filter((p) => leavingIds.has(p.id));
     const seniors = state.roster.filter((p) => p.class === "SR");
-    const draft = draftBoard(early, seniors);
+    const { picks: draft, fullBoard: nationalDraftBoard } = draftBoard(early, seniors, state.year, state.seasonSeed, state.teamId);
     const wonRegSeasonConf = wonRegularSeasonConf(ranked, team.conf, state.teamId);
     const coach = finalizeCoachSeason(state.coach, record, state.postseason, state.teamId, wonRegSeasonConf);
     const earlyIds = leavingIds;
@@ -7052,7 +7140,7 @@ function DynastyApp({ initial, onExit }) {
 
     const recapData = {
       year: state.year, teamName: team.name,
-      record: { ...record }, postseason: psSummary, awards, draft,
+      record: { ...record }, postseason: psSummary, awards, draft, nationalDraftBoard,
       early: early.map((p) => ({ name: p.name, pos: p.pos, class: p.class, overall: p.overall })),
       unhappyDepartures,
       graduated: seniors.filter((p) => p.overall < 80).map((p) => ({ name: p.name, pos: p.pos, overall: p.overall })),
@@ -11308,6 +11396,7 @@ function BoxScoreModal({ game, teamName, onClose }) {
 
 /* ---------- Season Recap ---------- */
 function SeasonRecapModal({ recap, onClose }) {
+  const [showFullDraft, setShowFullDraft] = useState(false);
   if (!recap) return null;
   const a = recap.awards || {};
   const repDelta = recap.repAfter - recap.repBefore;
@@ -11396,9 +11485,18 @@ function SeasonRecapModal({ recap, onClose }) {
             <div style={{ fontSize: 11, color: C.dim, letterSpacing: "0.08em", marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}><GraduationCap size={13} /> LEAVING FOR THE NBA DRAFT</div>
             {recap.draft.map((d, i) => (
               <div key={i} style={{ fontSize: 12.5, marginBottom: 2 }}>
-                <span className="cbb-num" style={{ color: C.wood }}>#{d.pick}</span> {d.name} <span style={{ color: C.dim }}>{d.pos} · OVR {d.overall} · {d.early ? `${d.class} (early entry)` : "senior"}</span>
+                {d.pick ? (
+                  <span className="cbb-num" style={{ color: C.wood }}>Pick #{d.pick} (Rd {d.round})</span>
+                ) : (
+                  <span style={{ color: C.dimmer }}>Undrafted</span>
+                )} {d.name} <span style={{ color: C.dim }}>{d.pos} · OVR {d.overall} · {d.early ? `${d.class} (early entry)` : "senior"}</span>
               </div>
             ))}
+            {recap.nationalDraftBoard && recap.nationalDraftBoard.length > 0 && (
+              <button onClick={() => setShowFullDraft(true)} className="cbb-btn" style={{ ...btnStyle(C.panelAlt, C.cream), border: `1px solid ${C.line}`, marginTop: 8, fontSize: 12 }}>
+                View Full Draft Board (60 picks)
+              </button>
+            )}
           </div>
         )}
 
@@ -11441,6 +11539,42 @@ function SeasonRecapModal({ recap, onClose }) {
       </div>
       <div style={{ marginTop: 20, textAlign: "right" }}>
         <button onClick={onClose} className="cbb-btn" style={btnStyle(C.wood)}>Continue</button>
+      </div>
+      {showFullDraft && recap.nationalDraftBoard && (
+        <FullDraftBoardModal year={recap.year} picks={recap.nationalDraftBoard} onClose={() => setShowFullDraft(false)} />
+      )}
+    </Modal>
+  );
+}
+// The full 60-pick, 2-round national draft board — the user's own picks
+// glow gold and are pinned with their real name even though the rest of the
+// class is generated (see the NBA DRAFT block up top for why).
+function FullDraftBoardModal({ year, picks, onClose }) {
+  const round1 = picks.filter((p) => p.round === 1);
+  const round2 = picks.filter((p) => p.round === 2);
+  return (
+    <Modal title={`${seasonLabel(year)} NBA Draft`} subtitle="2 rounds · 60 picks" onClose={onClose} maxWidth={720}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 24 }}>
+        {[["ROUND 1", round1], ["ROUND 2", round2]].map(([label, rows]) => (
+          <div key={label}>
+            <div style={{ fontSize: 11, color: C.dim, letterSpacing: "0.08em", marginBottom: 8 }}>{label}</div>
+            {rows.map((p) => (
+              <div key={p.pick} style={{
+                display: "flex", justifyContent: "space-between", gap: 8, fontSize: 12.5, padding: "4px 0",
+                borderBottom: `1px solid ${C.line}`, color: p.isUser ? C.gold : C.cream,
+              }}>
+                <span style={{ display: "flex", gap: 8, minWidth: 0 }}>
+                  <span className="cbb-num" style={{ color: p.isUser ? C.gold : C.dim, minWidth: 24 }}>{p.pick}.</span>
+                  <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</span>
+                </span>
+                <span style={{ color: C.dim, whiteSpace: "nowrap" }}>{p.pos} · {p.school} · OVR {p.overall}</span>
+              </div>
+            ))}
+          </div>
+        ))}
+      </div>
+      <div style={{ marginTop: 20, textAlign: "right" }}>
+        <button onClick={onClose} className="cbb-btn" style={btnStyle(C.wood)}>Close</button>
       </div>
     </Modal>
   );
@@ -11826,7 +11960,11 @@ function HistoryTab({ state, rivalIds }) {
               <div className="cbb-num" style={{ fontSize: 12, color: C.dim, marginBottom: 3 }}>{seasonLabel(yr.year)}</div>
               {yr.picks.map((d, j) => (
                 <div key={j} style={{ fontSize: 12.5 }}>
-                  <span className="cbb-num" style={{ color: C.wood }}>#{d.pick}</span> {d.name} <span style={{ color: C.dim }}>{d.pos} · {d.early ? `${d.class} early entry` : "senior"}</span>
+                  {d.pick ? (
+                    <span className="cbb-num" style={{ color: C.wood }}>Pick #{d.pick}</span>
+                  ) : (
+                    <span style={{ color: C.dimmer }}>Undrafted</span>
+                  )} {d.name} <span style={{ color: C.dim }}>{d.pos} · {d.early ? `${d.class} early entry` : "senior"}</span>
                 </div>
               ))}
             </div>
