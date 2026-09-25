@@ -4560,14 +4560,14 @@ function generateAssistantCandidates(team) {
 /* =========================================================================
    PROGRAM BUDGET + FACILITIES
    A second pool of money from the NIL budget, tied directly to it rather
-   than running its own independent formula: seeded at 50% of a team's own
-   NIL budget, and growing every season at EXACTLY the same rate NIL just
-   grew at for that team (see advanceNilBudgets' growthRatioById) — the two
-   budgets receive boosts at the same rate, off the same underlying
-   performance signal, rather than each compounding on its own schedule.
-   Unlike NIL, program budget has no ceiling — it's athletic-department
-   capital (facilities, coach salaries), not a per-player compensation pool,
-   so there's no tier cap to taper toward.
+   than running its own independent formula: every season, a team's program
+   budget refreshes to whatever it had left over unspent from last year,
+   plus HALF ITS ACTUAL CURRENT NIL BUDGET for the year that just started
+   (not a static baseline — the real, already-grown number), plus/minus any
+   guarantee-fee money won or paid from that season's schedule. Unlike NIL,
+   program budget has no ceiling — it's athletic-department capital
+   (facilities, coach salaries), not a per-player compensation pool, so
+   there's no tier cap to taper toward.
    ========================================================================= */
 function programBudgetForTeam(team) {
   return Math.round(nilBudgetForTeam(team) * 0.5);
@@ -4577,21 +4577,22 @@ function baselineProgramBudgetById() {
   for (const t of TEAMS) out[t.id] = programBudgetForTeam(t);
   return out;
 }
-// `growthRatioById` is NIL's own actual per-team growth ratio this season
-// (from advanceNilBudgets) — the program's fresh seasonal budget mirrors it
-// exactly, uncapped, plus a little more from the Arena & Fan Experience
-// facility on top. That fresh amount is ADDED to whatever's still sitting
-// in the account from last year, never multiplied onto it — a program that
-// spent everything down to $0 still gets a full new season's budget rather
-// than 0 * (1 + rate) staying $0 forever, and unspent money genuinely
-// carries over instead of just being the base a growth rate gets applied to.
-function advanceProgramBudgets(prevById, growthRatioById, facilitiesById) {
+// Each team's fresh seasonal contribution is HALF ITS ACTUAL CURRENT NIL
+// BUDGET (nilById — this season's already-grown number, not the static
+// tier+prestige baseline), plus a little more from the Arena & Fan
+// Experience facility on top. That fresh amount is ADDED to whatever's
+// still sitting in the account from last year, never multiplied onto it —
+// a program that spent everything down to $0 still gets a full new
+// season's budget rather than staying $0 forever, and unspent money
+// genuinely carries over. Guarantee-fee income/cost from scheduling is
+// layered in separately by the caller, right after this returns.
+function advanceProgramBudgets(prevById, nilById, facilitiesById) {
   const next = {};
   for (const t of TEAMS) {
     const leftover = Math.max(0, prevById[t.id] ?? 0);
-    const rate = (growthRatioById && growthRatioById[t.id]) || 0;
+    const currentNil = nilById?.[t.id] ?? nilBudgetForTeam(t);
     const arenaLevel = facilitiesById?.[t.id]?.arena || 0;
-    const seasonalBudget = Math.round(programBudgetForTeam(t) * Math.max(0, 1 + rate + arenaLevel * 0.01));
+    const seasonalBudget = Math.round(currentNil * 0.5 * (1 + arenaLevel * 0.01));
     next[t.id] = leftover + seasonalBudget;
   }
   return next;
@@ -4842,11 +4843,6 @@ function taperedNilGrowth(prev, rawGrowthPct, ceiling) {
 function advanceNilBudgets(prevNilById, userTeamId, userObjectives, evalCtx, year, powerById) {
   const { met, totalBoost } = evaluateNilObjectives(userObjectives, evalCtx);
   const next = {};
-  // Each team's ACTUAL realized growth ratio this season (after tapering
-  // toward its ceiling), so advanceProgramBudgets can mirror the exact same
-  // rate rather than recomputing its own — the two budgets "receive boosts
-  // at the same rate" off one shared number, not two independent formulas.
-  const growthRatioById = {};
   for (const t of TEAMS) {
     const prev = prevNilById[t.id] ?? nilBudgetForTeam(t);
     const ceiling = NIL_TIER_CEILINGS[nilTierFor(t)];
@@ -4858,9 +4854,8 @@ function advanceNilBudgets(prevNilById, userTeamId, userObjectives, evalCtx, yea
       grown = taperedNilGrowth(prev, cpuNilGrowth(quality), ceiling);
     }
     next[t.id] = Math.round(grown);
-    growthRatioById[t.id] = prev > 0 ? grown / prev - 1 : 0;
   }
-  return { nextNilById: next, met, totalBoost, growthRatioById };
+  return { nextNilById: next, met, totalBoost };
 }
 
 function hotSeatTier(sec) {
@@ -7023,12 +7018,12 @@ function DynastyApp({ initial, onExit }) {
       record, psSummary, rankById, teamId: state.teamId, confChampionId, beatRanked, beatRival,
       prevWins: prevHistoryEntry ? prevHistoryEntry.wins : null,
     };
-    const { nextNilById, met: nilMet, totalBoost: nilBoost, growthRatioById } = advanceNilBudgets(
+    const { nextNilById, met: nilMet, totalBoost: nilBoost } = advanceNilBudgets(
       state.nilBudgetById || baselineNilBudgetById(), state.teamId, state.nilObjectives, nilCtx, state.year, powerById
     );
     const nextNilObjectives = pickObjectivesFor(nextPrestige[state.teamId] ?? team.prestige);
     const nextProgramBudgetById = advanceProgramBudgets(
-      state.programBudgetById || baselineProgramBudgetById(), growthRatioById, state.facilitiesById
+      state.programBudgetById || baselineProgramBudgetById(), nextNilById, state.facilitiesById
     );
     // Coach and assistant staff salaries come out of the program budget once
     // per season — never NIL, that's player money.
@@ -7217,11 +7212,11 @@ function DynastyApp({ initial, onExit }) {
       record, psSummary, rankById, teamId: state.teamId, confChampionId, beatRanked, beatRival,
       prevWins: prevHistoryEntry ? prevHistoryEntry.wins : null,
     };
-    const { nextNilById, growthRatioById } = advanceNilBudgets(
+    const { nextNilById } = advanceNilBudgets(
       state.nilBudgetById || baselineNilBudgetById(), state.teamId, state.nilObjectives, nilCtx, state.year, powerById
     );
     const nextProgramBudgetById = advanceProgramBudgets(
-      state.programBudgetById || baselineProgramBudgetById(), growthRatioById, state.facilitiesById
+      state.programBudgetById || baselineProgramBudgetById(), nextNilById, state.facilitiesById
     );
     // The old job's final season still owes its coach and staff a salary
     // before the move — out of THAT program's budget, not the new one's.
