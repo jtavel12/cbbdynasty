@@ -4534,13 +4534,26 @@ function assistantSalaryFor(assistant, team) {
 // Names are drawn from a real pool of current/recent D1 assistant coaches
 // (real_assistant_coaches.json) — pure flavor, not tied to any actual team
 // or role in reality, and not kept in sync as real assistants change jobs.
+// Every real assistant in the pool carries their own fixed `rating` (see
+// real_assistant_coaches.json) — the same real person is exactly as good an
+// assistant at a rebuild as at a blue blood, never re-rolled per team. A
+// program's own prestige instead shifts WHICH real coaches it's likely to
+// see offered: a blue blood's 3 candidates get drawn from higher up the
+// sorted pool, a rebuild's from lower down — the pool gets deeper for a
+// good program, but nobody's own number moves depending on who's asking.
 function generateAssistantCandidates(team) {
-  const base = clamp(40 + (team?.prestige || 2) * 8, 40, 82);
-  const names = shuffled(realAssistantCoachesRaw).slice(0, 3);
-  return names.map((name) => ({
+  const sorted = [...realAssistantCoachesRaw].sort((a, b) => b.rating - a.rating);
+  const prestige = clamp(team?.prestige || 2, 1, 5);
+  const centerPct = 1 - (prestige - 1) / 4; // prestige 5 -> near the top, prestige 1 -> near the bottom
+  const windowSize = Math.min(20, sorted.length);
+  const center = Math.round(centerPct * (sorted.length - 1));
+  const lo = clamp(center - Math.floor(windowSize / 2), 0, sorted.length - windowSize);
+  const window = sorted.slice(lo, lo + windowSize);
+  const picks = shuffled(window).slice(0, 3);
+  return picks.map((c) => ({
     id: `asst-${Math.random().toString(36).slice(2, 10)}`,
-    name,
-    rating: clamp(Math.round(base + (Math.random() - 0.5) * 30), 25, 99),
+    name: c.name,
+    rating: c.rating,
   }));
 }
 

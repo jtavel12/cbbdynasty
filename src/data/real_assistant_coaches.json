@@ -1,80 +1,314 @@
 [
-  "Ronnie Thompson",
-  "Chin Coleman",
-  "Kimani Young",
-  "Chris Silva",
-  "Bill Courtney",
-  "Nate James",
-  "Jai Lucas",
-  "Preston Murphy",
-  "Dane Fife",
-  "Antoni Wyche",
-  "Marlon Garnett",
-  "Tyler Geving",
-  "Steve Roccaforte",
-  "Rasheen Davis",
-  "Brandin Knight",
-  "Rob Murphy",
-  "Casey Shaw",
-  "Mike Schrage",
-  "T.J. Cleveland",
-  "Chris Jones",
-  "Emanuel Richardson",
-  "Karl Hobbs",
-  "Bruiser Flint",
-  "Paris Parham",
-  "Bill Bayno",
-  "Charlton Young",
-  "Dwayne Stephens",
-  "Bacari Alexander",
-  "Levi Watkins",
-  "Justin Gray",
-  "Rashon Burno",
-  "Mo Cassara",
-  "Brian Adams",
-  "Doug Novak",
-  "Ronald Nored",
-  "Andrew Wilson",
-  "Kareem Richardson",
-  "Kevin Norris",
-  "Cody Toppert",
-  "Damon Goodwin",
-  "Chad Dollar",
-  "Jason Shay",
-  "Kevin Sutton",
-  "Justin Todd",
-  "Brandon Chappell",
-  "Alvin Brooks III",
-  "Terrence Rencher",
-  "Milt Wagner",
-  "Barry Rohrssen",
-  "Mark Phelps",
-  "Ryan Odom Jr.",
-  "Kyle Cieplicki",
-  "Marcus Grant",
-  "Pat Skerry",
-  "Ryan Pannone",
-  "Kareem Champagne",
-  "David Gonzalez",
-  "Kenny Johnson",
-  "Grant Leonard",
-  "Tim Fanning",
-  "James Kane",
-  "Josh Merkel",
-  "Reggie Witherspoon Jr.",
-  "Dwayne Sutton",
-  "Anthony Nelson",
-  "Chad Prewitt",
-  "Corey Frederick",
-  "Jamal Brunt",
-  "Sean Sutton",
-  "Torrian Jones",
-  "Marcus Fitzgerald",
-  "Larry Farmer",
-  "Keno Davis",
-  "Marlon Sears",
-  "Deon Jackson",
-  "Jethro Hillman",
-  "Jon Tavel",
-  "Ben Miner"
+  {
+    "name": "Kimani Young",
+    "rating": 92
+  },
+  {
+    "name": "Jai Lucas",
+    "rating": 90
+  },
+  {
+    "name": "Bruiser Flint",
+    "rating": 88
+  },
+  {
+    "name": "Dane Fife",
+    "rating": 87
+  },
+  {
+    "name": "Karl Hobbs",
+    "rating": 86
+  },
+  {
+    "name": "Larry Farmer",
+    "rating": 85
+  },
+  {
+    "name": "Barry Rohrssen",
+    "rating": 84
+  },
+  {
+    "name": "Dwayne Stephens",
+    "rating": 83
+  },
+  {
+    "name": "Sean Sutton",
+    "rating": 83
+  },
+  {
+    "name": "Chin Coleman",
+    "rating": 82
+  },
+  {
+    "name": "Keno Davis",
+    "rating": 82
+  },
+  {
+    "name": "Charlton Young",
+    "rating": 81
+  },
+  {
+    "name": "Milt Wagner",
+    "rating": 80
+  },
+  {
+    "name": "Pat Skerry",
+    "rating": 80
+  },
+  {
+    "name": "Ronald Nored",
+    "rating": 79
+  },
+  {
+    "name": "Cody Toppert",
+    "rating": 79
+  },
+  {
+    "name": "Rob Murphy",
+    "rating": 78
+  },
+  {
+    "name": "Bill Bayno",
+    "rating": 78
+  },
+  {
+    "name": "Bacari Alexander",
+    "rating": 78
+  },
+  {
+    "name": "Emanuel Richardson",
+    "rating": 77
+  },
+  {
+    "name": "Kareem Richardson",
+    "rating": 75
+  },
+  {
+    "name": "Chris Silva",
+    "rating": 74
+  },
+  {
+    "name": "Rashon Burno",
+    "rating": 73
+  },
+  {
+    "name": "Jamal Brunt",
+    "rating": 73
+  },
+  {
+    "name": "Marcus Fitzgerald",
+    "rating": 72
+  },
+  {
+    "name": "Mo Cassara",
+    "rating": 70
+  },
+  {
+    "name": "Marlon Garnett",
+    "rating": 68
+  },
+  {
+    "name": "Chris Jones",
+    "rating": 68
+  },
+  {
+    "name": "Marcus Grant",
+    "rating": 67
+  },
+  {
+    "name": "Andrew Wilson",
+    "rating": 65
+  },
+  {
+    "name": "Kevin Sutton",
+    "rating": 65
+  },
+  {
+    "name": "Terrence Rencher",
+    "rating": 65
+  },
+  {
+    "name": "Anthony Nelson",
+    "rating": 65
+  },
+  {
+    "name": "Ronnie Thompson",
+    "rating": 64
+  },
+  {
+    "name": "Kevin Norris",
+    "rating": 63
+  },
+  {
+    "name": "Jon Tavel",
+    "rating": 63
+  },
+  {
+    "name": "Mike Schrage",
+    "rating": 62
+  },
+  {
+    "name": "James Kane",
+    "rating": 62
+  },
+  {
+    "name": "Josh Merkel",
+    "rating": 62
+  },
+  {
+    "name": "Bill Courtney",
+    "rating": 61
+  },
+  {
+    "name": "Tyler Geving",
+    "rating": 61
+  },
+  {
+    "name": "Ben Miner",
+    "rating": 61
+  },
+  {
+    "name": "T.J. Cleveland",
+    "rating": 60
+  },
+  {
+    "name": "Jason Shay",
+    "rating": 60
+  },
+  {
+    "name": "Nate James",
+    "rating": 59
+  },
+  {
+    "name": "Deon Jackson",
+    "rating": 59
+  },
+  {
+    "name": "Casey Shaw",
+    "rating": 58
+  },
+  {
+    "name": "Justin Gray",
+    "rating": 58
+  },
+  {
+    "name": "Paris Parham",
+    "rating": 57
+  },
+  {
+    "name": "Doug Novak",
+    "rating": 57
+  },
+  {
+    "name": "Rasheen Davis",
+    "rating": 56
+  },
+  {
+    "name": "Alvin Brooks III",
+    "rating": 56
+  },
+  {
+    "name": "Dwayne Sutton",
+    "rating": 56
+  },
+  {
+    "name": "Antoni Wyche",
+    "rating": 55
+  },
+  {
+    "name": "Ryan Pannone",
+    "rating": 55
+  },
+  {
+    "name": "Levi Watkins",
+    "rating": 54
+  },
+  {
+    "name": "Reggie Witherspoon Jr.",
+    "rating": 54
+  },
+  {
+    "name": "Steve Roccaforte",
+    "rating": 53
+  },
+  {
+    "name": "Brian Adams",
+    "rating": 53
+  },
+  {
+    "name": "Damon Goodwin",
+    "rating": 53
+  },
+  {
+    "name": "Mark Phelps",
+    "rating": 53
+  },
+  {
+    "name": "Corey Frederick",
+    "rating": 53
+  },
+  {
+    "name": "David Gonzalez",
+    "rating": 52
+  },
+  {
+    "name": "Jethro Hillman",
+    "rating": 52
+  },
+  {
+    "name": "Brandon Chappell",
+    "rating": 51
+  },
+  {
+    "name": "Preston Murphy",
+    "rating": 50
+  },
+  {
+    "name": "Justin Todd",
+    "rating": 50
+  },
+  {
+    "name": "Torrian Jones",
+    "rating": 50
+  },
+  {
+    "name": "Brandin Knight",
+    "rating": 49
+  },
+  {
+    "name": "Kyle Cieplicki",
+    "rating": 49
+  },
+  {
+    "name": "Kenny Johnson",
+    "rating": 49
+  },
+  {
+    "name": "Chad Prewitt",
+    "rating": 49
+  },
+  {
+    "name": "Kareem Champagne",
+    "rating": 48
+  },
+  {
+    "name": "Marlon Sears",
+    "rating": 48
+  },
+  {
+    "name": "Ryan Odom Jr.",
+    "rating": 47
+  },
+  {
+    "name": "Tim Fanning",
+    "rating": 47
+  },
+  {
+    "name": "Grant Leonard",
+    "rating": 46
+  },
+  {
+    "name": "Chad Dollar",
+    "rating": 44
+  }
 ]
