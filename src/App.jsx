@@ -4,6 +4,8 @@ import { Browser } from "@capacitor/browser";
 import teamLocationsRaw from "./data/team-locations.json";
 import teamRecordsRaw from "./data/team-records.json";
 import nilBudgetsRaw from "./data/nil_budgets.json";
+import realHeadCoachesRaw from "./data/real_head_coaches.json";
+import realAssistantCoachesRaw from "./data/real_assistant_coaches.json";
 import {
   LayoutDashboard, Users, ListOrdered, Search, CalendarDays, Trophy,
   Save, RotateCcw, ChevronUp, ChevronDown, Play, FastForward, Star,
@@ -4529,11 +4531,15 @@ function assistantSalaryFor(assistant, team) {
 // Three fresh candidates for a role, skewed toward the hiring program's own
 // prestige the same way nilBudgetForTeam skews toward conference tier —
 // a blue blood attracts a deeper pool of good assistants than a rebuild.
+// Names are drawn from a real pool of current/recent D1 assistant coaches
+// (real_assistant_coaches.json) — pure flavor, not tied to any actual team
+// or role in reality, and not kept in sync as real assistants change jobs.
 function generateAssistantCandidates(team) {
   const base = clamp(40 + (team?.prestige || 2) * 8, 40, 82);
-  return Array.from({ length: 3 }, () => ({
+  const names = shuffled(realAssistantCoachesRaw).slice(0, 3);
+  return names.map((name) => ({
     id: `asst-${Math.random().toString(36).slice(2, 10)}`,
-    name: fullName(),
+    name,
     rating: clamp(Math.round(base + (Math.random() - 0.5) * 30), 25, 99),
   }));
 }
@@ -4904,12 +4910,21 @@ function finalizeCoachSeason(coach, record, postseason, teamId, wonRegSeasonConf
    coachOfYear/reputationErosion), fed by that team's real simulated season
    (already available via `ranked`) and real postseason result, so a rival
    program lives or dies by the same rules the user does.
+
+   Every CPU program starts a dynasty coached by its actual real-world head
+   coach (real_head_coaches.json, one name per team, researched separately —
+   not tied to the dynasty's own starting season, just "who really coaches
+   this program"). That's a deliberate simplification: a dynasty started in
+   2007 still sees today's real coach on day one, not that year's. Once the
+   coaching carousel actually fires someone mid-dynasty, their replacement
+   goes back to a generated name (see advanceCoachingCarousel) — only the
+   very first coach a CPU program has is real.
    ========================================================================= */
 function baselineCoachesById(excludeTeamId, year) {
   const out = {};
   for (const t of TEAMS) {
     if (t.id === excludeTeamId) continue;
-    out[t.id] = { ...EMPTY_COACH, name: fullName(), hireYear: year };
+    out[t.id] = { ...EMPTY_COACH, name: realHeadCoachesRaw[t.id] || fullName(), hireYear: year };
   }
   return out;
 }
