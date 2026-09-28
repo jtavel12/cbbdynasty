@@ -8694,6 +8694,8 @@ function RecruitBoard({ board, otherBoard, committedIds, targets, onToggleTarget
     interest: (a, b) => (b.interest - a.interest) || ((a.nationalRank || 999) - (b.nationalRank || 999)),
     stars: (a, b) => ((b.stars || 0) - (a.stars || 0)) || ((a.nationalRank || 999) - (b.nationalRank || 999)),
     rank: (a, b) => (a.nationalRank || 999) - (b.nationalRank || 999),
+    nilAsc: (a, b) => (a.nilTarget || 0) - (b.nilTarget || 0),
+    nilDesc: (a, b) => (b.nilTarget || 0) - (a.nilTarget || 0),
   };
   list = list.sort((a, b) =>
     (Number(committedIds.includes(b.id)) - Number(committedIds.includes(a.id))) ||
@@ -8772,6 +8774,8 @@ function RecruitBoard({ board, otherBoard, committedIds, targets, onToggleTarget
           <option value="interest">Sort: Interest</option>
           <option value="stars">Sort: Stars</option>
           <option value="rank">Sort: National rank</option>
+          <option value="nilAsc">Sort: Desired NIL (low to high)</option>
+          <option value="nilDesc">Sort: Desired NIL (high to low)</option>
         </select>
       </div>
 
@@ -8835,6 +8839,7 @@ function RecruitBoard({ board, otherBoard, committedIds, targets, onToggleTarget
                   </div>
                   <StarRow stars={r.stars} />
                   <span style={{ color: C.dimmer, fontSize: 11, width: 48 }}>{r.rating ? r.rating.toFixed(3) : "—"}</span>
+                  <span style={{ color: C.dim, fontSize: 11, width: 74 }} title="Desired NIL">{formatNil(r.nilTarget || 0)}</span>
                   <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                     <span style={{ fontSize: 10, color: C.dim }}>Interest</span>
                     <InterestBar value={r.interest} colorHigh={r.interest >= r.rivalPressure} />
