@@ -3309,7 +3309,19 @@ function weeklyHeadlines(powerById, rankById, userTeamId, year, seasonSeed, game
   return items.slice(0, 8);
 }
 
-function rankingScore(wins, losses, power, realRank, isUser = false, gamesPlayed = 0) {
+// Average power of the opponents actually PLAYED so far, on the same 0..1
+// scale `quality` already uses — a schedule stacked with cupcake buy games
+// pulls this toward 0 regardless of how many of them were won; a schedule
+// that tested itself against real competition pulls it toward 1. Neutral
+// (0.5) before any games are played rather than 0, so an empty schedule
+// doesn't read as an automatic weak-SOS penalty on opening day.
+function scheduleStrengthScore(schedule, powerById) {
+  const played = (schedule || []).filter((g) => g.played);
+  if (!played.length) return 0.5;
+  const avgOppPower = played.reduce((sum, g) => sum + (powerById[g.oppId] ?? LEAGUE_AVG_POWER), 0) / played.length;
+  return clamp((avgOppPower - 25) / (92 - 25), 0, 1);
+}
+function rankingScore(wins, losses, power, realRank, isUser = false, gamesPlayed = 0, sosScore = 0.5) {
   const games = wins + losses;
   const shrunkWinPct = (wins + 3) / (games + 6); // Bayesian shrink toward .500
   const quality = clamp((power - 25) / (92 - 25), 0, 1);
@@ -3339,7 +3351,11 @@ function rankingScore(wins, losses, power, realRank, isUser = false, gamesPlayed
     const winPct = wins / games;
     const winScore = clamp((winPct - 0.5) / 0.45, 0, 1); // .500 -> 0, .950 -> 1
     const rosterScore = clamp((power - 45) / (82 - 45), 0, 1); // roster 45 -> 0, 82 -> 1
-    const resumeRank = 0.6 * winScore + 0.4 * rosterScore;
+    // Weak strength of schedule pulls the resume down even at a gaudy win
+    // total — a slate stacked with buy games can't rank the same as one that
+    // actually tested the roster. sosScore is 0.5 (neutral) before any games
+    // are played, so this never looks like a penalty on opening day.
+    const resumeRank = 0.5 * winScore + 0.3 * rosterScore + 0.2 * sosScore;
     score = 0.35 * score + 0.65 * resumeRank;
   }
   return score;
@@ -3363,14 +3379,15 @@ function wonRegularSeasonConf(ranked, conf, teamId) {
   });
 }
 
-function computeRankings(powerById, recordById, userTeamId, gamesPlayed = 0) {
+function computeRankings(powerById, recordById, userTeamId, gamesPlayed = 0, userSosScore = 0.5) {
   const ranked = TEAMS.map((t) => {
     const r = recordById[t.id];
+    const isUser = t.id === userTeamId;
     return {
       team: t, wins: r.wins, losses: r.losses,
       confWins: r.confWins ?? 0, confLosses: r.confLosses ?? 0,
       streak: r.streak ?? 0, last10W: r.last10W ?? 0, last10G: r.last10G ?? 0,
-      power: powerById[t.id], score: rankingScore(r.wins, r.losses, powerById[t.id], r.realRank, t.id === userTeamId, gamesPlayed),
+      power: powerById[t.id], score: rankingScore(r.wins, r.losses, powerById[t.id], r.realRank, isUser, gamesPlayed, isUser ? userSosScore : 0.5),
     };
   }).sort((a, b) => b.score - a.score || b.wins - a.wins || a.losses - b.losses || b.power - a.power);
   const rankById = {};
@@ -3931,8 +3948,17 @@ function genTeamBoxFromLiveMinutes(roster, boxMinutes, teamPts) {
   return scaleBoxToScore(box, teamPts);
 }
 
-function simulateGame(roster, depthChart, oppPower, momentum = 0, baseline = null, minutesMap = null) {
-  const myPower = userGamePower(roster, depthChart, baseline, minutesMap) + momentum;
+// A true home crowd/floor-familiarity edge — modest on purpose (real college
+// home-court advantage runs a few points on a ~100-point scale), applied on
+// the same power scale everything else here uses. `home` is true/false for
+// a real regular-season game with a real site, or null/undefined for a
+// neutral-site postseason game (conference/NCAA tournaments), which gets no
+// adjustment either way.
+const HOME_COURT_ADV = 2.5;
+function simulateGame(roster, depthChart, oppPower, momentum = 0, baseline = null, minutesMap = null, home = null) {
+  const rawPower = userGamePower(roster, depthChart, baseline, minutesMap) + momentum;
+  const homeAdj = home === true ? HOME_COURT_ADV : home === false ? -HOME_COURT_ADV : 0;
+  const myPower = rawPower + homeAdj;
   const diff = myPower - oppPower;
   // Win/loss is a real probability draw off the SAME curve every CPU-vs-CPU
   // game in the league uses (gameWinProb) — never a hard cutoff. The old
@@ -3958,8 +3984,22 @@ function simulateGame(roster, depthChart, oppPower, momentum = 0, baseline = nul
   if (win && myScore <= oppScore) myScore = oppScore + randInt(1, 4);
   if (!win && oppScore <= myScore) oppScore = myScore + randInt(1, 4);
 
+  // A final margin this tight is genuinely OT-caliber — send a slice of
+  // those games to overtime instead of letting every close game resolve in
+  // regulation. Adds one extra scoring period to both sides (the eventual
+  // winner still wins, just by a real overtime-shaped final score) rather
+  // than changing who wins — OT is a coin flip AFTER the tie, not a second
+  // chance to flip the whole result.
+  const overtime = Math.abs(myScore - oppScore) <= 3 && Math.random() < 0.35;
+  if (overtime) {
+    const otLoserPts = randInt(6, 11);
+    const otWinnerPts = otLoserPts + randInt(1, 5);
+    if (win) { myScore += otWinnerPts; oppScore += otLoserPts; }
+    else { oppScore += otWinnerPts; myScore += otLoserPts; }
+  }
+
   const boxByPlayer = genTeamBox(roster, depthChart, minutesMap, myScore);
-  return { win, myScore, oppScore, boxByPlayer };
+  return { win, myScore, oppScore, boxByPlayer, overtime };
 }
 
 // A CPU opponent's box for a game the user just played/simmed — built from
@@ -4848,11 +4888,12 @@ function contractYearsLeft(hireYear, currentYear) {
   const tenure = currentYear - hireYear + 1;
   return clamp(3 - tenure, 0, 3);
 }
-// A flavor dollar figure for what walking away mid-contract "costs" the
-// program, scaled off its own NIL budget so a blue blood's buyout reads far
-// larger than a mid-major's. Cosmetic only — the real mechanical cost is
-// the reputation hit from buyoutPenalty, applied on every job change
-// regardless of whether this number is ever shown.
+// What walking away mid-contract costs the OLD program, scaled off its own
+// NIL budget so a blue blood's buyout reads far larger than a mid-major's.
+// Shown to the coach in JobChangeModal before they commit, and actually
+// charged against that program's budget when they follow through (see the
+// changeJob flow) — on top of the separate reputation hit from
+// buyoutPenalty, which always applies regardless of the program's finances.
 function impliedBuyoutDollars(yearsLeft, nilBudget) {
   return Math.round((nilBudget || 0) * 0.06 * yearsLeft);
 }
@@ -5518,6 +5559,26 @@ function Panel({ children, style, className, ...rest }) {
   );
 }
 
+// Spread onto any non-<button> element (a row, a card, a team-name span)
+// that has an onClick, so it's reachable by Tab and fires on Enter/Space —
+// not just a mouse target. `onClick` may be falsy (several call sites only
+// wire one up conditionally); this becomes a no-op in that case, matching
+// how the element's own cursor/onClick already behave.
+function clickableProps(onClick) {
+  if (!onClick) return {};
+  return {
+    role: "button",
+    tabIndex: 0,
+    onClick,
+    onKeyDown: (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        onClick(e);
+      }
+    },
+  };
+}
+
 /* =========================================================================
    COACH ONBOARDING — name your coach, then a quick how-to-play guide,
    shown once right after a team's picked and before the dynasty actually
@@ -5922,8 +5983,9 @@ function DynastyApp({ initial, onExit, onBackToSelect }) {
     powerById[state.teamId] = userGamePower(state.roster, state.depthChart, powerBaseline, state.minutes);
     const gamesPlayed = record.w + record.l;
     const recordById = accruedRecordTable(powerById, state.teamId, record, state.year, state.seasonSeed, gamesPlayed, streak);
-    return computeRankings(powerById, recordById, state.teamId, gamesPlayed);
-  }, [state.strengths, state.year, state.teamId, record, streak, state.roster, state.depthChart, state.minutes, powerBaseline, state.seasonSeed]);
+    const userSosScore = scheduleStrengthScore(state.schedule, powerById);
+    return computeRankings(powerById, recordById, state.teamId, gamesPlayed, userSosScore);
+  }, [state.strengths, state.year, state.teamId, record, streak, state.roster, state.depthChart, state.minutes, powerBaseline, state.seasonSeed, state.schedule]);
 
   const reputation = reputationOf(state.coach);
   const nilBudget = nilBudgetWithBonus(state, state.teamId);
@@ -6084,7 +6146,7 @@ function DynastyApp({ initial, onExit, onBackToSelect }) {
     const thisGameId = nextGame.id;
 
     const schedule = state.schedule.map((g) => g.id === nextGame.id
-      ? { ...g, played: true, result: { win: result.win, myScore: result.myScore, oppScore: result.oppScore, oppRank, box, oppBox } }
+      ? { ...g, played: true, result: { win: result.win, myScore: result.myScore, oppScore: result.oppScore, oppRank, box, oppBox, overtime: result.overtime } }
       : g);
     const newWeekIndex = schedule.filter((g) => g.played).length + 1;
     const weeksElapsed = Math.max(0, newWeekIndex - state.recruitingWeekIndex);
@@ -6115,7 +6177,7 @@ function DynastyApp({ initial, onExit, onBackToSelect }) {
     const opp = TEAM_MAP[nextGame.oppId];
     const oppPower = teamPowerRating(opp, state.strengths, state.year);
     const mom = momentumMod(currentStreak(state.schedule));
-    const result = simulateGame(state.roster, state.depthChart, oppPower, mom, powerBaseline, state.minutes);
+    const result = simulateGame(state.roster, state.depthChart, oppPower, mom, powerBaseline, state.minutes, nextGame.home);
     commitGameResult(result, opp, rankById[nextGame.oppId] || null);
   }
 
@@ -6140,7 +6202,7 @@ function DynastyApp({ initial, onExit, onBackToSelect }) {
       const opp = TEAM_MAP[g.oppId];
       const oppPower = teamPowerRating(opp, state.strengths, state.year);
       const mom = momentumMod(currentStreak(games.filter((x) => x.played)));
-      const result = simulateGame(roster, state.depthChart, oppPower, mom, powerBaseline, state.minutes);
+      const result = simulateGame(roster, state.depthChart, oppPower, mom, powerBaseline, state.minutes, g.home);
       const oppRank = rankById[g.oppId] || null;
       roster = roster.map((p) => {
         const bx = result.boxByPlayer[p.id];
@@ -6152,7 +6214,7 @@ function DynastyApp({ initial, onExit, onBackToSelect }) {
       roster = maybeInjure(roster, rotationMinutesOf(state.depthChart, roster, state.minutes), gamesRemaining, INJURY_FREQUENCY_MULT[state.settings?.injuryFrequency || "normal"] * facilityInjuryMult(state.facilitiesById?.[state.teamId]?.practice)).roster;
       const box = boxArray(result.boxByPlayer, roster);
       g.played = true;
-      g.result = { win: result.win, myScore: result.myScore, oppScore: result.oppScore, oppRank, box };
+      g.result = { win: result.win, myScore: result.myScore, oppScore: result.oppScore, oppRank, box, overtime: result.overtime };
       if (result.win && oppRank && oppRank <= 25) sigWins += 1;
     }
     setState((s) => {
@@ -6178,7 +6240,7 @@ function DynastyApp({ initial, onExit, onBackToSelect }) {
       const opp = TEAM_MAP[g.oppId];
       const oppPower = teamPowerRating(opp, state.strengths, state.year);
       const mom = momentumMod(currentStreak(games.filter((x) => x.played)));
-      const result = simulateGame(roster, state.depthChart, oppPower, mom, powerBaseline, state.minutes);
+      const result = simulateGame(roster, state.depthChart, oppPower, mom, powerBaseline, state.minutes, g.home);
       const oppRank = rankById[g.oppId] || null;
       roster = roster.map((p) => {
         const bx = result.boxByPlayer[p.id];
@@ -6190,7 +6252,7 @@ function DynastyApp({ initial, onExit, onBackToSelect }) {
       roster = maybeInjure(roster, rotationMinutesOf(state.depthChart, roster, state.minutes), gamesRemaining, INJURY_FREQUENCY_MULT[state.settings?.injuryFrequency || "normal"] * facilityInjuryMult(state.facilitiesById?.[state.teamId]?.practice)).roster;
       const box = boxArray(result.boxByPlayer, roster);
       g.played = true;
-      g.result = { win: result.win, myScore: result.myScore, oppScore: result.oppScore, oppRank, box };
+      g.result = { win: result.win, myScore: result.myScore, oppScore: result.oppScore, oppRank, box, overtime: result.overtime };
       played += 1;
     }
     setState((s) => {
@@ -7262,9 +7324,12 @@ function DynastyApp({ initial, onExit, onBackToSelect }) {
     // Assistant staff salaries come out of the program budget once per
     // season — never NIL, that's player money. The head coach's own salary
     // is NOT charged against it (by design — see coachSalaryFor's comment).
-    const assistantSalaries = Object.values(state.assistants || {}).reduce(
-      (sum, a) => sum + assistantSalaryFor(a, team), 0
-    );
+    // Anyone hired THIS season already paid in full at hire time (see
+    // hireAssistant) — only assistants retained from a prior season get
+    // billed again here, so nobody's ever charged twice for the same year.
+    const assistantSalaries = Object.values(state.assistants || {})
+      .filter((a) => a && a.hiredYear !== state.year)
+      .reduce((sum, a) => sum + assistantSalaryFor(a, team), 0);
     nextProgramBudgetById[state.teamId] = Math.max(0, (nextProgramBudgetById[state.teamId] ?? 0) - assistantSalaries);
 
     // The schedule the coach just confirmed via ScheduleSetupModal (right
@@ -7368,14 +7433,29 @@ function DynastyApp({ initial, onExit, onBackToSelect }) {
     }
   }
 
+  // Salary is charged in full the moment a hire is made — not deferred to
+  // the next season-end billing pass — so a coach can't hire a top assistant
+  // for a recruiting/dev push and fire them before that billing point to
+  // pocket the bonus for free. `hiredYear` marks the payment as covering
+  // THIS season, so advanceYear's own end-of-season billing (which still
+  // covers every assistant retained from a PRIOR season) skips them once to
+  // avoid double-charging the same season.
   function hireAssistant(role, candidate) {
     const salary = assistantSalaryFor(candidate, team);
     if (programBudget < salary) {
       flash(`Not enough in the program budget — ${candidate.name} costs ${formatNil(salary)}/yr.`);
       return;
     }
-    setState((s) => ({ ...s, assistants: { ...(s.assistants || {}), [role]: candidate } }));
-    flash(`Hired ${candidate.name} as ${ASSISTANT_ROLES[role].label} (${candidate.rating} rated).`);
+    setState((s) => {
+      const programBudgetById = { ...(s.programBudgetById || baselineProgramBudgetById()) };
+      programBudgetById[s.teamId] = Math.max(0, (programBudgetById[s.teamId] ?? programBudgetForTeam(team)) - salary);
+      return {
+        ...s,
+        programBudgetById,
+        assistants: { ...(s.assistants || {}), [role]: { ...candidate, hiredYear: s.year } },
+      };
+    });
+    flash(`Hired ${candidate.name} as ${ASSISTANT_ROLES[role].label} (${candidate.rating} rated) — ${formatNil(salary)} paid for the season.`);
   }
   function fireAssistant(role) {
     const current = state.assistants?.[role];
@@ -7463,10 +7543,21 @@ function DynastyApp({ initial, onExit, onBackToSelect }) {
     // The old job's final season still owes its staff a salary before the
     // move — out of THAT program's budget, not the new one's. The head
     // coach's own salary isn't charged (by design — see coachSalaryFor).
-    const leavingAssistantSalaries = Object.values(state.assistants || {}).reduce(
-      (sum, a) => sum + assistantSalaryFor(a, team), 0
-    );
+    // Same hiredYear skip as advanceYear: anyone hired this season already
+    // paid in full at hire time.
+    const leavingAssistantSalaries = Object.values(state.assistants || {})
+      .filter((a) => a && a.hiredYear !== state.year)
+      .reduce((sum, a) => sum + assistantSalaryFor(a, team), 0);
     nextProgramBudgetById[state.teamId] = Math.max(0, (nextProgramBudgetById[state.teamId] ?? 0) - leavingAssistantSalaries);
+    // The buyout itself used to be purely a reputation hit (buyoutPenalty,
+    // above) — impliedBuyoutDollars was only ever a cosmetic figure shown
+    // in JobChangeModal, never actually charged anywhere. It's real now:
+    // the OLD program eats it out of its own budget on the way out, same
+    // dollar figure the modal already showed the coach before they committed.
+    const leavingYearsLeft = contractYearsLeft(state.coach?.hireYear, state.year);
+    const leavingNilBudget = (state.nilBudgetById || baselineNilBudgetById())[state.teamId] ?? nilBudgetForTeam(team);
+    const buyoutDollars = impliedBuyoutDollars(leavingYearsLeft, leavingNilBudget);
+    nextProgramBudgetById[state.teamId] = Math.max(0, (nextProgramBudgetById[state.teamId] ?? 0) - buyoutDollars);
 
     // Record book: the whole roster you're leaving behind had their stint
     // under you end right here, same as if they'd graduated.
@@ -7918,7 +8009,7 @@ function DashboardTab({ state, team, record, nextGame, stage, onSim, onPlay, onS
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 14 }}>
-        <Panel onClick={() => setShowResume(true)} style={{ padding: "14px 18px", cursor: "pointer" }}>
+        <Panel {...clickableProps(() => setShowResume(true))} style={{ padding: "14px 18px", cursor: "pointer" }}>
           <div style={{ fontSize: 11, color: C.dim, letterSpacing: "0.08em", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
             BRACKETOLOGY <span style={{ color: C.dimmer, fontWeight: 400, letterSpacing: "normal", fontSize: 10.5 }}>why? &rarr;</span>
           </div>
@@ -8689,10 +8780,21 @@ function DepthChartTab({ roster, depthChart, minutes, onMove, onAssign, onRemove
 }
 
 /* ---------- Recruiting ---------- */
-function InterestBar({ value, colorHigh }) {
+// `threshold`, when given, draws a thin marker at that % — rivalPressure,
+// the interest level a recruit's rivals are pulling them toward. Previously
+// only visible indirectly (colorHigh flips the fill green once you clear
+// it); showing the actual line lets a coach see how close/far they are,
+// not just whether they've already crossed it.
+function InterestBar({ value, colorHigh, threshold }) {
   return (
-    <div style={{ width: 64, height: 6, background: C.line, position: "relative" }}>
+    <div
+      style={{ width: 64, height: 6, background: C.line, position: "relative" }}
+      title={threshold != null ? `Rival pull: ${Math.round(threshold)} (your interest: ${Math.round(value)})` : undefined}
+    >
       <div style={{ width: `${clamp(value, 0, 100)}%`, height: "100%", background: colorHigh ? C.green : C.wood }} />
+      {threshold != null && (
+        <div style={{ position: "absolute", left: `${clamp(threshold, 0, 100)}%`, top: -2, bottom: -2, width: 2, background: C.red, opacity: 0.85 }} />
+      )}
     </div>
   );
 }
@@ -8936,7 +9038,7 @@ function RecruitBoard({ board, otherBoard, committedIds, targets, onToggleTarget
           return (
             <Panel key={r.id} className={justSigned ? "cbb-sign-pulse" : undefined} style={{ padding: 0 }}>
               <div className="cbb-row"
-                onClick={() => setOpenId(open ? null : r.id)}
+                {...clickableProps(() => setOpenId(open ? null : r.id))}
                 style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 16px", cursor: mine ? "default" : "pointer" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 14, flex: 1, minWidth: 0 }}>
                   {canTarget && (
@@ -8976,7 +9078,8 @@ function RecruitBoard({ board, otherBoard, committedIds, targets, onToggleTarget
                   <span style={{ color: C.dim, fontSize: 11, width: 74 }} title="Desired NIL">{formatNil(r.nilTarget || 0)}</span>
                   <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                     <span style={{ fontSize: 10, color: C.dim }}>Interest</span>
-                    <InterestBar value={r.interest} colorHigh={r.interest >= r.rivalPressure} />
+                    <InterestBar value={r.interest} colorHigh={r.interest >= r.rivalPressure} threshold={r.rivalPressure} />
+                    <span style={{ fontSize: 10, color: C.dimmer, width: 20 }} title="Rival pull — clear this to keep them">{Math.round(r.rivalPressure)}</span>
                   </div>
                 </div>
                 {mine ? (
@@ -9181,7 +9284,7 @@ function ProgressionPanel({ roster, devPoints, devSpent, onDev, onViewPlayer }) 
           const totalSpent = Object.values(pSpent).reduce((a, b) => a + b, 0);
           return (
             <div key={p.id} style={{ borderBottom: idx === sorted.length - 1 ? "none" : `1px solid ${C.line}` }}>
-              <div className="cbb-row" onClick={() => setOpenId(open ? null : p.id)}
+              <div className="cbb-row" {...clickableProps(() => setOpenId(open ? null : p.id))}
                 style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 14px", cursor: "pointer" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
                   <span className="cbb-num" style={{ width: 30, fontWeight: 700, fontSize: 14, color: C.wood }}>{p.pos}</span>
@@ -9872,9 +9975,10 @@ function SettingsModal({ settings, onChange, onClose }) {
   );
 }
 
-// Three freshly generated candidates for one assistant role — hiring is
-// instant and free (no salary/contract system yet), so this is purely a
-// "which one" decision. `rating` maps straight to assistantBonus.
+// Three freshly generated candidates for one assistant role. Hiring charges
+// the full season's salary immediately (see hireAssistant) — every season
+// after that they're retained, the same salary is billed again at season-end.
+// `rating` maps straight to assistantBonus.
 function AssistantHireModal({ role, candidates, team, programBudget, onHire, onClose }) {
   const info = ASSISTANT_ROLES[role];
   return (
@@ -9892,7 +9996,7 @@ function AssistantHireModal({ role, candidates, team, programBudget, onHire, onC
                   {c.rating} rating · {bonus >= 0 ? "+" : ""}{bonus} {role === "recruiting" ? "recruiting pts/wk" : "dev pts/offseason"}
                 </div>
                 <div style={{ fontSize: 11.5, color: affordable ? C.dimmer : C.red, marginTop: 2 }}>
-                  {formatNil(salary)}/yr from program budget
+                  {formatNil(salary)}/yr from program budget — charged in full on hire
                 </div>
               </div>
               <button onClick={() => onHire(c)} disabled={!affordable} className="cbb-btn"
@@ -12174,7 +12278,7 @@ function ScheduleRow({ g, teamConf, rankById, isRival, onViewTeam, onEditGame, o
             ))}
           </select>
         ) : (
-          <span onClick={() => onViewTeam(g.oppId)} style={{ cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 7 }}>
+          <span {...clickableProps(() => onViewTeam(g.oppId))} style={{ cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 7 }}>
             <TeamCrest team={opp} size={20} />
             <RankBadge rank={rankById?.[g.oppId]} />
             <span style={{ borderBottom: `1px dotted ${C.dim}` }}>{opp.name}</span>
@@ -12204,10 +12308,11 @@ function ScheduleRow({ g, teamConf, rankById, isRival, onViewTeam, onEditGame, o
       <td style={td}>
         {g.played ? (
           <span
-            onClick={() => hasBox && onViewBox && onViewBox(g.id)}
+            {...clickableProps(hasBox && onViewBox ? () => onViewBox(g.id) : null)}
             style={{ color: g.result.win ? C.green : C.red, fontWeight: 600, cursor: hasBox ? "pointer" : "default" }}
           >
             {g.result.win ? "W" : "L"} {g.result.myScore}-{g.result.oppScore}
+            {g.result.overtime && <span style={{ color: C.dim, fontWeight: 400 }}> OT</span>}
             {signature && <Star size={11} fill={C.gold} color={C.gold} style={{ marginLeft: 5, verticalAlign: "middle" }} />}
           </span>
         ) : <span style={{ color: C.dimmer }}>—</span>}
@@ -12458,7 +12563,7 @@ function StandingsTab({ team, ranked, rankById, userRecord, onViewTeam }) {
           </thead>
           <tbody>
             {rows.map((t, i) => (
-              <tr key={t.id} className="cbb-row" style={{ borderBottom: `1px solid ${C.line}`, background: t.isUser ? C.panelAlt : "transparent", cursor: "pointer" }} onClick={() => onViewTeam(t.id)}>
+              <tr key={t.id} className="cbb-row" style={{ borderBottom: `1px solid ${C.line}`, background: t.isUser ? C.panelAlt : "transparent", cursor: "pointer" }} {...clickableProps(() => onViewTeam(t.id))}>
                 <td style={td}>{i + 1}</td>
                 <td style={{ ...td, fontWeight: t.isUser ? 700 : 500 }}>
                   <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}>
@@ -12508,7 +12613,7 @@ function StandingsBarChart({ rows, onViewTeam, inConf = false }) {
           const gp = w + l;
           const pct = gp > 0 ? w / gp : 0;
           return (
-            <div key={t.id} className="cbb-row" onClick={() => onViewTeam(t.id)}
+            <div key={t.id} className="cbb-row" {...clickableProps(() => onViewTeam(t.id))}
               style={{ display: "flex", alignItems: "center", gap: 10, padding: "5px 6px", cursor: "pointer" }}>
               <div style={{
                 width: 130, flexShrink: 0, fontSize: 12, fontWeight: t.isUser ? 700 : 500,
@@ -12561,7 +12666,7 @@ function RankingsTab({ ranked, userTeamId, onViewTeam }) {
   const row = (r, i) => {
     const isUser = r.team.id === userTeamId;
     return (
-      <tr key={r.team.id} className="cbb-row" style={{ borderBottom: `1px solid ${C.line}`, background: isUser ? C.panelAlt : "transparent", cursor: "pointer" }} onClick={() => onViewTeam(r.team.id)}>
+      <tr key={r.team.id} className="cbb-row" style={{ borderBottom: `1px solid ${C.line}`, background: isUser ? C.panelAlt : "transparent", cursor: "pointer" }} {...clickableProps(() => onViewTeam(r.team.id))}>
         <td style={{ ...td, width: 44 }}>
           <span className="cbb-num" style={{ fontSize: 17, fontWeight: 700, color: i < 25 ? C.wood : C.dim }}>{i + 1}</span>
         </td>
@@ -12638,7 +12743,7 @@ function MatchupBox({ m, seedOf, userTeamId, onViewTeam }) {
     const seed = seedOf ? seedOf(id) : null;
     return (
       <div
-        onClick={(e) => { e.stopPropagation(); onViewTeam && onViewTeam(id); }}
+        {...clickableProps(onViewTeam ? (e) => { e.stopPropagation(); onViewTeam(id); } : null)}
         className={justDecided && isWinner ? "cbb-win-pulse" : undefined}
         style={{
           display: "flex", justifyContent: "space-between", alignItems: "center", gap: 6,
@@ -12730,7 +12835,7 @@ function LeaderboardTab({ leaders, userTeamId, year, onViewTeam }) {
         </div>
         {ranked.map((p, i) => (
           <div key={p.id}
-            onClick={() => onViewTeam && onViewTeam(p.teamId)}
+            {...clickableProps(onViewTeam ? () => onViewTeam(p.teamId) : null)}
             className="cbb-row"
             style={{
               display: "grid", gridTemplateColumns: "48px 1fr 130px 44px 66px 66px 66px",
@@ -12928,7 +13033,7 @@ function PostseasonTab({ postseason, userTeamId, seasonOver, rankById, onStart, 
           <Panel style={{ padding: 12 }}>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 8 }}>
               {ps.madness.firstFourResults.map((r, i) => (
-                <div key={i} style={{ fontSize: 12.5, color: C.dim, cursor: "pointer" }} onClick={() => onViewTeam(r.winner)}>
+                <div key={i} style={{ fontSize: 12.5, color: C.dim, cursor: "pointer" }} {...clickableProps(() => onViewTeam(r.winner))}>
                   <span style={{ color: C.cream, fontWeight: 600 }}>{TEAM_MAP[r.winner]?.name}</span> beat {TEAM_MAP[r.loser]?.name} <span className="cbb-num" style={{ color: C.dimmer }}>{r.score}</span>
                 </div>
               ))}
