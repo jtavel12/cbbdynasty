@@ -1662,7 +1662,19 @@ function playerNilDemand(player, team) {
   const tier = clamp(((team?.prestige ?? 2) - 1) / 4, 0, 1);
   const pedigreeValue = 2 + recruitingPedigreeCurve(tier) * 16;
   const adjustedValue = pedigreeValue * 0.75 + productionValue * 0.25;
-  const { nilTarget } = computeNilAsk({ stars: player.starsAtSigning || 3, adjustedValue, isTransfer: false, prestige: team?.prestige ?? 2 });
+  // Stars here MUST be recomputed from this season's actual production
+  // (starsFromValue(adjustedValue) — exactly how every transfer-portal and
+  // recruit entry gets priced), never player.starsAtSigning. A player who
+  // signed as a 3-star and developed into a genuine 83-overall contributor
+  // is a 5-star market value NOW — pricing their retention off their old
+  // signing-day rating undersells them by a factor of 10+ (NIL_BASE_BY_STARS
+  // 3-star base is $60K, 5-star is $700K) and is exactly why a good player
+  // could be kept for pocket change relative to what they'd fetch on the
+  // open market. isTransfer is true for the same reason: this number is
+  // "what would this player actually be worth if they left," which is a
+  // transfer-market value, not a freshman recruiting pitch.
+  const stars = starsFromValue(adjustedValue);
+  const { nilTarget } = computeNilAsk({ stars, adjustedValue, isTransfer: true, prestige: team?.prestige ?? 2 });
   return nilTarget;
 }
 
