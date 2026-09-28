@@ -4635,9 +4635,11 @@ function assistantBonus(assistant) {
   if (!assistant) return 0;
   return Math.round((assistant.rating - 50) / 5);
 }
-// An assistant's own annual salary — paid out of the program budget right
-// alongside the head coach's (see coachSalaryFor), scaled by the program's
-// tier and how good a name that assistant actually is.
+// An assistant's own annual salary — paid out of the program budget
+// (never NIL, that's player money, not staff pay), scaled by the program's
+// tier and how good a name that assistant actually is. The head coach's
+// own salary is NOT charged against the program budget — by design, coaches
+// don't want their own pay competing with their program's spending power.
 const ASSISTANT_SALARY_BASE = { high: 250_000, mid: 100_000, low: 40_000 };
 function assistantSalaryFor(assistant, team) {
   if (!assistant) return 0;
@@ -4683,7 +4685,9 @@ function generateAssistantCandidates(team) {
    (not a static baseline — the real, already-grown number), plus/minus any
    guarantee-fee money won or paid from that season's schedule. Unlike NIL,
    program budget has no ceiling — it's athletic-department capital
-   (facilities, coach salaries), not a per-player compensation pool, so
+   (facilities, assistant coach salaries), not a per-player compensation
+   pool or a head-coach-pay pool (the head coach's own salary is never
+   charged against it — by design), so
    there's no tier cap to taper toward.
    ========================================================================= */
 function programBudgetForTeam(team) {
@@ -4713,17 +4717,6 @@ function advanceProgramBudgets(prevById, nilById, facilitiesById) {
     next[t.id] = leftover + seasonalBudget;
   }
   return next;
-}
-
-// A coach's annual salary — paid out of the program budget, never NIL
-// (that's player money, not staff pay), once per season. Scales with the
-// program's own tier and the coach's own reputation, since a proven name
-// commands more.
-const COACH_SALARY_BASE = { high: 900_000, mid: 350_000, low: 120_000 };
-function coachSalaryFor(team, reputation) {
-  const base = COACH_SALARY_BASE[nilTierFor(team)];
-  const repMult = clamp(1 + (reputation || 0) / 300, 0.7, 2.2);
-  return Math.round(base * repMult);
 }
 
 // Four facility types, each upgradeable 0-5, purchased with the program
@@ -7142,13 +7135,13 @@ function DynastyApp({ initial, onExit, onBackToSelect }) {
     const nextProgramBudgetById = advanceProgramBudgets(
       state.programBudgetById || baselineProgramBudgetById(), nextNilById, state.facilitiesById
     );
-    // Coach and assistant staff salaries come out of the program budget once
-    // per season — never NIL, that's player money.
-    const coachSalary = coachSalaryFor(team, reputation);
+    // Assistant staff salaries come out of the program budget once per
+    // season — never NIL, that's player money. The head coach's own salary
+    // is NOT charged against it (by design — see coachSalaryFor's comment).
     const assistantSalaries = Object.values(state.assistants || {}).reduce(
       (sum, a) => sum + assistantSalaryFor(a, team), 0
     );
-    nextProgramBudgetById[state.teamId] = Math.max(0, (nextProgramBudgetById[state.teamId] ?? 0) - coachSalary - assistantSalaries);
+    nextProgramBudgetById[state.teamId] = Math.max(0, (nextProgramBudgetById[state.teamId] ?? 0) - assistantSalaries);
 
     // The schedule the coach just confirmed via ScheduleSetupModal (right
     // before hitting "Begin Season" — see the seasonScheduleReview gate in
@@ -7335,13 +7328,13 @@ function DynastyApp({ initial, onExit, onBackToSelect }) {
     const nextProgramBudgetById = advanceProgramBudgets(
       state.programBudgetById || baselineProgramBudgetById(), nextNilById, state.facilitiesById
     );
-    // The old job's final season still owes its coach and staff a salary
-    // before the move — out of THAT program's budget, not the new one's.
-    const leavingCoachSalary = coachSalaryFor(team, reputation);
+    // The old job's final season still owes its staff a salary before the
+    // move — out of THAT program's budget, not the new one's. The head
+    // coach's own salary isn't charged (by design — see coachSalaryFor).
     const leavingAssistantSalaries = Object.values(state.assistants || {}).reduce(
       (sum, a) => sum + assistantSalaryFor(a, team), 0
     );
-    nextProgramBudgetById[state.teamId] = Math.max(0, (nextProgramBudgetById[state.teamId] ?? 0) - leavingCoachSalary - leavingAssistantSalaries);
+    nextProgramBudgetById[state.teamId] = Math.max(0, (nextProgramBudgetById[state.teamId] ?? 0) - leavingAssistantSalaries);
 
     // Record book: the whole roster you're leaving behind had their stint
     // under you end right here, same as if they'd graduated.
@@ -11778,7 +11771,7 @@ function ProgramTab({ state, team, record, reputation, rivalIds, rankById, onRet
             <div style={{ fontSize: 12, color: C.dim }}>Program budget: <strong className="cbb-num" style={{ color: C.gold, fontSize: 14 }}>{formatNil(programBudget)}</strong></div>
           </div>
           <div style={{ fontSize: 11.5, color: C.dimmer, marginBottom: 14 }}>
-            Athletic-department capital, not player pay — a fresh seasonal budget worth half your NIL budget gets added on top every year (faster with a stronger Arena), on top of whatever you didn't spend last season, with no ceiling. Your coaching salary and any assistants you hire come out of it too, along with these upgrades.
+            Athletic-department capital, not player pay — a fresh seasonal budget worth half your NIL budget gets added on top every year (faster with a stronger Arena), on top of whatever you didn't spend last season, with no ceiling. Any assistants you hire come out of it, along with these upgrades — your own salary as head coach never does.
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 14 }}>
             {Object.entries(FACILITIES).map(([key, info]) => {
