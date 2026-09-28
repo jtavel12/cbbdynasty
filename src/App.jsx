@@ -1812,6 +1812,19 @@ function nilCommittedTotal(roster, offseason, recruitingBoard, teamId, excludeId
 function nilAvailableAmount(nilBudget, roster, offseason, recruitingBoard, teamId, excludeId) {
   return Math.max(0, (nilBudget || 0) - nilCommittedTotal(roster, offseason, recruitingBoard, teamId, excludeId));
 }
+// A team's real, spendable NIL capacity THIS season: the recurring budget
+// (nilBudgetById — what advanceNilBudgets grows year over year) plus
+// nilSeasonBonusById, a one-time buy-game-guarantee windfall for the
+// current season only (see confirmScheduleSetup's comment on why that
+// bonus is tracked separately instead of being folded into nilBudgetById —
+// otherwise it would silently become a permanent raise that compounds
+// forever). Every NIL spend/cap check in the game should read capacity
+// through this helper, not nilBudgetById alone, so the bonus is actually
+// spendable and not just a number on the Dashboard.
+function nilBudgetWithBonus(s, teamId) {
+  const base = (s.nilBudgetById || baselineNilBudgetById())[teamId] ?? 0;
+  return base + (s.nilSeasonBonusById?.[teamId] || 0);
+}
 
 // Fresh, per-cycle recruiting-trail bookkeeping shared by every recruit object.
 function freshTrailState() {
@@ -5899,7 +5912,7 @@ function DynastyApp({ initial, onExit, onBackToSelect }) {
   }, [state.strengths, state.year, state.teamId, record, streak, state.roster, state.depthChart, state.minutes, powerBaseline, state.seasonSeed]);
 
   const reputation = reputationOf(state.coach);
-  const nilBudget = (state.nilBudgetById || baselineNilBudgetById())[state.teamId] ?? nilBudgetForTeam(team);
+  const nilBudget = nilBudgetWithBonus(state, state.teamId);
   const programBudget = (state.programBudgetById || baselineProgramBudgetById())[state.teamId] ?? programBudgetForTeam(team);
   const leaders = useMemo(
     () => buildLeaderboard(state.year, state.teamId, state.roster, state.seasonSeed, record.w + record.l),
@@ -6230,7 +6243,7 @@ function DynastyApp({ initial, onExit, onBackToSelect }) {
       // budget can't be locked in for the year until the coach trims it back
       // under (see trimPlayerNil) — the button itself stays disabled too,
       // this is just the same guard enforced at the state layer.
-      const budget = (s.nilBudgetById || baselineNilBudgetById())[s.teamId] ?? 0;
+      const budget = nilBudgetWithBonus(s, s.teamId);
       if (committedRosterNil(s.roster, os, null) > budget) return s;
       const draftDeclarations = decideEarlyDeclarations(s.roster);
       const transferRisks = computeTransferRisks(s.roster, s.minutes, team, new Set(draftDeclarations.map((d) => d.id)));
@@ -6265,7 +6278,7 @@ function DynastyApp({ initial, onExit, onBackToSelect }) {
   function doNilOfferTransfer(recruit, amount) {
     const os = state.offseason;
     if (!os) return;
-    const budget = (state.nilBudgetById || baselineNilBudgetById())[state.teamId] ?? 0;
+    const budget = nilBudgetWithBonus(state, state.teamId);
     const available = nilAvailableAmount(budget, state.roster, os, state.recruitingBoard, state.teamId, recruit.id);
     const capped = clamp(amount, 0, available);
     const updated = applyNilOffer(recruit, capped);
@@ -6290,7 +6303,7 @@ function DynastyApp({ initial, onExit, onBackToSelect }) {
     // Same shared pool every other NIL spend draws from — the roster
     // (excluding this player's own current figure) plus every pending
     // recruiting/transfer pledge.
-    const budget = (state.nilBudgetById || baselineNilBudgetById())[state.teamId] ?? 0;
+    const budget = nilBudgetWithBonus(state, state.teamId);
     const pledge = clamp(Math.round(Number(nilPledge) || 0), 0,
       nilAvailableAmount(budget, state.roster, os, state.recruitingBoard, state.teamId, playerId));
     const trajectory = teamTrajectoryScore(record, postseasonSummary(state.postseason, state.teamId));
@@ -6329,7 +6342,7 @@ function DynastyApp({ initial, onExit, onBackToSelect }) {
     setState((s) => {
       const player = s.roster.find((p) => p.id === playerId);
       if (!player) return s;
-      const budget = (s.nilBudgetById || baselineNilBudgetById())[s.teamId] ?? 0;
+      const budget = nilBudgetWithBonus(s, s.teamId);
       const available = nilAvailableAmount(budget, s.roster, s.offseason, s.recruitingBoard, s.teamId, playerId);
       // The ceiling is whichever is higher of "room actually available" or
       // "what this player is already on" — otherwise a roster that starts
@@ -6351,7 +6364,7 @@ function DynastyApp({ initial, onExit, onBackToSelect }) {
     setState((s) => {
       const os = s.offseason;
       if (!os || os.nilLocked) return s;
-      const budget = (s.nilBudgetById || baselineNilBudgetById())[s.teamId] ?? 0;
+      const budget = nilBudgetWithBonus(s, s.teamId);
       const overage = committedRosterNil(s.roster, os, null) - budget;
       if (overage <= 0) return s;
       const player = s.roster.find((p) => p.id === playerId);
@@ -6373,7 +6386,7 @@ function DynastyApp({ initial, onExit, onBackToSelect }) {
     const risk = os.transferRisks.find((r) => r.id === playerId && !r.resolved);
     const player = state.roster.find((p) => p.id === playerId);
     if (!risk || !player) return;
-    const budget = (state.nilBudgetById || baselineNilBudgetById())[state.teamId] ?? 0;
+    const budget = nilBudgetWithBonus(state, state.teamId);
     const available = nilAvailableAmount(budget, state.roster, os, state.recruitingBoard, state.teamId, playerId);
     const maxOffer = Math.max(player.nil || 0, available);
     const offeredNil = walk ? (player.nil || 0) : clamp(Math.round(Number(counterNil) || 0), player.nil || 0, maxOffer);
@@ -6483,18 +6496,24 @@ function DynastyApp({ initial, onExit, onBackToSelect }) {
   // season case goes through the seasonScheduleReview flow instead, which
   // hands the fee-stamping off to advanceYear itself). Stamps every non-
   // conference game with its guarantee-fee outcome (see applyGuaranteeFees)
-  // and applies the net dollar effect to this team's program and/or NIL
-  // budget (per the coach's chosen destination) right here, once — not
-  // recomputed later, so what the modal previewed is exactly what happened.
+  // and applies the net dollar effect right here, once — not recomputed
+  // later, so what the modal previewed is exactly what happened. Program
+  // budget is a real, permanent deposit (that money exists whether or not
+  // it's spent). NIL is different: it's a one-season recruiting windfall,
+  // never a permanent raise to the program's real NIL earning power, so it
+  // goes to nilSeasonBonusById (added to nilBudget only when computing THIS
+  // season's spendable capacity) instead of nilBudgetById — which is what
+  // advanceNilBudgets grows off of every year, so folding it in there would
+  // let one buy-game payday permanently compound the program's baseline
+  // forever after.
   function confirmScheduleSetup() {
     setState((s) => {
       const nilSplitPct = (s.settings || DEFAULT_SETTINGS).guaranteeFeeNilSplitPct;
       const { games, programNetDelta, nilNetDelta } = applyGuaranteeFees(s.schedule, team, nilSplitPct);
       const programBudgetById = { ...(s.programBudgetById || baselineProgramBudgetById()) };
       programBudgetById[s.teamId] = Math.max(0, Math.round((programBudgetById[s.teamId] ?? programBudgetForTeam(team)) + programNetDelta));
-      const nilBudgetById = { ...(s.nilBudgetById || baselineNilBudgetById()) };
-      if (nilNetDelta) nilBudgetById[s.teamId] = Math.max(0, Math.round((nilBudgetById[s.teamId] ?? nilBudgetForTeam(team)) + nilNetDelta));
-      return { ...s, schedule: games, programBudgetById, nilBudgetById, needsScheduleSetup: false };
+      const nilSeasonBonusById = { ...(s.nilSeasonBonusById || {}), [s.teamId]: nilNetDelta };
+      return { ...s, schedule: games, programBudgetById, nilSeasonBonusById, needsScheduleSetup: false };
     });
     flash("Schedule locked in for the season.");
   }
@@ -6736,7 +6755,7 @@ function DynastyApp({ initial, onExit, onBackToSelect }) {
   // from the budget yet — it's only reserved (shown as "pending") until the
   // recruit actually signs; see attemptSign.
   function doNilOffer(recruit, amount) {
-    const budget = (state.nilBudgetById || baselineNilBudgetById())[state.teamId] ?? 0;
+    const budget = nilBudgetWithBonus(state, state.teamId);
     const available = nilAvailableAmount(budget, state.roster, state.offseason, state.recruitingBoard, state.teamId, recruit.id);
     const capped = clamp(amount, 0, available);
     const updated = applyNilOffer(recruit, capped);
@@ -7239,13 +7258,16 @@ function DynastyApp({ initial, onExit, onBackToSelect }) {
     // DynastyApp) is stamped with its guarantee-fee outcome for real here,
     // once, as part of the same season transition everything else in this
     // function applies. What % of a buy-game payday's kept cut lands in NIL
-    // vs. the program budget is the coach's own settings choice.
+    // vs. the program budget is the coach's own settings choice. The NIL
+    // share is next season's one-time recruiting windfall, not a permanent
+    // raise — see confirmScheduleSetup's comment on nilSeasonBonusById for
+    // why it's kept out of nextNilById (which DOES compound every year).
     const rawNextSchedule = (os && os.scheduleDraft) ? os.scheduleDraft : genSchedule(team, newYear);
     const guaranteeNilSplitPct = (state.settings || DEFAULT_SETTINGS).guaranteeFeeNilSplitPct;
     const { games: nextSchedule, programNetDelta: scheduleProgramDelta, nilNetDelta: scheduleNilDelta } =
       applyGuaranteeFees(rawNextSchedule, team, guaranteeNilSplitPct);
     nextProgramBudgetById[state.teamId] = Math.max(0, (nextProgramBudgetById[state.teamId] ?? 0) + scheduleProgramDelta);
-    if (scheduleNilDelta) nextNilById[state.teamId] = Math.max(0, (nextNilById[state.teamId] ?? 0) + scheduleNilDelta);
+    const nextNilSeasonBonusById = { ...(state.nilSeasonBonusById || {}), [state.teamId]: scheduleNilDelta };
 
     // Prestige movement since last season, for trend indicators.
     const prevP = state.prestigeById || baselinePrestigeById();
@@ -7281,6 +7303,7 @@ function DynastyApp({ initial, onExit, onBackToSelect }) {
       seasonSeed: (Math.random() * 0xffffffff) >>> 0,
       prestigeById: nextPrestige,
       nilBudgetById: nextNilById,
+      nilSeasonBonusById: nextNilSeasonBonusById,
       programBudgetById: nextProgramBudgetById,
       nilObjectives: nextNilObjectives,
       roster: newRoster,
@@ -7867,7 +7890,7 @@ function DashboardTab({ state, team, record, nextGame, stage, onSim, onPlay, onS
   const injured = state.roster.filter(isHurt);
   const streak = currentStreak(state.schedule);
   const hasUnplayedNonConf = state.schedule.some((g) => !g.conf && !g.played);
-  const nilBudget = (state.nilBudgetById || baselineNilBudgetById())[team.id] ?? nilBudgetForTeam(team);
+  const nilBudget = nilBudgetWithBonus(state, team.id);
   const programHistory = programHistoryFor(team.id, state);
   const [showResume, setShowResume] = useState(false);
 
@@ -7969,7 +7992,7 @@ function DashboardTab({ state, team, record, nextGame, stage, onSim, onPlay, onS
         return (
           <Panel style={{ padding: 20 }}>
             <div style={{ fontSize: 11, color: C.dim, letterSpacing: "0.08em", marginBottom: 12 }}>
-              NIL OBJECTIVES · {formatNil((state.nilBudgetById || baselineNilBudgetById())[team.id] ?? nilBudgetForTeam(team))} budget
+              NIL OBJECTIVES · {formatNil(nilBudget)} budget
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               {state.nilObjectives.map((o) => {
@@ -12991,6 +13014,7 @@ export default function CBBDynasty() {
       seasonSeed: (Math.random() * 0xffffffff) >>> 0,
       prestigeById,
       nilBudgetById: baselineNilBudgetById(),
+      nilSeasonBonusById: {},
       programBudgetById: baselineProgramBudgetById(),
       facilitiesById: baselineFacilitiesById(),
       nilObjectives: pickObjectivesFor(team.prestige),
