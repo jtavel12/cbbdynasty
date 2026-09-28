@@ -2726,17 +2726,18 @@ function guaranteeFeeFor(userTeam, oppTeam) {
 // null for a same-tier matchup with no real payout either way). A "pay"
 // game always costs the full fee out of the program budget — that's
 // institutional money buying a game, never player NIL. A "receive" game
-// only banks GUARANTEE_KEEP_PCT of it, routed to whichever pool the coach
-// chose for this schedule (`destination`: "program" or "nil") — a
-// resource-strapped program might rather put a buy-game payday straight
-// into NIL than into facilities. Returns the program-budget and NIL-budget
-// deltas separately (plus their sum as `netDelta`, for callers that just
-// want the total). A real guarantee game is never a free choice of site:
-// the higher-tier program pays to host, and the lower-tier program travels
-// for the payday — so `home` gets forced to match `direction` here, the
-// single place both the live preview and the final saved schedule both
-// flow through.
-function applyGuaranteeFees(slate, userTeam, destination = "program") {
+// only banks GUARANTEE_KEEP_PCT of it, split between the program budget
+// and NIL by `nilSplitPct` (0-100 — the coach's own chosen % of that kept
+// cut that goes to NIL instead) — a resource-strapped program might rather
+// put some or all of a buy-game payday straight into NIL than into
+// facilities. Returns the program-budget and NIL-budget deltas separately
+// (plus their sum as `netDelta`, for callers that just want the total). A
+// real guarantee game is never a free choice of site: the higher-tier
+// program pays to host, and the lower-tier program travels for the payday
+// — so `home` gets forced to match `direction` here, the single place both
+// the live preview and the final saved schedule both flow through.
+function applyGuaranteeFees(slate, userTeam, nilSplitPct = 0) {
+  const splitFrac = clamp(nilSplitPct || 0, 0, 100) / 100;
   let programNetDelta = 0;
   let nilNetDelta = 0;
   const games = slate.map((g) => {
@@ -2747,8 +2748,9 @@ function applyGuaranteeFees(slate, userTeam, destination = "program") {
       programNetDelta -= fee.amount;
     } else {
       const kept = Math.round(fee.amount * GUARANTEE_KEEP_PCT);
-      if (destination === "nil") nilNetDelta += kept;
-      else programNetDelta += kept;
+      const toNil = Math.round(kept * splitFrac);
+      nilNetDelta += toNil;
+      programNetDelta += kept - toNil;
     }
     return { ...g, fee, home: fee.direction === "pay" };
   });
@@ -4170,7 +4172,7 @@ function tickInjuries(roster) {
 const DEFAULT_SETTINGS = {
   injuryFrequency: "normal", // "low" | "normal" | "high"
   autosave: true,
-  guaranteeFeeDestination: "program", // "program" | "nil" — where a buy-game payday's kept cut lands
+  guaranteeFeeNilSplitPct: 0, // 0-100 — what % of a buy-game payday's kept cut goes to NIL instead of the program budget
 };
 const INJURY_FREQUENCY_MULT = { low: 0.55, normal: 1, high: 1.7 };
 // A weekly, re-chosen-every-game practice plan: easing off practice trims
@@ -6008,8 +6010,8 @@ function DynastyApp({ initial, onExit, onBackToSelect }) {
         year={state.year}
         games={state.schedule}
         programBudget={programBudget}
-        destination={(state.settings || DEFAULT_SETTINGS).guaranteeFeeDestination}
-        onSetDestination={setGuaranteeFeeDestination}
+        nilSplitPct={(state.settings || DEFAULT_SETTINGS).guaranteeFeeNilSplitPct}
+        onSetNilSplitPct={setGuaranteeFeeNilSplitPct}
         onEditGame={editScheduleSetupGame}
         onConfirm={confirmScheduleSetup}
       />
@@ -6486,8 +6488,8 @@ function DynastyApp({ initial, onExit, onBackToSelect }) {
   // recomputed later, so what the modal previewed is exactly what happened.
   function confirmScheduleSetup() {
     setState((s) => {
-      const destination = (s.settings || DEFAULT_SETTINGS).guaranteeFeeDestination;
-      const { games, programNetDelta, nilNetDelta } = applyGuaranteeFees(s.schedule, team, destination);
+      const nilSplitPct = (s.settings || DEFAULT_SETTINGS).guaranteeFeeNilSplitPct;
+      const { games, programNetDelta, nilNetDelta } = applyGuaranteeFees(s.schedule, team, nilSplitPct);
       const programBudgetById = { ...(s.programBudgetById || baselineProgramBudgetById()) };
       programBudgetById[s.teamId] = Math.max(0, Math.round((programBudgetById[s.teamId] ?? programBudgetForTeam(team)) + programNetDelta));
       const nilBudgetById = { ...(s.nilBudgetById || baselineNilBudgetById()) };
@@ -6497,12 +6499,13 @@ function DynastyApp({ initial, onExit, onBackToSelect }) {
     flash("Schedule locked in for the season.");
   }
 
-  // Which pool a buy-game payday's kept cut lands in — set from inside
-  // ScheduleSetupModal itself (per the user's request: this is a scheduling
-  // decision, not a buried settings toggle), but persisted on state.settings
-  // like any other preference so it carries over as the default next season.
-  function setGuaranteeFeeDestination(value) {
-    setState((s) => ({ ...s, settings: { ...(s.settings || DEFAULT_SETTINGS), guaranteeFeeDestination: value } }));
+  // What % of a buy-game payday's kept cut goes to NIL instead of the
+  // program budget — set from inside ScheduleSetupModal itself (per the
+  // user's request: this is a scheduling decision, not a buried settings
+  // toggle), but persisted on state.settings like any other preference so
+  // it carries over as the default next season.
+  function setGuaranteeFeeNilSplitPct(pct) {
+    setState((s) => ({ ...s, settings: { ...(s.settings || DEFAULT_SETTINGS), guaranteeFeeNilSplitPct: clamp(pct, 0, 100) } }));
   }
 
   function startPostseason() {
@@ -7235,12 +7238,12 @@ function DynastyApp({ initial, onExit, onBackToSelect }) {
     // before hitting "Begin Season" — see the seasonScheduleReview gate in
     // DynastyApp) is stamped with its guarantee-fee outcome for real here,
     // once, as part of the same season transition everything else in this
-    // function applies. Which pool a buy-game payday's kept cut lands in
-    // (program budget or NIL) is the coach's own settings choice.
+    // function applies. What % of a buy-game payday's kept cut lands in NIL
+    // vs. the program budget is the coach's own settings choice.
     const rawNextSchedule = (os && os.scheduleDraft) ? os.scheduleDraft : genSchedule(team, newYear);
-    const guaranteeDestination = (state.settings || DEFAULT_SETTINGS).guaranteeFeeDestination;
+    const guaranteeNilSplitPct = (state.settings || DEFAULT_SETTINGS).guaranteeFeeNilSplitPct;
     const { games: nextSchedule, programNetDelta: scheduleProgramDelta, nilNetDelta: scheduleNilDelta } =
-      applyGuaranteeFees(rawNextSchedule, team, guaranteeDestination);
+      applyGuaranteeFees(rawNextSchedule, team, guaranteeNilSplitPct);
     nextProgramBudgetById[state.teamId] = Math.max(0, (nextProgramBudgetById[state.teamId] ?? 0) + scheduleProgramDelta);
     if (scheduleNilDelta) nextNilById[state.teamId] = Math.max(0, (nextNilById[state.teamId] ?? 0) + scheduleNilDelta);
 
@@ -7741,8 +7744,8 @@ function DynastyApp({ initial, onExit, onBackToSelect }) {
           year={state.year + 1}
           games={state.offseason.scheduleDraft}
           programBudget={programBudget}
-          destination={(state.settings || DEFAULT_SETTINGS).guaranteeFeeDestination}
-          onSetDestination={setGuaranteeFeeDestination}
+          nilSplitPct={(state.settings || DEFAULT_SETTINGS).guaranteeFeeNilSplitPct}
+          onSetNilSplitPct={setGuaranteeFeeNilSplitPct}
           onEditGame={editScheduleSetupGame}
           onConfirm={() => { setSeasonScheduleReview(false); advanceYear(); }}
         />
@@ -12239,17 +12242,17 @@ function ScheduleTab({ schedule, teamConf, rankById, rivalIds, onViewTeam, onEdi
 // season-to-season transition, and right after taking a new job. Once
 // confirmed the slate is locked for the whole season — no in-season
 // "Change" button exists anymore.
-function ScheduleSetupModal({ team, year, games, programBudget, destination = "program", onSetDestination, onEditGame, onConfirm }) {
+function ScheduleSetupModal({ team, year, games, programBudget, nilSplitPct = 0, onSetNilSplitPct, onEditGame, onConfirm }) {
   const nonConf = games.filter((g) => !g.conf);
   const takenOppIds = new Set(nonConf.map((g) => g.oppId));
-  const preview = useMemo(() => applyGuaranteeFees(games, team, destination), [games, team, destination]);
+  const preview = useMemo(() => applyGuaranteeFees(games, team, nilSplitPct), [games, team, nilSplitPct]);
   // Affordability only ever looks at the program-budget side — money routed
   // to NIL this season doesn't help cover a program-budget shortfall, and a
   // "pay" fee always comes out of the program budget regardless of where
   // "receive" money is going.
   const affordable = programBudget + preview.programNetDelta >= 0;
   return (
-    <div className="cbb-scroll" style={{ position: "fixed", inset: 0, zIndex: 60, overflowY: "auto", minHeight: "100vh", background: C.bg, padding: "40px 20px", display: "flex", justifyContent: "center" }}>
+    <div className="cbb-scroll" style={{ position: "fixed", inset: 0, zIndex: 60, overflowY: "auto", background: C.bg, padding: "40px 20px", display: "flex", justifyContent: "center" }}>
       <div
         className="cbb-hero-glow"
         style={{
@@ -12278,20 +12281,19 @@ function ScheduleSetupModal({ team, year, games, programBudget, destination = "p
               )}
             </div>
           </div>
-          {onSetDestination && (
-            <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-              <span style={{ fontSize: 11.5, color: C.dimmer }}>Send buy-game payday money to:</span>
-              {[["program", "Program Budget"], ["nil", "NIL Budget"]].map(([val, label]) => (
-                <button key={val} onClick={() => onSetDestination(val)} className="cbb-btn"
-                  style={{
-                    fontSize: 12, padding: "5px 12px", cursor: "pointer",
-                    border: `1px solid ${destination === val ? C.wood : C.line}`,
-                    background: destination === val ? C.panelAlt : "transparent",
-                    color: destination === val ? C.cream : C.dim,
-                  }}>
-                  {label}
-                </button>
-              ))}
+          {onSetNilSplitPct && (
+            <div>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 4 }}>
+                <span style={{ fontSize: 11.5, color: C.dimmer }}>Split buy-game payday money between the two budgets:</span>
+                <span style={{ fontSize: 11.5, color: C.dim }}>
+                  <strong style={{ color: C.gold }}>{100 - nilSplitPct}%</strong> Program · <strong style={{ color: C.gold }}>{nilSplitPct}%</strong> NIL
+                </span>
+              </div>
+              <input
+                type="range" min={0} max={100} step={5} value={nilSplitPct}
+                onChange={(e) => onSetNilSplitPct(Number(e.target.value))}
+                style={{ width: "100%", accentColor: C.wood, cursor: "pointer" }}
+              />
             </div>
           )}
         </Panel>
