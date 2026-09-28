@@ -5246,6 +5246,30 @@ function positionNeeds(roster) {
 const SAVE_SLOTS = [1, 2, 3];
 const slotKey = (slot) => `cbb-dynasty-save-${slot}`;
 const LEGACY_SAVE_KEY = "cbb-dynasty-save";
+// Which slot was last actively being played, so a page refresh (or just
+// closing and reopening the tab) drops you straight back into your
+// dynasty instead of the save-slot picker — nothing is ever actually
+// deleted by a refresh (saves live in localStorage, untouched by a reload),
+// but landing back on "Choose a Save Slot" reads as "my dynasty is gone"
+// even though it's really just one click away. Plain localStorage, not
+// window.storage — this is a small UI convenience pointer, not save data
+// itself, so it doesn't need the slot-save abstraction.
+const LAST_ACTIVE_SLOT_KEY = "cbb-dynasty-last-active-slot";
+function rememberLastActiveSlot(slot) {
+  try {
+    if (slot) window.localStorage.setItem(LAST_ACTIVE_SLOT_KEY, String(slot));
+    else window.localStorage.removeItem(LAST_ACTIVE_SLOT_KEY);
+  } catch (e) {}
+}
+function lastActiveSlot() {
+  try {
+    const raw = window.localStorage.getItem(LAST_ACTIVE_SLOT_KEY);
+    const n = Number(raw);
+    return SAVE_SLOTS.includes(n) ? n : null;
+  } catch (e) {
+    return null;
+  }
+}
 
 async function saveDynasty(state) {
   const slot = state.slot || 1;
@@ -5723,6 +5747,11 @@ function DynastyApp({ initial, onExit, onBackToSelect }) {
   // about the offseason itself is lost.
   const [seasonScheduleReview, setSeasonScheduleReview] = useState(false);
   const saveTimer = useRef(null);
+  // Always holds the CURRENT state, so the flush-on-unload listener below
+  // (registered once, not re-added on every state change) never reads a
+  // stale closure.
+  const latestStateRef = useRef(state);
+  latestStateRef.current = state;
 
   useEffect(() => {
     if (saveTimer.current) clearTimeout(saveTimer.current);
@@ -5730,6 +5759,25 @@ function DynastyApp({ initial, onExit, onBackToSelect }) {
     saveTimer.current = setTimeout(() => { saveDynasty(state); }, 600);
     return () => clearTimeout(saveTimer.current);
   }, [state]);
+
+  // A refresh (or closing the tab) can land inside that 600ms debounce
+  // window, before the timer above has actually written anything out — so
+  // flush immediately on the way out instead of waiting on it. Registered
+  // once: window.storage.set is a synchronous localStorage.setItem
+  // underneath (see main.jsx), so calling it here without awaiting still
+  // completes before the page actually unloads.
+  useEffect(() => {
+    const flush = () => {
+      if ((latestStateRef.current.settings || DEFAULT_SETTINGS).autosave === false) return;
+      saveDynasty(latestStateRef.current);
+    };
+    window.addEventListener("pagehide", flush);
+    window.addEventListener("beforeunload", flush);
+    return () => {
+      window.removeEventListener("pagehide", flush);
+      window.removeEventListener("beforeunload", flush);
+    };
+  }, []);
 
   // This is the one screen with its OWN internal scroll region
   // (.cbb-main-content, so the left rail stays put while content scrolls) —
@@ -12848,6 +12896,11 @@ export default function CBBDynasty() {
       // independent fetches — run them together, not one after the other.
       const [, slots] = await Promise.all([loadRealData(), loadAllSlots()]);
       setSlots(slots);
+      // Resume whatever slot was last active (see rememberLastActiveSlot) if
+      // it still has a save — otherwise a refresh drops the coach back on
+      // the picker screen instead of straight into their dynasty.
+      const resumeSlot = lastActiveSlot();
+      if (resumeSlot && slots[resumeSlot]) setSession(slots[resumeSlot]);
       setLoading(false);
     })();
   }, []);
@@ -12902,11 +12955,13 @@ export default function CBBDynasty() {
       assistants: null,
     };
     setPickingTeamFor(null);
+    rememberLastActiveSlot(slot);
     setSession(state);
   }
 
   async function exitToSelect() {
     if (session && session.slot) await deleteSlot(session.slot);
+    rememberLastActiveSlot(null);
     setSession(null);
     setPickingTeamFor(null);
     setSlots(await loadAllSlots());
@@ -12920,6 +12975,7 @@ export default function CBBDynasty() {
   // this runs the slot is already current; this just drops back to the
   // picker with every slot intact.
   async function backToSelect() {
+    rememberLastActiveSlot(null);
     setSession(null);
     setPickingTeamFor(null);
     setSlots(await loadAllSlots());
@@ -13052,7 +13108,7 @@ export default function CBBDynasty() {
                 <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
                   {s ? (
                     <>
-                      <button onClick={() => setSession(s)} className="cbb-btn" style={btnStyle(C.wood)}>Continue</button>
+                      <button onClick={() => { rememberLastActiveSlot(slot); setSession(s); }} className="cbb-btn" style={btnStyle(C.wood)}>Continue</button>
                       <button
                         onClick={() => exportSlot(slot)}
                         className="cbb-btn"
