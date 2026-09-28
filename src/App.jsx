@@ -2698,12 +2698,13 @@ function nonConfOppAllowed(slate, gameId, oppId, teamConf) {
 }
 
 // Real non-conference scheduling: a high major "buys" a game against a
-// smaller program for real money — the smaller side only banks 10% of it
-// for their own program budget, the rest reads as going to the athletic
-// department generally (covers travel/ops, not a windfall for the team).
-// Deterministic off each matchup's own prestige gap (no randomness) so the
-// number a coach previews while building the schedule is exactly what gets
-// applied once they confirm it — nothing changes between preview and lock.
+// smaller program for real money — the smaller side only banks a cut of it
+// for their own program (or NIL — see destination below), the rest reads
+// as going to the athletic department generally (covers travel/ops, not a
+// full windfall for the team). Deterministic off each matchup's own
+// prestige gap (no randomness) so the number a coach previews while
+// building the schedule is exactly what gets applied once they confirm it
+// — nothing changes between preview and lock.
 const GUARANTEE_TIER_RANK = { high: 3, mid: 2, low: 1 };
 // A single continuous $50K-$120K band, scaled by the raw prestige gap (not
 // by discrete tier gap) — a lower-tier team that's not THAT much worse
@@ -2711,7 +2712,7 @@ const GUARANTEE_TIER_RANK = { high: 3, mid: 2, low: 1 };
 // commands the full $120K ceiling.
 const GUARANTEE_FEE_FLOOR = 50_000;
 const GUARANTEE_FEE_MAX = 120_000;
-const GUARANTEE_KEEP_PCT = 0.10;
+const GUARANTEE_KEEP_PCT = 0.20;
 function guaranteeFeeFor(userTeam, oppTeam) {
   if (!userTeam || !oppTeam) return null;
   const uRank = GUARANTEE_TIER_RANK[nilTierFor(userTeam)];
@@ -2722,23 +2723,36 @@ function guaranteeFeeFor(userTeam, oppTeam) {
   return { amount, direction: uRank > oRank ? "pay" : "receive" };
 }
 // Stamps every non-conference game in `slate` with its guarantee fee (or
-// null for a same-tier matchup with no real payout either way) and totals
-// the net effect on the user's own program budget — a "pay" game costs the
-// full fee, a "receive" game only banks GUARANTEE_KEEP_PCT of it. A real
-// guarantee game is never a free choice of site: the higher-tier program
-// pays to host, and the lower-tier program travels for the payday — so
-// `home` gets forced to match `direction` here, the single place both the
-// live preview and the final saved schedule both flow through.
-function applyGuaranteeFees(slate, userTeam) {
-  let netDelta = 0;
+// null for a same-tier matchup with no real payout either way). A "pay"
+// game always costs the full fee out of the program budget — that's
+// institutional money buying a game, never player NIL. A "receive" game
+// only banks GUARANTEE_KEEP_PCT of it, routed to whichever pool the coach
+// chose for this schedule (`destination`: "program" or "nil") — a
+// resource-strapped program might rather put a buy-game payday straight
+// into NIL than into facilities. Returns the program-budget and NIL-budget
+// deltas separately (plus their sum as `netDelta`, for callers that just
+// want the total). A real guarantee game is never a free choice of site:
+// the higher-tier program pays to host, and the lower-tier program travels
+// for the payday — so `home` gets forced to match `direction` here, the
+// single place both the live preview and the final saved schedule both
+// flow through.
+function applyGuaranteeFees(slate, userTeam, destination = "program") {
+  let programNetDelta = 0;
+  let nilNetDelta = 0;
   const games = slate.map((g) => {
     if (g.conf) return g;
     const fee = guaranteeFeeFor(userTeam, TEAM_MAP[g.oppId]);
     if (!fee) return { ...g, fee };
-    netDelta += fee.direction === "pay" ? -fee.amount : Math.round(fee.amount * GUARANTEE_KEEP_PCT);
+    if (fee.direction === "pay") {
+      programNetDelta -= fee.amount;
+    } else {
+      const kept = Math.round(fee.amount * GUARANTEE_KEEP_PCT);
+      if (destination === "nil") nilNetDelta += kept;
+      else programNetDelta += kept;
+    }
     return { ...g, fee, home: fee.direction === "pay" };
   });
-  return { games, netDelta };
+  return { games, programNetDelta, nilNetDelta, netDelta: programNetDelta + nilNetDelta };
 }
 
 // A team's power MUST live on the same scale as `userTeamOverall` (the
@@ -4156,6 +4170,7 @@ function tickInjuries(roster) {
 const DEFAULT_SETTINGS = {
   injuryFrequency: "normal", // "low" | "normal" | "high"
   autosave: true,
+  guaranteeFeeDestination: "program", // "program" | "nil" — where a buy-game payday's kept cut lands
 };
 const INJURY_FREQUENCY_MULT = { low: 0.55, normal: 1, high: 1.7 };
 // A weekly, re-chosen-every-game practice plan: easing off practice trims
@@ -5993,6 +6008,8 @@ function DynastyApp({ initial, onExit, onBackToSelect }) {
         year={state.year}
         games={state.schedule}
         programBudget={programBudget}
+        destination={(state.settings || DEFAULT_SETTINGS).guaranteeFeeDestination}
+        onSetDestination={setGuaranteeFeeDestination}
         onEditGame={editScheduleSetupGame}
         onConfirm={confirmScheduleSetup}
       />
@@ -6464,17 +6481,28 @@ function DynastyApp({ initial, onExit, onBackToSelect }) {
   // season case goes through the seasonScheduleReview flow instead, which
   // hands the fee-stamping off to advanceYear itself). Stamps every non-
   // conference game with its guarantee-fee outcome (see applyGuaranteeFees)
-  // and applies the net dollar effect to this team's own program budget
-  // right here, once — not recomputed later, so what the modal previewed is
-  // exactly what happened.
+  // and applies the net dollar effect to this team's program and/or NIL
+  // budget (per the coach's chosen destination) right here, once — not
+  // recomputed later, so what the modal previewed is exactly what happened.
   function confirmScheduleSetup() {
     setState((s) => {
-      const { games, netDelta } = applyGuaranteeFees(s.schedule, team);
+      const destination = (s.settings || DEFAULT_SETTINGS).guaranteeFeeDestination;
+      const { games, programNetDelta, nilNetDelta } = applyGuaranteeFees(s.schedule, team, destination);
       const programBudgetById = { ...(s.programBudgetById || baselineProgramBudgetById()) };
-      programBudgetById[s.teamId] = Math.max(0, Math.round((programBudgetById[s.teamId] ?? programBudgetForTeam(team)) + netDelta));
-      return { ...s, schedule: games, programBudgetById, needsScheduleSetup: false };
+      programBudgetById[s.teamId] = Math.max(0, Math.round((programBudgetById[s.teamId] ?? programBudgetForTeam(team)) + programNetDelta));
+      const nilBudgetById = { ...(s.nilBudgetById || baselineNilBudgetById()) };
+      if (nilNetDelta) nilBudgetById[s.teamId] = Math.max(0, Math.round((nilBudgetById[s.teamId] ?? nilBudgetForTeam(team)) + nilNetDelta));
+      return { ...s, schedule: games, programBudgetById, nilBudgetById, needsScheduleSetup: false };
     });
     flash("Schedule locked in for the season.");
+  }
+
+  // Which pool a buy-game payday's kept cut lands in — set from inside
+  // ScheduleSetupModal itself (per the user's request: this is a scheduling
+  // decision, not a buried settings toggle), but persisted on state.settings
+  // like any other preference so it carries over as the default next season.
+  function setGuaranteeFeeDestination(value) {
+    setState((s) => ({ ...s, settings: { ...(s.settings || DEFAULT_SETTINGS), guaranteeFeeDestination: value } }));
   }
 
   function startPostseason() {
@@ -7207,10 +7235,14 @@ function DynastyApp({ initial, onExit, onBackToSelect }) {
     // before hitting "Begin Season" — see the seasonScheduleReview gate in
     // DynastyApp) is stamped with its guarantee-fee outcome for real here,
     // once, as part of the same season transition everything else in this
-    // function applies.
+    // function applies. Which pool a buy-game payday's kept cut lands in
+    // (program budget or NIL) is the coach's own settings choice.
     const rawNextSchedule = (os && os.scheduleDraft) ? os.scheduleDraft : genSchedule(team, newYear);
-    const { games: nextSchedule, netDelta: scheduleFeeDelta } = applyGuaranteeFees(rawNextSchedule, team);
-    nextProgramBudgetById[state.teamId] = Math.max(0, (nextProgramBudgetById[state.teamId] ?? 0) + scheduleFeeDelta);
+    const guaranteeDestination = (state.settings || DEFAULT_SETTINGS).guaranteeFeeDestination;
+    const { games: nextSchedule, programNetDelta: scheduleProgramDelta, nilNetDelta: scheduleNilDelta } =
+      applyGuaranteeFees(rawNextSchedule, team, guaranteeDestination);
+    nextProgramBudgetById[state.teamId] = Math.max(0, (nextProgramBudgetById[state.teamId] ?? 0) + scheduleProgramDelta);
+    if (scheduleNilDelta) nextNilById[state.teamId] = Math.max(0, (nextNilById[state.teamId] ?? 0) + scheduleNilDelta);
 
     // Prestige movement since last season, for trend indicators.
     const prevP = state.prestigeById || baselinePrestigeById();
@@ -7709,6 +7741,8 @@ function DynastyApp({ initial, onExit, onBackToSelect }) {
           year={state.year + 1}
           games={state.offseason.scheduleDraft}
           programBudget={programBudget}
+          destination={(state.settings || DEFAULT_SETTINGS).guaranteeFeeDestination}
+          onSetDestination={setGuaranteeFeeDestination}
           onEditGame={editScheduleSetupGame}
           onConfirm={() => { setSeasonScheduleReview(false); advanceYear(); }}
         />
@@ -12205,12 +12239,15 @@ function ScheduleTab({ schedule, teamConf, rankById, rivalIds, onViewTeam, onEdi
 // season-to-season transition, and right after taking a new job. Once
 // confirmed the slate is locked for the whole season — no in-season
 // "Change" button exists anymore.
-function ScheduleSetupModal({ team, year, games, programBudget, onEditGame, onConfirm }) {
+function ScheduleSetupModal({ team, year, games, programBudget, destination = "program", onSetDestination, onEditGame, onConfirm }) {
   const nonConf = games.filter((g) => !g.conf);
   const takenOppIds = new Set(nonConf.map((g) => g.oppId));
-  const preview = useMemo(() => applyGuaranteeFees(games, team), [games, team]);
-  const netDelta = preview.netDelta;
-  const affordable = programBudget + netDelta >= 0;
+  const preview = useMemo(() => applyGuaranteeFees(games, team, destination), [games, team, destination]);
+  // Affordability only ever looks at the program-budget side — money routed
+  // to NIL this season doesn't help cover a program-budget shortfall, and a
+  // "pay" fee always comes out of the program budget regardless of where
+  // "receive" money is going.
+  const affordable = programBudget + preview.programNetDelta >= 0;
   return (
     <div className="cbb-scroll" style={{ position: "fixed", inset: 0, zIndex: 60, overflowY: "auto", minHeight: "100vh", background: C.bg, padding: "40px 20px", display: "flex", justifyContent: "center" }}>
       <div
@@ -12229,13 +12266,34 @@ function ScheduleSetupModal({ team, year, games, programBudget, onEditGame, onCo
         </h2>
         <div style={{ fontSize: 13, color: C.dim, marginBottom: 20, maxWidth: 720 }}>
           Pick all {nonConf.length} non-conference opponents before the season starts — your conference slate is fixed automatically. Once you confirm, this schedule is locked in for the whole season.
-          A real prestige gap against a non-conference opponent means a real guarantee-game payout: the higher-tier program pays the full fee to book the game and hosts it, and the lower-tier program travels for the payday, banking {Math.round(GUARANTEE_KEEP_PCT * 100)}% of the fee for their own program budget — the rest goes to the Athletic Department generally, not the team. Site isn't a free choice for these games; it follows who's paying.
+          A real prestige gap against a non-conference opponent means a real guarantee-game payout: the higher-tier program pays the full fee to book the game and hosts it, and the lower-tier program travels for the payday, banking {Math.round(GUARANTEE_KEEP_PCT * 100)}% of the fee for themselves — the rest goes to the Athletic Department generally, not the team. Site isn't a free choice for these games; it follows who's paying.
         </div>
-        <Panel style={{ padding: "14px 18px", marginBottom: 18, display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
-          <div style={{ fontSize: 12, color: C.dim }}>Program budget: <strong className="cbb-num" style={{ color: C.gold, fontSize: 15 }}>{formatNil(programBudget)}</strong></div>
-          <div style={{ fontSize: 12, color: C.dim }}>
-            Net from this schedule: <strong className="cbb-num" style={{ color: netDelta >= 0 ? C.green : C.red, fontSize: 15 }}>{netDelta >= 0 ? "+" : ""}{formatNil(netDelta)}</strong>
+        <Panel style={{ padding: "14px 18px", marginBottom: 18, display: "flex", flexDirection: "column", gap: 12 }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
+            <div style={{ fontSize: 12, color: C.dim }}>Program budget: <strong className="cbb-num" style={{ color: C.gold, fontSize: 15 }}>{formatNil(programBudget)}</strong></div>
+            <div style={{ fontSize: 12, color: C.dim }}>
+              Program net: <strong className="cbb-num" style={{ color: preview.programNetDelta >= 0 ? C.green : C.red, fontSize: 15 }}>{preview.programNetDelta >= 0 ? "+" : ""}{formatNil(preview.programNetDelta)}</strong>
+              {preview.nilNetDelta > 0 && (
+                <> · NIL net: <strong className="cbb-num" style={{ color: C.green, fontSize: 15 }}>+{formatNil(preview.nilNetDelta)}</strong></>
+              )}
+            </div>
           </div>
+          {onSetDestination && (
+            <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+              <span style={{ fontSize: 11.5, color: C.dimmer }}>Send buy-game payday money to:</span>
+              {[["program", "Program Budget"], ["nil", "NIL Budget"]].map(([val, label]) => (
+                <button key={val} onClick={() => onSetDestination(val)} className="cbb-btn"
+                  style={{
+                    fontSize: 12, padding: "5px 12px", cursor: "pointer",
+                    border: `1px solid ${destination === val ? C.wood : C.line}`,
+                    background: destination === val ? C.panelAlt : "transparent",
+                    color: destination === val ? C.cream : C.dim,
+                  }}>
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
         </Panel>
         <Panel style={{ overflow: "hidden", marginBottom: 20 }}>
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13.5 }}>
