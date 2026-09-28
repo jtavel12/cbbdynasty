@@ -3802,10 +3802,15 @@ function userTeamOverall(roster, depthChart, minutesMap) {
 // SEASON-START real roster to the school's real barthag strength: hold the real
 // roster and you play exactly like the real team (year one is true to history).
 // From there, ROSTER_SENSITIVITY controls how fast the roster you actually build
-// moves you off that historical anchor. At 1.8, a ~40-point OVR spread maps
-// across nearly the full power scale, so recruiting — not the school's history —
-// is what determines your strength once you reshape the team.
-const ROSTER_SENSITIVITY = 1.8;
+// moves you off that historical anchor. This used to be 1.8, which let a ~40-
+// point OVR spread swing nearly the ENTIRE power scale — meaning a merely-good
+// roster (not an elite one) at a historically weak program could reach power
+// comparable to a genuine blue blood off of one offseason's roster work, years
+// before that kind of rebuild would be realistic. At 1.1, that same 40-point
+// spread still meaningfully moves you (recruiting still clearly matters), but
+// closing a real competitive gap against the sport's actual elite takes
+// sustained, multi-season roster building rather than one aggressive summer.
+const ROSTER_SENSITIVITY = 1.1;
 function mapOverallToPower(raw, baseline) {
   if (!baseline) return raw;
   return clamp(baseline.barthagPower + (raw - baseline.realOverall) * ROSTER_SENSITIVITY, 25, 95);
@@ -3929,16 +3934,25 @@ function genTeamBoxFromLiveMinutes(roster, boxMinutes, teamPts) {
 function simulateGame(roster, depthChart, oppPower, momentum = 0, baseline = null, minutesMap = null) {
   const myPower = userGamePower(roster, depthChart, baseline, minutesMap) + momentum;
   const diff = myPower - oppPower;
-  // Talent drives the margin; the random term is small enough that upsets
-  // still happen on a given night, but the better team wins the large
-  // majority of the time — tightened alongside gameWinProb so a strong
-  // roster's edge shows up just as reliably in your own games as in every
-  // CPU-simulated game around the league.
-  const margin = diff * 0.9 + rand(-6, 6);
+  // Win/loss is a real probability draw off the SAME curve every CPU-vs-CPU
+  // game in the league uses (gameWinProb) — never a hard cutoff. The old
+  // approach decided win/loss purely from the SIGN of `diff*0.9 + rand(-6,6)`,
+  // which is bounded: any power gap past about 6.7 points made the outcome
+  // fully deterministic (100%/0%), not just "very likely." A merely-good
+  // roster only had to close a real talent gap to within that narrow window
+  // to become an outright lock against a genuinely elite team — no upset
+  // resistance left for the favorite, no upset CHANCE denied to the underdog
+  // at the extremes either. gameWinProb keeps a real (if tiny) chance on both
+  // sides across the whole power range instead.
+  const win = Math.random() < gameWinProb(myPower, oppPower);
+  // The final scoreboard margin still scales with the real talent gap (a
+  // blowout is more likely the bigger the gap, whichever way it runs) — only
+  // WHO wins was decoupled from it above.
+  const marginMag = Math.abs(diff * 0.9 + rand(-6, 6)) + 1;
   const base = 66 + myPower / 6;
-  const win = margin >= 0;
-  let myScore = Math.max(Math.round(base + margin / 2 + rand(-4, 4)), 38);
-  let oppScore = Math.max(Math.round(base - margin / 2 + rand(-4, 4)), 35);
+  const signedMargin = win ? marginMag : -marginMag;
+  let myScore = Math.max(Math.round(base + signedMargin / 2 + rand(-4, 4)), 38);
+  let oppScore = Math.max(Math.round(base - signedMargin / 2 + rand(-4, 4)), 35);
   // Basketball has no ties — make sure the winner actually outscores the loser
   // (rounding + score floors can otherwise leave them equal).
   if (win && myScore <= oppScore) myScore = oppScore + randInt(1, 4);
