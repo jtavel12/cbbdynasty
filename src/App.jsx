@@ -671,20 +671,62 @@ const TORVIK_SEASONS_ALIASES = {
 
 const _unmatchedTorvikSeasonsLogged = new Set();
 
+// Every plausible spelling for this team across BOTH real-data sources.
+// torvikPlayers is populated by two different import scripts depending on
+// the season — import-torvik-players.mjs (CBBD naming, e.g. "UConn", "San
+// José State") for most years, import-cbbdata-csv.mjs (Barttorvik naming,
+// e.g. "Connecticut", "San Jose St.") for others — and there's no way to
+// know which convention a given year used without just trying both. Trying
+// only ONE alias table and giving up on a miss (the old behavior) meant a
+// team could have real data sitting right there under the OTHER
+// convention's spelling and never get matched — which is exactly why UConn
+// and San Jose State's real rosters showed up on the league-wide
+// leaderboard (its lookup tries the bare TORVIK_TEAM_ALIASES name and
+// nothing else, so it happened to hit) but not in their own roster view
+// (which used to try TORVIK_SEASONS_ALIASES's "Connecticut"/"San Jose St."
+// first and never fell back). Every candidate also gets a State -> St.
+// variant since that abbreviation isn't consistently applied by either
+// table.
+function torvikNameCandidates(team) {
+  const raw = [TORVIK_SEASONS_ALIASES[team.name], TORVIK_TEAM_ALIASES[team.name], team.name].filter(Boolean);
+  const out = [];
+  for (const n of raw) {
+    if (!out.includes(n)) out.push(n);
+    const abbrev = n.replace(/\bState\b/g, "St.");
+    if (!out.includes(abbrev)) out.push(abbrev);
+  }
+  return out;
+}
+
+// Reverse of the above: every plausible real-data spelling -> our team,
+// built once and cached (TEAMS is static). Used wherever code needs to go
+// FROM a raw real-data team-name string TO one of our 365 programs — e.g.
+// matching a real recruit's committed school, or building the league-wide
+// leaderboard's per-team rows — so those lookups benefit from the same
+// both-conventions coverage as realPlayersFor/realSeasonFor instead of
+// each rolling their own single-candidate version.
+let _torvikReverseIndex = null;
+function torvikReverseIndex() {
+  if (_torvikReverseIndex) return _torvikReverseIndex;
+  const map = new Map();
+  for (const t of TEAMS) {
+    for (const c of torvikNameCandidates(t)) {
+      const key = normalizeTeamKey(c);
+      if (!map.has(key)) map.set(key, t);
+    }
+  }
+  _torvikReverseIndex = map;
+  return map;
+}
+
 // Real historical team record/efficiency for a given team+year, or null.
-// Tries, in order: the Torvik-specific alias above (which wins when it
-// conflicts with the CBBD one, e.g. FIU), else the CBBD player-data alias
-// (many entries there — Pitt -> Pittsburgh, Mizzou -> Missouri, SC State ->
-// South Carolina State — happen to also be exactly what Torvik uses, so
-// they're inherited for free instead of duplicated), else the plain team
-// name; each of those is also tried with the generic "State" -> "St."
-// abbreviation before giving up. A miss across every year we have data for
-// is logged once per team so genuinely-missing aliases are easy to spot.
+// Tries every plausible spelling (see torvikNameCandidates) before giving
+// up. A miss across every year we have data for is logged once per team so
+// genuinely-missing aliases are easy to spot.
 function realSeasonFor(team, year) {
   const rows = torvikSeasons[String(year)];
   if (!rows || !rows.length) return null;
-  const aliased = TORVIK_SEASONS_ALIASES[team.name] || TORVIK_TEAM_ALIASES[team.name] || team.name;
-  const candidates = [aliased, aliased.replace(/\bState\b/g, "St.")];
+  const candidates = torvikNameCandidates(team);
   for (const c of candidates) {
     const target = normalizeTeamKey(c);
     const hit = rows.find((r) => normalizeTeamKey(r.team) === target);
@@ -692,7 +734,7 @@ function realSeasonFor(team, year) {
   }
   if (!_unmatchedTorvikSeasonsLogged.has(team.name)) {
     _unmatchedTorvikSeasonsLogged.add(team.name);
-    console.warn(`[Torvik team data] no match for "${team.name}" (tried "${aliased}") in ${year} — add an entry to TORVIK_SEASONS_ALIASES if this program has real data under a different name, or it may just be missing from Torvik's coverage.`);
+    console.warn(`[Torvik team data] no match for "${team.name}" (tried ${candidates.map((c) => `"${c}"`).join(", ")}) in ${year} — add an entry to TORVIK_SEASONS_ALIASES if this program has real data under a different name, or it may just be missing from Torvik's coverage.`);
   }
   return null;
 }
@@ -702,17 +744,7 @@ function realSeasonFor(team, year) {
 function realPlayersFor(team, year) {
   const rows = torvikPlayers[String(year)];
   if (!rows || !rows.length) return [];
-  // Same two-source-plus-abbreviation candidate list realSeasonFor already
-  // uses below for torvik-seasons.json — needed here too now that
-  // torvikPlayers itself can hold Barttorvik-sourced years (see
-  // scripts/import-cbbdata-csv.mjs), which spell things the TORVIK_SEASONS_
-  // ALIASES way ("Wichita St.", "Miami FL") rather than the CBBD way
-  // ("Wichita State", "Miami (FL)") TORVIK_TEAM_ALIASES alone was written
-  // for. Trying TORVIK_SEASONS_ALIASES first mirrors realSeasonFor's own
-  // priority (it "wins when it conflicts") since it's the more specifically
-  // Barttorvik-flavored table of the two.
-  const aliased = TORVIK_SEASONS_ALIASES[team.name] || TORVIK_TEAM_ALIASES[team.name] || team.name;
-  const candidates = [aliased, aliased.replace(/\bState\b/g, "St.")];
+  const candidates = torvikNameCandidates(team);
   let matched = [];
   for (const c of candidates) {
     const target = normalizeTeamKey(c);
@@ -721,7 +753,7 @@ function realPlayersFor(team, year) {
   }
   if (!matched.length && !_unmatchedLogged.has(team.name)) {
     _unmatchedLogged.add(team.name);
-    console.warn(`[real data] no exact roster match for "${team.name}" (tried "${aliased}") in ${year}.`);
+    console.warn(`[real data] no exact roster match for "${team.name}" (tried ${candidates.map((c) => `"${c}"`).join(", ")}) in ${year}.`);
   }
   return matched.filter(isPlausibleRosterRow);
 }
@@ -1570,8 +1602,7 @@ function normalizeHometown(h) {
 // program CBBD also tracks that we don't want treating as a D1 recruit
 // source).
 function findOurTeamByRealName(realTeamName) {
-  const key = normalizeTeamKey(realTeamName);
-  return TEAMS.find((t) => normalizeTeamKey(TORVIK_TEAM_ALIASES[t.name] || t.name) === key) || null;
+  return torvikReverseIndex().get(normalizeTeamKey(realTeamName)) || null;
 }
 
 // Every prospect carries a 1-5 star rating now (no more "unranked"). Stars are
@@ -2562,9 +2593,7 @@ function buildLeaderboard(year, userTeamId, userRoster, seasonSeed, gamesPlayed)
   }
 
   const rows = torvikPlayers[String(year)] || [];
-  // O(1) torvik-team-name -> our team lookup (mirrors findOurTeamByRealName).
-  const teamByKey = new Map();
-  for (const t of TEAMS) teamByKey.set(normalizeTeamKey(TORVIK_TEAM_ALIASES[t.name] || t.name), t);
+  const teamByKey = torvikReverseIndex();
 
   const seen = new Set();
   for (const r of rows) {
@@ -5678,7 +5707,7 @@ const TABS = [
   { id: "history", label: "History", icon: BookOpen },
 ];
 
-function DynastyApp({ initial, onExit }) {
+function DynastyApp({ initial, onExit, onBackToSelect }) {
   const [state, setState] = useState(initial);
   const [tab, setTab] = useState("dashboard");
   const [toast, setToast] = useState(null);
@@ -7640,17 +7669,17 @@ function DynastyApp({ initial, onExit }) {
       )}
       {confirmExit && (
         <Modal title="Start a new dynasty?" onClose={() => setConfirmExit(false)} maxWidth={440}>
-          <div style={{ fontSize: 13, color: C.red, lineHeight: 1.6, marginBottom: 20 }}>
-            This permanently deletes your current save at {team.name}. This can&apos;t be undone.
+          <div style={{ fontSize: 13, color: C.dim, lineHeight: 1.6, marginBottom: 20 }}>
+            This saves your progress at {team.name} and takes you back to the save-slot picker, where you can start fresh in an empty slot — your save here stays exactly as it is.
           </div>
           <div style={{ display: "flex", gap: 10 }}>
             <button onClick={() => setConfirmExit(false)} className="cbb-btn"
               style={{ ...btnStyle(C.panelAlt, C.cream), flex: 1, justifyContent: "center", border: `1px solid ${C.line}` }}>
               Cancel
             </button>
-            <button onClick={onExit} className="cbb-btn"
-              style={{ fontSize: 13, padding: "9px 14px", flex: 1, justifyContent: "center", display: "flex", alignItems: "center", border: `1px solid ${C.red}`, background: C.red, color: C.cream, cursor: "pointer" }}>
-              Yes, delete and start over
+            <button onClick={() => { saveDynasty(state); onBackToSelect(); }} className="cbb-btn"
+              style={{ ...btnStyle(C.wood), flex: 1, justifyContent: "center" }}>
+              Go to Save Slots
             </button>
           </div>
         </Modal>
@@ -12885,6 +12914,19 @@ export default function CBBDynasty() {
     setSlots(await loadAllSlots());
   }
 
+  // "New Dynasty" from the sidebar, mid-save: unlike exitToSelect (retiring,
+  // which really does mean "delete this save"), starting a new dynasty
+  // should NOT force deleting whatever save you're currently in just to
+  // reach the picker — you may have an empty slot sitting right there.
+  // DynastyApp saves its own live state before calling this, so by the time
+  // this runs the slot is already current; this just drops back to the
+  // picker with every slot intact.
+  async function backToSelect() {
+    setSession(null);
+    setPickingTeamFor(null);
+    setSlots(await loadAllSlots());
+  }
+
   // Download one slot's save as a plain JSON file — a real backup before a
   // risky action (retiring, deleting a slot to free it up), and the only way
   // to move a dynasty to another device with just 3 local slots and no cloud
@@ -12939,7 +12981,7 @@ export default function CBBDynasty() {
   }
 
   if (session) {
-    return <DynastyApp initial={session} onExit={exitToSelect} />;
+    return <DynastyApp initial={session} onExit={exitToSelect} onBackToSelect={backToSelect} />;
   }
 
   if (onboarding) {
