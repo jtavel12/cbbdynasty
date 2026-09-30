@@ -4555,17 +4555,27 @@ function pitchModifier(pitchIndex, player, stock) {
 // program's recent trajectory, the coach's reputation, an NIL counter-offer,
 // and pitch fit. A borderline prospect can genuinely be talked into staying;
 // a projected lottery pick stays very hard to keep regardless of any of it.
+// Everything except the NIL counter-offer is settled first and held to only
+// 70% of the stock ceiling (preNil) — a real program with a strong
+// trajectory and a well-regarded coach otherwise saturates that ceiling on
+// its own, before NIL is even added, leaving a counter-offer with zero
+// actual room to matter no matter how much money is on the table. The
+// remaining 30% of headroom up to the ceiling is reserved for NIL alone,
+// closed off in proportion to how much of the player's real market ask
+// (stayNilAsk) the pledge covers — so an actual counter-offer always moves
+// the needle by a real, visible amount, never gets silently absorbed.
 function persuadeChance(player, { trajectory, coachRepScore, nilPledge, pitchIndex }) {
   const stock = draftStockScore(player);
   const upside = developmentUpside(player);
   const upsideBoost = upside * (1 - stock) * 0.30;
   const trajectoryBoost = clamp(trajectory, 0, 1) * 0.15;
   const coachBoost = clamp(coachRepScore, 0, 1) * 0.15;
-  const nilRatio = clamp((nilPledge || 0) / stayNilAsk(player), 0, 1.5);
-  const nilBoost = nilRatio * 0.25;
   const pitchBonus = pitchModifier(pitchIndex, player, stock);
-  const raw = 0.22 + upsideBoost + trajectoryBoost + coachBoost + nilBoost + pitchBonus;
   const ceiling = clamp(1 - stock * 0.85, 0.06, 0.92);
+  const preNil = Math.min(0.22 + upsideBoost + trajectoryBoost + coachBoost + pitchBonus, ceiling * 0.7);
+  const nilRatio = clamp((nilPledge || 0) / stayNilAsk(player), 0, 1.5);
+  const nilBoost = nilRatio * (ceiling - preNil);
+  const raw = preNil + nilBoost;
   return clamp(Math.min(raw, ceiling), 0.03, 0.95);
 }
 
@@ -4779,12 +4789,15 @@ function generateAssistantCandidates(team) {
    budget refreshes to whatever it had left over unspent from last year,
    plus HALF ITS ACTUAL CURRENT NIL BUDGET for the year that just started
    (not a static baseline — the real, already-grown number), plus/minus any
-   guarantee-fee money won or paid from that season's schedule. Unlike NIL,
-   program budget has no ceiling — it's athletic-department capital
-   (facilities, assistant coach salaries), not a per-player compensation
-   pool or a head-coach-pay pool (the head coach's own salary is never
-   charged against it — by design), so
-   there's no tier cap to taper toward.
+   guarantee-fee money won or paid from that season's schedule. It's
+   athletic-department capital (facilities, assistant coach salaries), not a
+   per-player compensation pool or a head-coach-pay pool (the head coach's
+   own salary is never charged against it — by design). It IS capped, same
+   tier-based shape as NIL_TIER_CEILINGS — see PROGRAM_BUDGET_TIER_CEILINGS
+   below: a CPU program never spends its own budget down (no facility
+   purchases, no assistant hires), so without a hard ceiling the leftover
+   term compounds every single season forever with nothing ever drawing it
+   back down.
    ========================================================================= */
 function programBudgetForTeam(team) {
   return Math.round(nilBudgetForTeam(team) * 0.5);
@@ -4794,6 +4807,15 @@ function baselineProgramBudgetById() {
   for (const t of TEAMS) out[t.id] = programBudgetForTeam(t);
   return out;
 }
+// Half of each NIL tier's own ceiling (NIL_TIER_CEILINGS) — mirrors the
+// same 0.5x relationship programBudgetForTeam already uses for the starting
+// baseline, so the cap a program eventually runs into is consistent with
+// where its budget started out.
+const PROGRAM_BUDGET_TIER_CEILINGS = {
+  high: NIL_TIER_CEILINGS.high * 0.5,
+  mid: NIL_TIER_CEILINGS.mid * 0.5,
+  low: NIL_TIER_CEILINGS.low * 0.5,
+};
 // Each team's fresh seasonal contribution is HALF ITS ACTUAL CURRENT NIL
 // BUDGET (nilById — this season's already-grown number, not the static
 // tier+prestige baseline), plus a little more from the Arena & Fan
@@ -4802,7 +4824,10 @@ function baselineProgramBudgetById() {
 // a program that spent everything down to $0 still gets a full new
 // season's budget rather than staying $0 forever, and unspent money
 // genuinely carries over. Guarantee-fee income/cost from scheduling is
-// layered in separately by the caller, right after this returns.
+// layered in separately by the caller, right after this returns. The whole
+// total is then held to that team's tier ceiling, same hard cap shape as
+// NIL, so a program that never spends still plateaus instead of compounding
+// without limit.
 function advanceProgramBudgets(prevById, nilById, facilitiesById) {
   const next = {};
   for (const t of TEAMS) {
@@ -4810,7 +4835,8 @@ function advanceProgramBudgets(prevById, nilById, facilitiesById) {
     const currentNil = nilById?.[t.id] ?? nilBudgetForTeam(t);
     const arenaLevel = facilitiesById?.[t.id]?.arena || 0;
     const seasonalBudget = Math.round(currentNil * 0.5 * (1 + arenaLevel * 0.01));
-    next[t.id] = leftover + seasonalBudget;
+    const ceiling = PROGRAM_BUDGET_TIER_CEILINGS[nilTierFor(t)];
+    next[t.id] = Math.min(leftover + seasonalBudget, ceiling);
   }
   return next;
 }
@@ -6042,7 +6068,19 @@ function DynastyApp({ initial, onExit, onBackToSelect }) {
   // Scoped to state.offseason existing at all, which covers both how it
   // happens: a HS class signed during the just-finished season, or transfer
   // portal signings piling on further during the offseason itself.
-  const isOversigned = !!state.offseason && scholarshipInfo.oversignedBy > 0;
+  //
+  // Also held off until every player decision is actually resolved (NIL
+  // locked, every draft declaration pitched, every transfer risk settled —
+  // same gate OffseasonTab's own "decisionsDone" uses to reveal the Roster &
+  // Cuts panel). Before that point nobody yet knows who's actually leaving
+  // via the draft or the portal, so scholarshipInfo.returning is still
+  // counting players who may well depart on their own — forcing a cut off
+  // that incomplete picture could squeeze out someone who was about to open
+  // up the exact same scholarship for free days later.
+  const offseasonDecisionsDone = !!state.offseason && !!state.offseason.nilLocked
+    && (state.offseason.draftDeclarations || []).every((d) => d.attempted)
+    && (state.offseason.transferRisks || []).every((r) => r.resolved);
+  const isOversigned = offseasonDecisionsDone && scholarshipInfo.oversignedBy > 0;
   const oversignCuttableRoster = useMemo(() => {
     if (!isOversigned) return [];
     const leavingEarly = new Set([
@@ -12014,7 +12052,7 @@ function ProgramTab({ state, team, record, reputation, rivalIds, rankById, onRet
             <div style={{ fontSize: 12, color: C.dim }}>Program budget: <strong className="cbb-num" style={{ color: C.gold, fontSize: 14 }}>{formatNil(programBudget)}</strong></div>
           </div>
           <div style={{ fontSize: 11.5, color: C.dimmer, marginBottom: 14 }}>
-            Athletic-department capital, not player pay — a fresh seasonal budget worth half your NIL budget gets added on top every year (faster with a stronger Arena), on top of whatever you didn't spend last season, with no ceiling. Any assistants you hire come out of it, along with these upgrades — your own salary as head coach never does.
+            Athletic-department capital, not player pay — a fresh seasonal budget worth half your NIL budget gets added on top every year (faster with a stronger Arena), on top of whatever you didn't spend last season, capped at half your tier's NIL ceiling. Any assistants you hire come out of it, along with these upgrades — your own salary as head coach never does.
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 14 }}>
             {Object.entries(FACILITIES).map(([key, info]) => {
